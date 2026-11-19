@@ -22,11 +22,7 @@ function onScreen(b: Bounds | undefined, w: number, h: number): b is Bounds {
     b.y + b.height > 0
   );
 }
-export function harmonyView(root: HarmonyNode, rotation: number): View {
-  const screen = bounds(root.attributes.bounds);
-  if (!screen || screen.x !== 0 || screen.y !== 0 || screen.width <= 0 || screen.height <= 0)
-    throw new Error('DISPLAY_GEOMETRY_UNAVAILABLE');
-  const { width, height } = screen;
+export function focusedHarmonyWindow(root: HarmonyNode) {
   const windows: HarmonyNode[] = [];
   function findWin(n: HarmonyNode) {
     if (n.attributes.bundleName) {
@@ -36,9 +32,16 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
     n.children?.forEach(findWin);
   }
   findWin(root);
-  if (windows.length !== 1) throw new Error('FOREGROUND_WINDOW_AMBIGUOUS');
-  const win = windows[0],
-    controls: Control[] = [];
+  return windows.length === 1 ? windows[0] : undefined;
+}
+export function harmonyView(root: HarmonyNode, rotation: number): View {
+  const screen = bounds(root.attributes.bounds);
+  if (!screen || screen.x !== 0 || screen.y !== 0 || screen.width <= 0 || screen.height <= 0)
+    throw new Error('DISPLAY_GEOMETRY_UNAVAILABLE');
+  const { width, height } = screen;
+  const win = focusedHarmonyWindow(root);
+  if (!win) throw new Error('FOREGROUND_WINDOW_AMBIGUOUS');
+  const controls: Control[] = [];
   function collect(n: HarmonyNode, searchFocused = false) {
     const a = n.attributes,
       b = bounds(a.bounds);

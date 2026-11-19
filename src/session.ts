@@ -7,7 +7,7 @@ import type { Target } from './host.js';
 import type { Move } from './navigation.js';
 
 export type Dispatch = (
-  kind: Move | 'swipe' | 'input',
+  kind: Move | 'swipe' | 'input' | 'launch',
   perform: () => Promise<unknown>,
 ) => Promise<void>;
 function directory(t: Target) {

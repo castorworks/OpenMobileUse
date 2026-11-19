@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Screen } from './navigation.js';
 
 export type Point = { x: number; y: number };
@@ -26,6 +27,11 @@ export interface View {
   screen: Screen;
 }
 export type Selector = { id?: string; label?: string; role?: string };
+export type LaunchStep = { kind: 'launch'; app: string; ability?: string; module?: string };
+// These identifiers may become arguments to the device shell.
+export function isAppIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/.test(value);
+}
 export type Step =
   | { kind: 'tap'; selector: Selector }
   | { kind: 'tap'; point: Point }
@@ -35,12 +41,15 @@ export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
   perform(step: Step, view: View, node?: Control): Promise<void>;
+  launch(step: LaunchStep): Promise<string>;
+  foregroundApp(): Promise<string>;
 }
 export const stepHelp = `omu tap --device <platform:id> (--id <id> | --label <label>) [--role <role>]
 omu tap --device <platform:id> --x <0..1> --y <0..1>
 omu swipe --device <platform:id> --from-x <x> --from-y <y> --to-x <x> --to-y <y> [--duration-ms 400]
 omu input --device <platform:id> [--id <id> | --label <label>] [--role <role>] (--text <text> | --stdin) [--replace]
-All three commands accept [--observation <observationId>] [--json].`;
+omu launch --device <platform:id> --app <settings|package-or-bundle-id> [--ability <name>] [--module <name>]
+--ability and --module are Harmony-only. All commands accept [--observation <observationId>] [--json].`;
 export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
     flag = { type: 'boolean' } as const;
@@ -63,23 +72,32 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       text: str,
       stdin: flag,
       replace: flag,
+      app: str,
+      ability: str,
+      module: str,
     },
   });
-  const allowed = [
-    'device',
-    'observation',
-    'json',
-    ...(kind === 'tap'
-      ? ['id', 'label', 'role', 'x', 'y']
-      : kind === 'input'
-        ? ['id', 'label', 'role', 'text', 'stdin', 'replace']
-        : ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms']),
-  ];
+  const byKind: Record<string, string[]> = {
+    tap: ['id', 'label', 'role', 'x', 'y'],
+    input: ['id', 'label', 'role', 'text', 'stdin', 'replace'],
+    swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
+    launch: ['app', 'ability', 'module'],
+  };
+  const allowed = ['device', 'observation', 'json', ...(byKind[kind] ?? [])];
   if (Object.keys(v).some((k) => !allowed.includes(k))) throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
   const device = v.device,
     observation = v.observation;
   if (!device || (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation)))
     throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (kind === 'launch') {
+    if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
+    for (const name of [v.ability, v.module]) {
+      if (name !== undefined && (!device.startsWith('harmony:') || !isAppIdentifier(name)))
+        throw new Error('INVALID_HARMONY_ENTRY');
+    }
+    const step: LaunchStep = { kind, app: v.app, ability: v.ability, module: v.module };
+    return { step, device, observation };
+  }
   const selector: Selector = { id: v.id, label: v.label, role: v.role };
   if ([v.id, v.label, v.role].includes('') || (v.id !== undefined && v.label !== undefined))
     throw new Error('INVALID_SELECTOR');
@@ -169,7 +187,40 @@ export function visibleCenter(view: View, b: Bounds): Point {
 export function inputValue(before: string, step: Extract<Step, { kind: 'input' }>) {
   return step.replace ? step.text : before + step.text;
 }
-export async function executeStep(device: StepDevice, identity: string, step: Step, expected?: string) {
+export async function verifyForeground(read: () => Promise<string>, target: string, timeoutMs = 10000) {
+  const deadline = performance.now() + timeoutMs;
+  let matched = false;
+  do {
+    const app = await read();
+    if (app === target && matched) return app;
+    matched = app === target;
+    if (performance.now() >= deadline) break;
+    await sleep(250);
+  } while (performance.now() <= deadline);
+  throw new Error('APP_NOT_FOREGROUND');
+}
+
+export async function executeStep(
+  device: StepDevice,
+  identity: string,
+  step: Step | LaunchStep,
+  expected?: string,
+) {
+  if (step.kind === 'launch') {
+    if (expected && observationId(identity, await device.snapshot()) !== expected)
+      throw new Error('STALE_OBSERVATION');
+    const targetApp = await device.launch(step);
+    const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp);
+    return {
+      action: step.kind,
+      status: 'succeeded',
+      requestedApp: step.app,
+      targetApp,
+      foregroundApp,
+      foregroundVerified: true,
+      observationId: expected,
+    };
+  }
   const view = await device.snapshot();
   const id = observationId(identity, view);
   if (expected && expected !== id) throw new Error('STALE_OBSERVATION');

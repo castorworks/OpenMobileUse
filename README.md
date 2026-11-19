@@ -1,6 +1,6 @@
 # Open Mobile Use
 
-从 Mac 操作已授权的鸿蒙、iPhone 和 Android 设备。CLI 可以查看当前界面、按控件或坐标点击、滑动，并在普通输入框中输入中英文。系统设置中的蓝牙导航还支持运行同一份离线脚本，或让 Agent 按实时控件树选择下一步。两种导航模式均由主机检查实际页面和蓝牙读数。[蓝牙脚本](examples/settings-bluetooth.json)
+从 Mac 操作已授权的鸿蒙、iPhone 和 Android 设备。CLI 可以启动指定的已安装 App、查看当前界面、按控件或坐标点击、滑动，并在普通输入框中输入中英文。系统设置中的蓝牙导航还支持运行同一份离线脚本，或让 Agent 按实时控件树选择下一步。两种导航模式均由主机检查实际页面和蓝牙读数。[蓝牙脚本](examples/settings-bluetooth.json)
 
 ## 已验证的设备
 
@@ -57,6 +57,28 @@ node dist/cli.js run --device "$DEVICE" --script examples/settings-bluetooth.jso
 `doctor` 报告设备连接状态和执行结果未知的历史动作。`run` 每轮先记录蓝牙初值，再执行脚本并按顺序核对首页、蓝牙页和首页，最后独立重访蓝牙页复查开关并退回首页。成功时退出码为 0，输出目录内每次运行有一份 JSON 报告。未识别的页面或无法唯一定位的控件会使任务失败。
 
 ## 通用单步操作
+
+### 启动指定 App
+
+用 `launch --app` 打开已安装的应用。`settings` 是三端通用的系统设置别名。其他应用在 Android 上传入包名，在鸿蒙和 iOS 上传入 bundle ID。下面的命令都使用上文从 `devices` 选出的目标设备。
+
+```sh
+node dist/cli.js launch --device "$DEVICE" --app settings --json
+# iPhone 计算器示例
+node dist/cli.js launch --device "$DEVICE" --app com.apple.calculator --json
+```
+
+鸿蒙默认从已安装应用的元数据解析入口，需要选择特定入口时可加 `--ability` 和 `--module`。Android 按当前用户查找应用的桌面入口。启动后，CLI 连续两次读到的前台标识都与目标完全匹配，才返回 `foregroundVerified: true`。结果中的 `targetApp` 是解析后的包名或 bundle ID，`foregroundApp` 是设备实测值。未安装返回 `APP_NOT_INSTALLED`，入口无法解析返回 `APP_NOT_LAUNCHABLE`，前台校验未通过返回 `APP_NOT_FOREGROUND`。
+
+| 设备 | 通过单步命令打开的目标 | 独立复查 |
+| --- | --- | --- |
+| 鸿蒙 BRA-AL00 真机 | 系统设置、计算器 `com.huawei.hmos.calculator`，另验证显式指定 `--module phone --ability CalculatorAbility` | [验证记录](docs/validation/2026-11-19/launch/harmony.json) |
+| iPhone 13 真机，iOS 18.7.7 | 系统设置、计算器 `com.apple.calculator` | [验证记录](docs/validation/2026-11-19/launch/ios.json) |
+| Android 15 模拟器，API 35 | 系统设置、时钟 `com.google.android.deskclock` | [验证记录](docs/validation/2026-11-19/launch/android.json) |
+
+三端均从设置切换到目标 App，在目标已位于前台时再次执行启动，再用 `settings` 返回设置。每次成功后都用独立的 `inspect` 命令核对前台标识。对未安装的包名，三端均返回失败，复查时原应用仍在前台。
+
+### 查看界面、点击、滑动和输入
 
 将目标 App 停在要操作的页面，使用前面得到的 `DEVICE`。单步命令直接操作前台界面，无需配置模型。先运行 `inspect`，在返回的 `directory` 里查看 `screen.png`、原生布局和 `controls.json`。后者列出可见控件的标识、名称、类型、边界和归一化中心。截图与控件树依次采集。如果此间控件发生变化，结果中的 `controlsChangedDuringCapture` 为 `true`。采集文件保存在本机，可能包含输入框内容和其他页面信息。
 

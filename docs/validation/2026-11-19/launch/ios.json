@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-19",
+  "platform": "ios",
+  "model": "iPhone 13",
+  "deviceType": "physical",
+  "system": "iOS 18.7.7 (22H340)",
+  "toolchain": {
+    "driver": "appium-xcuitest-driver",
+    "version": "12.22.8",
+    "appium": "3.9.1",
+    "source": "local installation"
+  },
+  "task": "launch",
+  "status": "succeeded",
+  "verification": "Each launch requested through the single-step CLI. Reopened a separate inspect session to read the foreground app after every case.",
+  "checks": [
+    {
+      "check": "launch-by-id",
+      "requestedApp": "com.apple.calculator",
+      "before": "com.apple.Preferences",
+      "foregroundApp": "com.apple.calculator",
+      "independentForeground": "com.apple.calculator",
+      "runId": "6d4b5fc1-270c-4207-9d48-6f35cb383f62",
+      "durationMs": 5717,
+      "status": "passed",
+      "prelaunchState": {
+        "source": "XCUITest queryAppState",
+        "state": 1,
+        "meaning": "not running"
+      }
+    },
+    {
+      "check": "already-foreground",
+      "requestedApp": "com.apple.calculator",
+      "before": "com.apple.calculator",
+      "foregroundApp": "com.apple.calculator",
+      "independentForeground": "com.apple.calculator",
+      "runId": "ec5bf65b-92ad-42df-b4ee-6b95a0c783be",
+      "durationMs": 1549,
+      "status": "passed"
+    },
+    {
+      "check": "uninstalled-app",
+      "requestedApp": "org.openmobileuse.nonexistent",
+      "before": "com.apple.calculator",
+      "error": "APP_NOT_INSTALLED",
+      "independentForeground": "com.apple.calculator",
+      "runId": "5196e04c-c21f-4a8c-b846-3db9be81b896",
+      "durationMs": 1139,
+      "status": "passed"
+    },
+    {
+      "check": "launch-settings-alias",
+      "requestedApp": "settings",
+      "before": "com.apple.calculator",
+      "foregroundApp": "com.apple.Preferences",
+      "independentForeground": "com.apple.Preferences",
+      "runId": "a20c0c64-2d12-4f9b-879b-cfac91320b5e",
+      "durationMs": 2416,
+      "status": "passed"
+    }
+  ]
+}

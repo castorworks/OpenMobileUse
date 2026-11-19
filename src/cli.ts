@@ -45,7 +45,7 @@ async function main() {
     return;
   }
   const args = process.argv.slice(3);
-  const single = ['tap', 'swipe', 'input'].includes(command)
+  const single = ['tap', 'swipe', 'input', 'launch'].includes(command)
     ? await parseStep(command, args, () => streamText(process.stdin))
     : undefined;
   const values: ReturnType<typeof commonArgs> = single ? { device: single.device } : commonArgs(args);
@@ -130,6 +130,7 @@ async function main() {
         runId,
         platform,
         action: single.step.kind,
+        requestedApp: single.step.kind === 'launch' ? single.step.app : undefined,
         status: 'failed',
         error: /^[A-Z][A-Z_0-9]*(?=:|$)/.exec(msg)?.[0] || 'DEVICE_ERROR',
         detail: msg.startsWith('AMBIGUOUS_ELEMENT:') ? msg : undefined,

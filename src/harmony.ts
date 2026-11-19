@@ -3,8 +3,17 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hdc, run } from './host.js';
-import { harmonyView } from './native-layout.js';
-import { inputValue, pointInView, visibleCenter, type Control, type Step, type View } from './steps.js';
+import { focusedHarmonyWindow, harmonyView } from './native-layout.js';
+import {
+  isAppIdentifier,
+  inputValue,
+  pointInView,
+  visibleCenter,
+  type Control,
+  type LaunchStep,
+  type Step,
+  type View,
+} from './steps.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
 import type { Dispatch } from './session.js';
@@ -13,6 +22,45 @@ const bluetoothTitle = 'bluetooth_entry.title';
 const bluetoothToggle = 'Setting.Fusion.BluetoothSwitchGroup.BluetoothSwitchItem.result';
 type Attr = Record<string, string>;
 type Node = { attributes: Attr; children: Node[] };
+interface HapModule {
+  moduleName: string;
+  mainElementName?: string;
+  mainAbility?: string;
+  abilityInfos?: { name: string }[];
+}
+export function harmonyEntry(output: string, app: string, step: LaunchStep) {
+  if (output.startsWith('error: failed to get information')) throw new Error('APP_NOT_INSTALLED');
+  const start = output.indexOf('{');
+  if (start < 0) throw new Error('BUNDLE_INFO_UNAVAILABLE');
+  const info = JSON.parse(output.slice(start)) as {
+    name: string;
+    entryModuleName?: string;
+    hapModuleInfos: HapModule[];
+  };
+  if (info.name !== app || !Array.isArray(info.hapModuleInfos))
+    throw new Error('BUNDLE_INFO_UNAVAILABLE');
+  const moduleName = step.module ?? (step.ability ? undefined : info.entryModuleName);
+  const entries: { module: string; ability: string }[] = [];
+  for (const mod of info.hapModuleInfos) {
+    if (moduleName && mod.moduleName !== moduleName) continue;
+    const main = mod.mainElementName || mod.mainAbility;
+    const name = step.ability ?? main;
+    if (!name) continue;
+    // Stage bundles can qualify mainElementName while abilityInfos lists the short name.
+    const matches = (mod.abilityInfos ?? []).filter(
+      (a) => a.name === name || app + '.' + a.name === name,
+    );
+    const names = matches.length ? matches.map((a) => a.name) : main === name ? [name] : [];
+    for (const ability of names) {
+      if (!isAppIdentifier(mod.moduleName) || !isAppIdentifier(ability))
+        throw new Error('INVALID_HARMONY_ENTRY');
+      entries.push({ module: mod.moduleName, ability });
+    }
+  }
+  if (!entries.length) throw new Error('APP_NOT_LAUNCHABLE');
+  if (entries.length !== 1) throw new Error('AMBIGUOUS_APP_ENTRY');
+  return entries[0];
+}
 function settingsNodes(node: Node, inherited = '', result: Attr[] = []): Attr[] {
   const owner = node.attributes.bundleName
     ? node.attributes.focused === 'true'
@@ -79,6 +127,32 @@ export class Harmony implements Device {
   }
   async observe() {
     return classifyHarmony(await this.nodes());
+  }
+  async foregroundApp() {
+    return focusedHarmonyWindow(await this.layout())?.attributes.bundleName ?? '';
+  }
+  async launch(step: LaunchStep) {
+    if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
+    const app = step.app === 'settings' ? bundle : step.app;
+    const entry = harmonyEntry(await this.shell('bm', 'dump', '-n', app), app, step);
+    let rejected = false;
+    await this.dispatch('launch', async () => {
+      const response = await this.shell(
+        'aa',
+        'start',
+        '-b',
+        app,
+        '-m',
+        entry.module,
+        '-a',
+        entry.ability,
+      );
+      rejected = /^error:|^failed to start ability/im.test(response);
+      if (!rejected && !response.includes('start ability successfully'))
+        throw new Error('LAUNCH_REPLY_UNAVAILABLE');
+    });
+    if (rejected) throw new Error('APP_LAUNCH_REJECTED');
+    return app;
   }
   async snapshot() {
     const layout = await this.layout();

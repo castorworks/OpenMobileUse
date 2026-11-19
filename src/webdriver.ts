@@ -1,7 +1,15 @@
 import { DOMParser } from '@xmldom/xmldom';
 import { adb, run } from './host.js';
 import { nodeXPath, xmlControls } from './native-layout.js';
-import { inputValue, pointInView, type Control, type Step, type View as StepView } from './steps.js';
+import {
+  isAppIdentifier,
+  inputValue,
+  pointInView,
+  type Control,
+  type LaunchStep,
+  type Step,
+  type View as StepView,
+} from './steps.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
 import type { Dispatch } from './session.js';
@@ -257,20 +265,71 @@ export class WebDriver implements Device {
   private mobile<T>(name: string, args: object = {}) {
     return request<T>(this.url + '/execute/sync', 'POST', { script: 'mobile: ' + name, args: [args] });
   }
-  private async activeApp() {
+  async foregroundApp() {
     return this.platform === 'ios'
       ? (await this.mobile<{ bundleId: string }>('activeAppInfo')).bundleId
       : await this.mobile<string>('getCurrentPackage');
   }
   private async settingsActive() {
-    return (await this.activeApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
+    return (await this.foregroundApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
+  }
+  async launch(step: LaunchStep) {
+    if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
+    if (this.platform === 'ios') {
+      const app = step.app === 'settings' ? iosSettings : step.app;
+      if (!(await this.mobile<boolean>('isAppInstalled', { bundleId: app })))
+        throw new Error('APP_NOT_INSTALLED');
+      // WDA launches a stopped app and activates an already running one.
+      await this.dispatch('launch', () => this.mobile('launchApp', { bundleId: app }));
+      return app;
+    }
+    const shell = (...args: string[]) => run(adb, ['-s', this.id, 'shell', ...args]);
+    const settings = step.app === 'settings';
+    const intent = settings
+      ? ['-a', 'android.settings.SETTINGS']
+      : ['-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', step.app];
+    const resolved = await shell(
+      'cmd',
+      'package',
+      'resolve-activity',
+      '--brief',
+      '--user',
+      'current',
+      ...intent,
+    );
+    const component = resolved.split(/\r?\n/).at(-1) ?? '';
+    const [app, activity] = component.split('/');
+    if (!isAppIdentifier(app) || !activity || (settings ? app === 'android' : app !== step.app)) {
+      if (!settings) {
+        const packages = await shell('pm', 'list', 'packages', '--user', 'current', step.app);
+        if (!packages.split(/\r?\n/).includes('package:' + step.app))
+          throw new Error('APP_NOT_INSTALLED');
+      }
+      throw new Error('APP_NOT_LAUNCHABLE');
+    }
+    let rejected = false;
+    await this.dispatch('launch', async () => {
+      const response = await shell(
+        'am',
+        'start',
+        '-W',
+        '--user',
+        'current',
+        ...intent,
+        ...(settings ? ['-p', app] : []),
+      );
+      rejected = /^Error:/m.test(response);
+      if (!rejected && !/^Status:\s*ok\s*$/m.test(response)) throw new Error('LAUNCH_REPLY_UNAVAILABLE');
+    });
+    if (rejected) throw new Error('APP_LAUNCH_REJECTED');
+    return app;
   }
   async observe(): Promise<View> {
     if (!(await this.settingsActive())) return other;
     return classifyXml(this.platform, await request<string>(this.url + '/source', 'GET'));
   }
   async snapshot(): Promise<StepView> {
-    const app = await this.activeApp();
+    const app = await this.foregroundApp();
     if (!app) throw new Error('FOREGROUND_APP_UNAVAILABLE');
     const rotation = async () => (await request<{ z: number }>(this.url + '/rotation', 'GET')).z;
     const angle = await rotation();
@@ -287,7 +346,7 @@ export class WebDriver implements Device {
     )
       throw new Error('DISPLAY_GEOMETRY_UNAVAILABLE');
     const layout = await request<string>(this.url + '/source', 'GET');
-    if (app !== (await this.activeApp()) || angle !== (await rotation()))
+    if (app !== (await this.foregroundApp()) || angle !== (await rotation()))
       throw new Error('STALE_OBSERVATION');
     const controls = xmlControls(this.platform, layout, app, width, height);
     if (

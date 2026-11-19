@@ -1,0 +1,72 @@
+{
+  "date": "2026-11-19",
+  "platform": "android",
+  "model": "Google APIs ARM64",
+  "deviceType": "emulator",
+  "system": "Android 15 (API 35)",
+  "toolchain": {
+    "driver": "appium-uiautomator2-driver",
+    "version": "8.7.3",
+    "appium": "3.9.1",
+    "source": "local installation"
+  },
+  "task": "launch",
+  "status": "succeeded",
+  "verification": "Each launch requested through the single-step CLI. Reopened a separate inspect session to read the foreground app after every case.",
+  "checks": [
+    {
+      "check": "launch-by-id",
+      "requestedApp": "com.google.android.deskclock",
+      "before": "com.android.settings",
+      "foregroundApp": "com.google.android.deskclock",
+      "independentForeground": "com.google.android.deskclock",
+      "runId": "a0d09634-0f9e-48b7-a6ff-980852400c2f",
+      "durationMs": 2319,
+      "status": "passed",
+      "prelaunchState": {
+        "source": "adb shell pidof",
+        "meaning": "no process for target package"
+      }
+    },
+    {
+      "check": "already-foreground",
+      "requestedApp": "com.google.android.deskclock",
+      "before": "com.google.android.deskclock",
+      "foregroundApp": "com.google.android.deskclock",
+      "independentForeground": "com.google.android.deskclock",
+      "runId": "dd9b760c-9056-43a8-98ea-24fdd2c77bc6",
+      "durationMs": 1889,
+      "status": "passed"
+    },
+    {
+      "check": "uninstalled-app",
+      "requestedApp": "org.openmobileuse.nonexistent",
+      "before": "com.google.android.deskclock",
+      "error": "APP_NOT_INSTALLED",
+      "independentForeground": "com.google.android.deskclock",
+      "runId": "f489a7a4-3376-4745-ab3d-1fc062b4ebfc",
+      "durationMs": 1569,
+      "status": "passed"
+    },
+    {
+      "check": "launch-settings-alias",
+      "requestedApp": "settings",
+      "before": "com.google.android.deskclock",
+      "foregroundApp": "com.android.settings",
+      "independentForeground": "com.android.settings",
+      "runId": "4a6b0f33-9a98-449e-9a38-84ad7ac95f7f",
+      "durationMs": 1915,
+      "status": "passed"
+    },
+    {
+      "check": "installed-without-launcher",
+      "requestedApp": "com.android.providers.calendar",
+      "before": "com.android.settings",
+      "error": "APP_NOT_LAUNCHABLE",
+      "independentForeground": "com.android.settings",
+      "runId": "12cdaa31-0df6-4916-ae4a-11fc17eb78d6",
+      "durationMs": 1554,
+      "status": "passed"
+    }
+  ]
+}

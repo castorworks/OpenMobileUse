@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { saveCapture } from '../dist/inspect.js';
+import { harmonyEntry } from '../dist/harmony.js';
 import {
   executeStep,
   inputValue,
@@ -12,6 +13,7 @@ import {
   pointInView,
   resolveControl,
   visibleCenter,
+  verifyForeground,
 } from '../dist/steps.js';
 import { harmonyView, nodeXPath, xmlControls, xpathLiteral } from '../dist/native-layout.js';
 
@@ -38,6 +40,80 @@ const view = {
 };
 const parse = (cmd, args, read = async () => '') =>
   parseStep(cmd, ['--device', 'ios:example', ...args], read);
+test('launch accepts app IDs and the settings alias, with entry overrides only on Harmony', async () => {
+  assert.equal((await parse('launch', ['--app', 'settings'])).step.app, 'settings');
+  assert.equal((await parse('launch', ['--app', 'com.example.my-app'])).step.app, 'com.example.my-app');
+  for (const args of [
+    [],
+    ['--app', 'com.x;id'],
+    ['--app', 'bad\nname'],
+    ['--app', 'x', '--module', 'main'],
+    ['--app', 'x', '--ability', 'Main'],
+    ['--app', 'x', '--x', '.5'],
+  ])
+    await assert.rejects(parse('launch', args));
+  const { step } = await parseStep(
+    'launch',
+    ['--device', 'harmony:test', '--app', 'com.example', '--module', 'entry', '--ability', 'Main'],
+    async () => '',
+  );
+  assert.equal(step.module, 'entry');
+  assert.equal(step.ability, 'Main');
+});
+test('Harmony resolves the declared module and native ability and rejects missing or ambiguous entries', () => {
+  const app = 'com.example';
+  const step = { kind: 'launch', app };
+  const module = {
+    moduleName: 'phone',
+    mainElementName: app + '.Calc',
+    abilityInfos: [{ name: 'Calc' }],
+  };
+  const dump = JSON.stringify({
+    name: app,
+    entryModuleName: 'phone',
+    hapModuleInfos: [module, { ...module, moduleName: 'secondary' }],
+  });
+  assert.deepEqual(harmonyEntry(dump, app, step), { module: 'phone', ability: 'Calc' });
+  assert.throws(() => harmonyEntry(dump, app, { ...step, ability: 'Calc' }), /AMBIGUOUS_APP_ENTRY/);
+  assert.deepEqual(harmonyEntry(dump, app, { ...step, module: 'secondary', ability: 'Calc' }), {
+    module: 'secondary',
+    ability: 'Calc',
+  });
+  assert.throws(() => harmonyEntry(dump, app, { ...step, ability: 'Missing' }), /APP_NOT_LAUNCHABLE/);
+  assert.throws(() => harmonyEntry('error: failed to get information', app, step), /APP_NOT_INSTALLED/);
+  assert.throws(
+    () => harmonyEntry('[Fail] transport unavailable', app, step),
+    /BUNDLE_INFO_UNAVAILABLE/,
+  );
+});
+test('launch dispatches once and requires consecutive exact foreground samples', async () => {
+  let launches = 0;
+  const target = 'com.example.app',
+    samples = [target, target + '.overlay', target, target];
+  const driver = {
+    launch: async () => {
+      launches++;
+      return target;
+    },
+    foregroundApp: async () => samples.shift(),
+    snapshot: async () => assert.fail('unbound launch must work without a source layout'),
+  };
+  const step = { kind: 'launch', app: target };
+  const result = await executeStep(driver, 'ios:test', step);
+  assert.equal(result.foregroundApp, target);
+  assert.equal(result.foregroundVerified, true);
+  assert.equal(launches, 1);
+  assert.equal(samples.length, 0);
+  await assert.rejects(
+    verifyForeground(async () => target + '.overlay', target, 0),
+    /APP_NOT_FOREGROUND/,
+  );
+  await assert.rejects(
+    executeStep({ ...driver, snapshot: async () => view }, 'ios:test', step, '0'.repeat(64)),
+    /STALE_OBSERVATION/,
+  );
+  assert.equal(launches, 1);
+});
 test('coordinates map screenshot edges into the current logical touch area including landscape', async () => {
   assert.deepEqual(pointInView(view, { x: 1, y: 1 }), { x: 389, y: 843 });
   assert.deepEqual(pointInView({ ...view, width: 844, height: 390 }, { x: 1, y: 0 }), { x: 843, y: 0 });
