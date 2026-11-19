@@ -81,7 +81,7 @@ function startWorkbench(options) {
         }
         if (name === 'platformSetup') {
           if (!Object.hasOwn(resources, args[0])) throw Error('INVALID_PLATFORM');
-          if (args[0] === 'android') await workbench.emulator.ensure();
+          if (args[0] === 'android' && process.platform === 'darwin') await workbench.emulator.ensure();
           else await shell.openExternal(resources[args[0]]);
           return { ok: true };
         }

@@ -2,7 +2,7 @@ import { X509Certificate } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
 import { managedAndroid } from './android-sdk.mjs';
 const exec = promisify(execFile);
@@ -36,26 +36,44 @@ async function signingTeams() {
 }
 export async function configureHost() {
   const env = process.env;
+  const windows = process.platform === 'win32';
   const localSdk = join(managedAndroid(), 'sdk');
   const sdk = first(
     env.ANDROID_HOME,
     env.ANDROID_SDK_ROOT,
+    windows && env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'Android', 'Sdk'),
     existsSync(join(localSdk, 'cmdline-tools/latest/bin/sdkmanager')) && localSdk,
     join(homedir(), 'Library/Android/sdk'),
   );
   const java = first(
     env.JAVA_HOME,
+    windows && env.ProgramFiles && join(env.ProgramFiles, 'Android', 'Android Studio', 'jbr'),
     installed('Android Studio.app/Contents/jbr/Contents/Home'),
     join(managedAndroid(), 'jdk/Contents/Home'),
   );
-  const developer = first(env.DEVELOPER_DIR, installed('Xcode.app/Contents/Developer'));
+  const developer =
+    process.platform === 'darwin' && first(env.DEVELOPER_DIR, installed('Xcode.app/Contents/Developer'));
   const hdc = first(
     env.HDC_PATH,
+    windows &&
+      env.ProgramFiles &&
+      join(
+        env.ProgramFiles,
+        'Huawei',
+        'DevEco Studio',
+        'sdk',
+        'default',
+        'openharmony',
+        'toolchains',
+        'hdc.exe',
+      ),
     installed('DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc'),
   );
   if (sdk) {
     env.ANDROID_HOME = sdk;
-    env.PATH = [...new Set([join(sdk, 'platform-tools'), ...(env.PATH || '').split(':')])].join(':');
+    env.PATH = [...new Set([join(sdk, 'platform-tools'), ...(env.PATH || '').split(delimiter)])].join(
+      delimiter,
+    );
   }
   if (java) env.JAVA_HOME = java;
   if (hdc) env.HDC_PATH = hdc;
@@ -65,7 +83,10 @@ export async function configureHost() {
     env.OMU_IOS_TEAM_ID = teams[0];
   return {
     teams,
-    android: !!(java && first(env.ADB_PATH, sdk && join(sdk, 'platform-tools/adb'))),
+    android: !!(
+      java &&
+      first(env.ADB_PATH, sdk && join(sdk, windows ? 'platform-tools/adb.exe' : 'platform-tools/adb'))
+    ),
     ios: !!developer,
     harmony: !!hdc,
   };

@@ -94,6 +94,7 @@ function installPackages(manager, sdk, packages, confirm, signal) {
 
 export async function ensureAndroid(emulator, confirm, signal, report = () => {}) {
   signal.throwIfAborted();
+  if (process.platform !== 'darwin') throw Error('ANDROID_STUDIO_REQUIRED');
   const base = managedAndroid();
   let sdk = process.env.ANDROID_HOME || join(base, 'sdk');
   let bin = await toolsBin(sdk);

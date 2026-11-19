@@ -12,6 +12,20 @@ function sameWindow(a: View, b: View) {
   );
 }
 
+export function screenshotSize(image: Buffer, view: View) {
+  if (
+    image.length < 24 ||
+    image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' ||
+    image.toString('ascii', 12, 16) !== 'IHDR'
+  )
+    throw new Error('INVALID_PNG');
+  const width = image.readUInt32BE(16),
+    height = image.readUInt32BE(20);
+  if (!width || !height || Math.abs(width / view.width - height / view.height) > 0.02)
+    throw new Error('SCREENSHOT_GEOMETRY_MISMATCH');
+  return { width, height };
+}
+
 export async function captureView(device: StepDevice, identity: string) {
   for (let attempt = 0; attempt < 2; attempt++) {
     let before: View, view: View, image: Buffer;
@@ -23,17 +37,8 @@ export async function captureView(device: StepDevice, identity: string) {
       if ((error as Error).message === 'STALE_OBSERVATION' && attempt === 0) continue;
       throw error;
     }
-    if (
-      image.length < 24 ||
-      image.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a' ||
-      image.toString('ascii', 12, 16) !== 'IHDR'
-    )
-      throw new Error('INVALID_PNG');
-    const width = image.readUInt32BE(16),
-      height = image.readUInt32BE(20);
     if (!sameWindow(before, view)) continue;
-    if (!width || !height || Math.abs(width / view.width - height / view.height) > 0.02)
-      throw new Error('SCREENSHOT_GEOMETRY_MISMATCH');
+    const { width, height } = screenshotSize(image, view);
     const token = observationId(identity, view);
     const metadata = {
       observationId: token,

@@ -24,6 +24,10 @@ const names = {
   execution: '执行',
   verification: '复查',
   tap: '点击',
+  tapScreenText: '点击画面文字',
+  checkScreenText: '核对画面文字',
+  tapImage: '点击画面目标',
+  checkImage: '核对画面目标',
   ask_user: '等待回复',
   finish: '完成',
   check: '核对界面',
@@ -53,6 +57,7 @@ const issues = {
   SETUP_CANCELLED: '已取消环境配置。',
   ANDROID_DOWNLOAD_CHECKSUM: '下载文件校验失败，请重试。',
   ANDROID_SDK_INSTALL_FAILED: 'Android 工具安装失败，请检查网络、磁盘空间和 SDK 许可后重试。',
+  ANDROID_STUDIO_REQUIRED: '请使用 Android Studio 的设备管理器准备并启动模拟器。',
   AVD_CREATE_FAILED: '无法创建工作台模拟器，请检查 SDK 镜像与可用磁盘空间。',
   EMULATOR_START_FAILED: '模拟器启动失败，请检查虚拟化支持和可用磁盘空间。',
   EMULATOR_BOOT_TIMEOUT: '模拟器仍在启动，可稍后重新扫描。',
@@ -62,6 +67,11 @@ const issues = {
   APP_NOT_INSTALLED: '设备上没有找到对应的应用。',
   APP_NOT_LAUNCHABLE: '没有找到可以直接启动的应用入口。',
   ELEMENT_NOT_FOUND: '当前页面上找不到刚才选中的控件。',
+  SCREEN_TEXT_NOT_UNIQUE_OR_MISSING: '画面上的目标文字已消失或出现多次，请核对当前画面。',
+  SCREEN_TEXT_UNAVAILABLE: '本机暂时无法识别画面文字。可在右侧手机画面上定位，再点击选区。',
+  VISUAL_TARGET_UNCLEAR: '画面目标已变化或无法唯一区分，请核对手机画面。',
+  MODEL_IMAGES_UNSUPPORTED: '此模型不支持截图。可选择 deepseek-flash，或关闭截图选项。',
+  SCREENSHOT_GEOMETRY_MISMATCH: '截图与手机触控区域的方向或比例不一致，请刷新画面。',
   AMBIGUOUS_OR_MISSING_ELEMENT: '设备没有找到唯一匹配的控件。',
   DEVICE_UNAVAILABLE: '请检查 USB 连接并重新扫描设备。',
   DEVICE_OFFLINE: '设备已离线，请重新连接。',
@@ -104,7 +114,7 @@ const issues = {
   TIME_BUDGET: '本轮已超时，可以回复以继续。',
   MODEL_KEY_REQUIRED: '请在工作台设置中填写 API Key。',
   INVALID_SETTINGS: '请检查接口地址、模型名称和签名配置。',
-  KEYCHAIN_UNAVAILABLE: '无法保存密钥，请解锁 macOS 钥匙串后重试。',
+  KEYCHAIN_UNAVAILABLE: '无法保存密钥，请检查系统凭据存储后重试。',
 };
 const nice = (s) => names[s] || s || '—';
 const describe = (s) => (issues[s] ? issues[s] + ' (' + s + ')' : s);
@@ -1032,6 +1042,7 @@ function showModel() {
   dialog('工作台设置', true);
   $('endpoint').value = model.endpoint;
   $('model-id').value = model.model;
+  $('use-images').checked = model.useImages === true;
   $('team').value = model.team;
   $('wda-bundle').value = model.bundle;
   $('settings-status').textContent = '';
@@ -1041,15 +1052,16 @@ function showModel() {
     .then((env) => {
       $('teams').replaceChildren(...env.teams.map((t) => new Option(t, t)));
       $('platforms').replaceChildren(
-        ...['ios', 'android', 'harmony'].map((k) => {
+        ...(model.macHost ? ['ios', 'android', 'harmony'] : ['android', 'harmony']).map((k) => {
           const row = element('p', nice(k) + (env[k] ? ' · 已找到工具链' : ' · 缺少平台工具'));
           if (!env[k]) {
-            const link = element('button', k === 'android' ? '自动安装' : '获取平台工具', 'text-button');
+            const canInstall = k === 'android' && model.macHost;
+            const link = element('button', canInstall ? '自动安装' : '获取平台工具', 'text-button');
             link.onclick = async () => {
               link.disabled = true;
               try {
                 await api.platformSetup(k);
-                if (k === 'android') {
+                if (canInstall) {
                   row.textContent = 'Android · 环境已就绪';
                   await scan();
                 }
@@ -1078,6 +1090,7 @@ $('save-key').onclick = async () => {
     model = await api.saveSettings({
       endpoint: $('endpoint').value,
       model: $('model-id').value,
+      useImages: $('use-images').checked,
       key: $('key').value,
       team: $('team').value.trim(),
       bundle: $('wda-bundle').value.trim(),
@@ -1133,6 +1146,7 @@ $('refresh').onclick = () => refresh();
 render();
 api.config().then((v) => {
   model = v;
+  $('emulator').hidden = !model.macHost;
   composer();
 });
 scan();

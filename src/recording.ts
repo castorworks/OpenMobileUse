@@ -2,11 +2,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { Platform } from './host.js';
 import type { Progress } from './run.js';
 import { compileStep, object, reason } from './script.js';
+import { executeTextTarget } from './screen-text.js';
+import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
 import {
   executeStep,
   guardObservation,
   isAppIdentifier,
   matchingControls,
+  screenAvailable,
   uniqueSelector,
   type CommandStep,
   type Control,
@@ -53,15 +56,14 @@ export function recordStep(view: View, command: Record<string, unknown>, node?: 
   return item;
 }
 
-export function screenAvailable(view: View) {
-  if (view.controls.some((c) => c.secret || /Alert|Dialog|Sheet/.test(c.role)))
-    throw Error('SENSITIVE_OR_BLOCKED_SCREEN');
-}
+export { screenAvailable };
 
 type PlaybackStep = {
   source: RecordedStep;
   step?: CommandStep;
   selector?: Selector;
+  screenText?: string;
+  image?: ImageTarget;
 };
 
 export async function compileRecording(data: unknown, platform: Platform): Promise<PlaybackStep[]> {
@@ -110,6 +112,33 @@ export async function compileRecording(data: unknown, platform: Platform): Promi
         throw Error('INVALID_RECORDING');
       source.screen = g as RecordedStep['screen'];
     }
+    if (command.action === 'tapScreenText' || command.action === 'checkScreenText') {
+      if (
+        Object.keys(command).length !== 2 ||
+        typeof command.text !== 'string' ||
+        !command.text.trim() ||
+        command.text.length > 160 ||
+        source.reading ||
+        source.screen
+      )
+        throw Error('INVALID_RECORDING');
+      parsed.push({ source, screenText: command.text });
+      continue;
+    }
+    if (command.action === 'tapImage' || command.action === 'checkImage') {
+      if (
+        Object.keys(command).length !== 3 ||
+        typeof command.label !== 'string' ||
+        !command.label.trim() ||
+        command.label.length > 100 ||
+        !isImageTarget(command.anchor) ||
+        source.reading ||
+        source.screen
+      )
+        throw Error('INVALID_RECORDING');
+      parsed.push({ source, image: command.anchor });
+      continue;
+    }
     if (command.action === 'pause' && Object.keys(command).length === 1 && !source.reading) {
       parsed.push({ source });
       continue;
@@ -141,7 +170,7 @@ export async function replayRecording(
   signal: AbortSignal,
   progress: Progress,
 ) {
-  for (const [index, { source, step, selector }] of steps.entries()) {
+  for (const [index, { source, step, selector, screenText, image }] of steps.entries()) {
     const name = String(source.command.action);
     try {
       const deadline = Date.now() + 8000;
@@ -172,7 +201,18 @@ export async function replayRecording(
               (source.reading?.value === undefined || node.value === source.reading.value)))
         ) {
           try {
-            if (step) {
+            if (image) {
+              await executeImageTarget(device, identity, view, image, name === 'tapImage', signal);
+            } else if (screenText) {
+              await executeTextTarget(
+                device,
+                identity,
+                view,
+                screenText,
+                name === 'tapScreenText' ? 'tap' : 'check',
+                signal,
+              );
+            } else if (step) {
               const validate = guardObservation(identity, view, step, (fresh) => {
                 screenAvailable(fresh);
                 if (g?.anchors.some((a) => matchingControls(fresh, a).length !== 1))
@@ -182,7 +222,14 @@ export async function replayRecording(
             } else if (name === 'pause') await sleep(650, undefined, { signal });
             break;
           } catch (e) {
-            if (reason(e) !== 'STALE_OBSERVATION') throw e;
+            if (
+              ![
+                'STALE_OBSERVATION',
+                'SCREEN_TEXT_NOT_UNIQUE_OR_MISSING',
+                'VISUAL_TARGET_UNCLEAR',
+              ].includes(reason(e))
+            )
+              throw e;
           }
         }
         if (Date.now() >= deadline) throw Error('RECORDING_STATE_MISMATCH');

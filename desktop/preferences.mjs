@@ -34,6 +34,7 @@ export class Preferences {
     this.secure = secure;
     this.endpoint = process.env.OMU_MODEL_BASE_URL || 'https://api.deepseek.com';
     this.model = process.env.OMU_MODEL || 'deepseek-flash';
+    this.useImages = false;
     const name =
       process.env.OMU_MODEL_KEY_ENV ||
       (this.endpoint.replace(/\/$/, '') === 'https://api.deepseek.com' ? 'DEEPSEEK_API_KEY' : undefined);
@@ -57,6 +58,7 @@ export class Preferences {
     if (this.endpoint !== data.endpoint) this.key = undefined;
     this.endpoint = data.endpoint;
     this.model = data.model;
+    this.useImages = data.useImages === true;
     this.keyRequired = data.keyRequired;
     if (data.cipher) {
       try {
@@ -74,7 +76,9 @@ export class Preferences {
     return {
       endpoint: this.endpoint,
       model: this.model,
+      useImages: this.useImages,
       needsKey: this.keyRequired && !this.key,
+      macHost: process.platform === 'darwin',
       hasKey: !!this.key,
       team: this.team || process.env.OMU_IOS_TEAM_ID || '',
       bundle: this.bundle || process.env.OMU_WDA_BUNDLE_ID || 'com.castorworks.openmobileuse.wda',
@@ -89,12 +93,13 @@ export class Preferences {
     if (this.keyRequired && !this.key) throw Error('MODEL_KEY_REQUIRED');
     return modelConfig(options, this.key ? { OMU_DESKTOP_KEY: this.key } : {});
   }
-  async save({ endpoint, model, key, team, bundle }) {
+  async save({ endpoint, model, key, team, bundle, useImages = false }) {
     if (
       [endpoint, model, key, team, bundle].some((s) => typeof s !== 'string') ||
       key.length > 4096 ||
       endpoint.length > 2048 ||
       model.length > 200 ||
+      typeof useImages !== 'boolean' ||
       (team && !/^[A-Z0-9]{10}$/.test(team)) ||
       (bundle && !/^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+$/.test(bundle))
     )
@@ -109,6 +114,12 @@ export class Preferences {
       throw Error('INVALID_SETTINGS');
     }
     const same = normalized.baseURL === this.endpoint.replace(/\/$/, '');
+    if (
+      useImages &&
+      new URL(normalized.baseURL).hostname === 'api.deepseek.com' &&
+      normalized.model === 'deepseek-v4-pro'
+    )
+      throw Error('MODEL_IMAGES_UNSUPPORTED');
     const secret = key.trim() || (same ? this.key : undefined);
     const keyRequired = normalized.baseURL === 'https://api.deepseek.com' || !!secret;
     let cipher;
@@ -122,6 +133,7 @@ export class Preferences {
     await writeJSON(stateRoot(), 'desktop-settings.json', {
       endpoint: normalized.baseURL,
       model: normalized.model,
+      useImages,
       cipher,
       keyRequired,
       team,
@@ -129,6 +141,7 @@ export class Preferences {
     });
     Object.assign(this, {
       endpoint: normalized.baseURL,
+      useImages,
       model: normalized.model,
       key: secret,
       keyRequired,

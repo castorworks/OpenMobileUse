@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, symlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { appiumEndpoint } from '../dist/webdriver.js';
@@ -32,6 +32,8 @@ async function launch(base) {
   const entry = join(project, 'node_modules', 'appium', 'index.js');
   if (!existsSync(entry)) throw Error('APPIUM_NOT_INSTALLED');
   const env = { ...process.env };
+  const pathKey =
+    Object.keys(env).find((k) => process.platform === 'win32' && k.toUpperCase() === 'PATH') || 'PATH';
   const sdk = env.ANDROID_SDK_ROOT || join(homedir(), 'Library', 'Android', 'sdk');
   const jdk = '/Applications/Android Studio.app/Contents/jbr/Contents/Home';
   if (!env.ANDROID_HOME && existsSync(sdk)) env.ANDROID_HOME = sdk;
@@ -52,16 +54,16 @@ async function launch(base) {
     }
     env.APPIUM_HOME = home;
     env.OMU_NODE_BINARY = node;
-    env.PATH = join(project, 'bin') + ':' + env.PATH;
+    env[pathKey] = join(project, 'bin') + delimiter + env[pathKey];
   }
-  env.PATH = [
+  env[pathKey] = [
     env.JAVA_HOME && join(env.JAVA_HOME, 'bin'),
     env.ANDROID_HOME && join(env.ANDROID_HOME, 'platform-tools'),
     dirname(node),
-    env.PATH,
+    env[pathKey],
   ]
     .filter(Boolean)
-    .join(':');
+    .join(delimiter);
   const host = base.hostname === '[::1]' ? '::1' : base.hostname;
   const args = [
     entry,

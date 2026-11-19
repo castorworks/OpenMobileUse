@@ -77,7 +77,7 @@
               <button class="stop" id="chat-stop" hidden>停止</button>
             </div>
           </div>
-          <p class="hint recording-note">AI 读取可见控件，操作和输入内容自动保存到脚本库。</p>
+          <p class="hint recording-note">AI 可读取控件和画面文字。操作和输入内容自动保存到脚本库。</p>
         </section>
         <section id="script-panel" aria-label="脚本库" hidden>
           <label for="script-search" class="sr-only">搜索脚本名称</label>
@@ -193,7 +193,9 @@
         <label for="endpoint">模型接口地址</label><input id="endpoint" type="url" />
         <label for="model-id">模型名称</label><input id="model-id" /> <label for="key">API Key</label
         ><input id="key" type="password" autocomplete="off" />
-        <p class="hint">密钥使用 macOS 钥匙串加密。免鉴权的本机模型可留空。</p>
+        <p class="hint">密钥使用系统凭据保护。免鉴权的本机模型可留空。</p>
+        <label class="checkbox"><input type="checkbox" id="use-images" />允许模型按需查看手机截图</label>
+        <p class="hint">游戏或控件不足时，截图会发往上方模型接口。DeepSeek 可选 deepseek-flash。</p>
         <details id="host-setup">
           <summary>设备环境与 iPhone 签名</summary>
           <div id="platforms"></div>

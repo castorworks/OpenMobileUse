@@ -29,6 +29,20 @@ export interface View {
   screen: Screen;
 }
 export type Selector = { id?: string; label?: string; role?: string };
+
+export function isScreenContainer(view: View, node: Control) {
+  if (/^(?:XCUIElementType)?(?:Application|Window)$/.test(node.role)) return true;
+  const container = /^(?:XCUIElementTypeOther|.*(?:Layout|SurfaceView|TextureView)|Canvas|Stack)$/.test(
+    node.role,
+  );
+  return container && node.bounds.width >= view.width * 0.9 && node.bounds.height >= view.height * 0.9;
+}
+
+export function screenAvailable(view: View) {
+  if (view.controls.some((c) => c.secret || /Alert|Dialog|Sheet/.test(c.role)))
+    throw Error('SENSITIVE_OR_BLOCKED_SCREEN');
+}
+
 export type LaunchStep = { kind: 'launch'; app: string; ability?: string; module?: string };
 // These identifiers may become arguments to the device shell.
 export function isAppIdentifier(value: unknown): value is string {

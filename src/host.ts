@@ -7,10 +7,12 @@ import { createRequire } from 'node:module';
 const exec = promisify(execFile);
 export const hdc =
   process.env.HDC_PATH ||
-  '/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc';
+  (process.platform === 'win32'
+    ? 'hdc.exe'
+    : '/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc');
 const sdkAdb = join(
   process.env.ANDROID_HOME || join(homedir(), 'Library/Android/sdk'),
-  'platform-tools/adb',
+  process.platform === 'win32' ? 'platform-tools/adb.exe' : 'platform-tools/adb',
 );
 export const adb = process.env.ADB_PATH || (existsSync(sdkAdb) ? sdkAdb : 'adb');
 export async function run(bin: string, args: string[], timeout = 12000): Promise<string> {
@@ -47,6 +49,7 @@ export async function agentToolchain(target: Target) {
 }
 export async function list(platform: Platform): Promise<Target[]> {
   if (platform === 'ios') {
+    if (process.platform !== 'darwin') return [];
     const devices = JSON.parse(await run('xcrun', ['xcdevice', 'list', '--timeout', '2'])) as {
       interface?: string;
       error?: { description?: string };

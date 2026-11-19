@@ -7,7 +7,13 @@ import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
 import { compileStep, readScript, reason } from '../dist/script.js';
-import { executeStep, guardObservation, resolveControl, uniqueSelector } from '../dist/steps.js';
+import {
+  executeStep,
+  guardObservation,
+  isScreenContainer,
+  resolveControl,
+  uniqueSelector,
+} from '../dist/steps.js';
 import { executeRound } from '../dist/run.js';
 import {
   listScripts,
@@ -244,16 +250,18 @@ export class Workbench {
     return {
       ...metadata,
       image: imageUrl(image),
-      controls: controls.map((c) => ({
-        id: c.secret ? '' : c.id,
-        labels: c.secret ? [] : c.labels,
-        role: c.role,
-        bounds: c.bounds,
-        enabled: c.enabled,
-        navigation: c.navigation,
-        editable: c.editable && !c.secret,
-        secret: c.secret,
-      })),
+      controls: controls
+        .filter((c) => !isScreenContainer(view, c))
+        .map((c) => ({
+          id: c.secret ? '' : c.id,
+          labels: c.secret ? [] : c.labels,
+          role: c.role,
+          bounds: c.bounds,
+          enabled: c.enabled,
+          navigation: c.navigation,
+          editable: c.editable && !c.secret,
+          secret: c.secret,
+        })),
     };
   }
   refresh(id) {
@@ -341,6 +349,7 @@ export class Workbench {
     const script = entry && !playback ? await readScript(entry.script, t.platform) : undefined;
     const controller = new AbortController();
     const config = conversational ? this.preferences.clientConfig() : undefined;
+    const useImages = conversational && this.preferences.useImages === true;
     const record = {
       id: randomUUID(),
       title: conversational ? imported.message.trim().slice(0, 64) : entry.title,
@@ -450,6 +459,7 @@ export class Workbench {
                   record.activity = activity;
                   notify();
                 },
+                useImages,
               );
             } else if (playback) {
               result = await replayRecording(watched, id, playback, controller.signal, progress);

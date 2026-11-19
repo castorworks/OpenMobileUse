@@ -71,7 +71,7 @@ try {
     await cp(join(project, name), join(appDir, name), { recursive: true });
   }
   for (const name of await readdir(join(project, 'desktop'))) {
-    if (name !== 'package-mac.mjs' && /\.(?:cjs|mjs|js|html|css)$/.test(name))
+    if (!['build-ocr.mjs', 'package-mac.mjs'].includes(name) && /\.(?:cjs|mjs|js|html|css)$/.test(name))
       await copyFile(join(project, 'desktop', name), join(desktop, name));
   }
   const bin = join(appDir, 'bin/node');
