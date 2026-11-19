@@ -1,0 +1,906 @@
+{
+  "runId": "b56896b7-35a1-41ca-b275-073cfd724b02",
+  "platform": "android",
+  "model": "sdk_gphone64_arm64",
+  "task": "settings.bluetoothRoundTrip",
+  "modelId": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com",
+  "servedModels": [
+    "deepseek-flash"
+  ],
+  "toolchain": {
+    "driver": "appium-uiautomator2-driver",
+    "version": "8.7.3",
+    "appium": "3.9.1",
+    "source": "local installation"
+  },
+  "started": "2026-11-19T05:15:22.824Z",
+  "status": "succeeded",
+  "rounds": [
+    {
+      "status": "succeeded",
+      "decisions": 6,
+      "modelCalls": 6,
+      "durationMs": 33607,
+      "initial": true,
+      "final": true,
+      "satisfied": {
+        "baseline": "o1",
+        "arrived": "o5",
+        "returned": "o8",
+        "finalHome": "o10",
+        "statePreserved": "o9"
+      },
+      "missing": [],
+      "evidence": [
+        {
+          "observationId": "o1",
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o2",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o3",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o4",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o5",
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o6",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o7",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o8",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o9",
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o10",
+          "phase": "verification",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备"
+        }
+      ],
+      "actions": [
+        {
+          "observationId": "o2",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "已连接的设备",
+          "after": "o3"
+        },
+        {
+          "observationId": "o3",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "连接偏好设置",
+          "after": "o4"
+        },
+        {
+          "observationId": "o4",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "蓝牙",
+          "after": "o5"
+        },
+        {
+          "observationId": "o5",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o6"
+        },
+        {
+          "observationId": "o6",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o7"
+        },
+        {
+          "observationId": "o7",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o8"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "decisions": 6,
+      "modelCalls": 6,
+      "durationMs": 33115,
+      "initial": true,
+      "final": true,
+      "satisfied": {
+        "baseline": "o1",
+        "arrived": "o5",
+        "returned": "o8",
+        "finalHome": "o10",
+        "statePreserved": "o9"
+      },
+      "missing": [],
+      "evidence": [
+        {
+          "observationId": "o1",
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o2",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o3",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o4",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o5",
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o6",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o7",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o8",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o9",
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o10",
+          "phase": "verification",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备"
+        }
+      ],
+      "actions": [
+        {
+          "observationId": "o2",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "已连接的设备",
+          "after": "o3"
+        },
+        {
+          "observationId": "o3",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "连接偏好设置",
+          "after": "o4"
+        },
+        {
+          "observationId": "o4",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "蓝牙",
+          "after": "o5"
+        },
+        {
+          "observationId": "o5",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o6"
+        },
+        {
+          "observationId": "o6",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o7"
+        },
+        {
+          "observationId": "o7",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o8"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "decisions": 6,
+      "modelCalls": 6,
+      "durationMs": 33066,
+      "initial": true,
+      "final": true,
+      "satisfied": {
+        "baseline": "o1",
+        "arrived": "o5",
+        "returned": "o8",
+        "finalHome": "o10",
+        "statePreserved": "o9"
+      },
+      "missing": [],
+      "evidence": [
+        {
+          "observationId": "o1",
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o2",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o3",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o4",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o5",
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o6",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o7",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o8",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o9",
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o10",
+          "phase": "verification",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备"
+        }
+      ],
+      "actions": [
+        {
+          "observationId": "o2",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "已连接的设备",
+          "after": "o3"
+        },
+        {
+          "observationId": "o3",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "连接偏好设置",
+          "after": "o4"
+        },
+        {
+          "observationId": "o4",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "蓝牙",
+          "after": "o5"
+        },
+        {
+          "observationId": "o5",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o6"
+        },
+        {
+          "observationId": "o6",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o7"
+        },
+        {
+          "observationId": "o7",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o8"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "decisions": 6,
+      "modelCalls": 6,
+      "durationMs": 32807,
+      "initial": true,
+      "final": true,
+      "satisfied": {
+        "baseline": "o1",
+        "arrived": "o5",
+        "returned": "o8",
+        "finalHome": "o10",
+        "statePreserved": "o9"
+      },
+      "missing": [],
+      "evidence": [
+        {
+          "observationId": "o1",
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o2",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o3",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o4",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o5",
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o6",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o7",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o8",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o9",
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o10",
+          "phase": "verification",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备"
+        }
+      ],
+      "actions": [
+        {
+          "observationId": "o2",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "已连接的设备",
+          "after": "o3"
+        },
+        {
+          "observationId": "o3",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "连接偏好设置",
+          "after": "o4"
+        },
+        {
+          "observationId": "o4",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "蓝牙",
+          "after": "o5"
+        },
+        {
+          "observationId": "o5",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o6"
+        },
+        {
+          "observationId": "o6",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o7"
+        },
+        {
+          "observationId": "o7",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o8"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "decisions": 6,
+      "modelCalls": 6,
+      "durationMs": 31699,
+      "initial": true,
+      "final": true,
+      "satisfied": {
+        "baseline": "o1",
+        "arrived": "o5",
+        "returned": "o8",
+        "finalHome": "o10",
+        "statePreserved": "o9"
+      },
+      "missing": [],
+      "evidence": [
+        {
+          "observationId": "o1",
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o2",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o3",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o4",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o5",
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o6",
+          "phase": "execution",
+          "page": "preferences",
+          "marker": "android:id/title:蓝牙",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "蓝牙"
+            },
+            {
+              "id": "n2",
+              "label": "打印"
+            }
+          ]
+        },
+        {
+          "observationId": "o7",
+          "phase": "execution",
+          "page": "connected",
+          "marker": "android:id/title:连接偏好设置",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "连接偏好设置"
+            }
+          ]
+        },
+        {
+          "observationId": "o8",
+          "phase": "execution",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备",
+          "navigationEntries": [
+            {
+              "id": "n1",
+              "label": "网络和互联网"
+            },
+            {
+              "id": "n2",
+              "label": "已连接的设备"
+            }
+          ]
+        },
+        {
+          "observationId": "o9",
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "switch_text:bluetooth + switch_widget",
+          "bluetooth": true
+        },
+        {
+          "observationId": "o10",
+          "phase": "verification",
+          "page": "home",
+          "marker": "android:id/title:已连接的设备"
+        }
+      ],
+      "actions": [
+        {
+          "observationId": "o2",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "已连接的设备",
+          "after": "o3"
+        },
+        {
+          "observationId": "o3",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "连接偏好设置",
+          "after": "o4"
+        },
+        {
+          "observationId": "o4",
+          "tool": "tap",
+          "outcome": "dispatched",
+          "target": "蓝牙",
+          "after": "o5"
+        },
+        {
+          "observationId": "o5",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o6"
+        },
+        {
+          "observationId": "o6",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o7"
+        },
+        {
+          "observationId": "o7",
+          "tool": "back",
+          "outcome": "dispatched",
+          "target": "back",
+          "after": "o8"
+        }
+      ]
+    }
+  ]
+}

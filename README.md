@@ -1,6 +1,6 @@
 # Open Mobile Use
 
-从 Mac 操作已授权的手机。当前 CLI 已实现第一个场景：在系统设置中进入蓝牙页，读取蓝牙开关，再返回设置首页。三个平台共用一份 [JSON 脚本](examples/settings-bluetooth.json)，执行和验收都在本机完成，无需模型或 API Key。
+从 Mac 操作已授权的手机。当前 CLI 支持在系统设置中进入蓝牙页、读取蓝牙开关，再返回设置首页。三端都可以运行同一份[离线脚本](examples/settings-bluetooth.json)，也可以让 Agent 根据实时控件树逐步选择动作。两种模式均由主机检查实际页面和蓝牙读数。
 
 ## 已验证的设备
 
@@ -12,7 +12,7 @@
 | iPhone 15 真机，iOS 26.6.1 | USB · Xcode 27.2 / XCUITest 12.22.8 / 已签名 WDA | 蓝牙 | [5/5 通过](docs/validation/2026-11-19/ios.json) |
 | Android 15 模拟器，API 35，Google APIs ARM64 | ADB / UiAutomator2 8.7.3 | 已连接的设备 → 连接偏好设置 → 蓝牙 | [5/5 通过](docs/validation/2026-11-19/android.json) |
 
-三端均已通过 CLI 采集并回读设置首页的 PNG 和原生控件树。蓝牙关闭初值已有离线测试覆盖。Android 厂商真机、通用单步操作和由模型决定动作的 Agent 仍在 [1.0 方案](docs/v1.0-design.md) 的后续验收范围内。
+三端均已通过 CLI 采集并回读设置首页的 PNG 和原生控件树。蓝牙关闭初值已有离线测试覆盖。Android 厂商真机和通用单步操作仍在 [1.0 方案](docs/v1.0-design.md) 的后续验收范围内。下文单独列出 Agent 的设备和运行记录。
 
 ## 安装
 
@@ -62,3 +62,37 @@ node dist/cli.js run --device "$DEVICE" --script examples/settings-bluetooth.jso
 node dist/cli.js inspect --device "$DEVICE" --output "$HOME/omu-captures"
 npm test
 ```
+
+## 用 Agent 自主导航
+
+完成上面的设备接入，在运行 CLI 的终端设置模型凭据。以下为 macOS 默认 zsh 的输入方式。省略 `--model` 会向 DeepSeek 的 OpenAI 兼容 `/chat/completions` 接口请求 `deepseek-flash`。[DeepSeek 接口文档](https://api-docs.deepseek.com/)
+
+```sh
+read -rs 'DEEPSEEK_API_KEY?DeepSeek API key: ' && export DEEPSEEK_API_KEY
+node dist/cli.js agent --device "$DEVICE" --task settings.bluetoothRoundTrip \
+  --repeat 5 --output "$HOME/omu-agent-results" --json
+unset DEEPSEEK_API_KEY
+```
+
+主机先读取初值并恢复设置首页。执行期间，模型每轮看到当前页面的导航行名称、临时节点编号、可用动作和已完成的检查点。它可以选择点按某一行、返回、等待、提议完成或请求人工接管。主机在点按前重新读取页面，只允许本任务的导航操作。模型请求中包含控件摘要，原始截图、附近设备名和账户信息留在本机。
+
+每轮任务最多 20 次模型决策、120 秒。只有执行阶段依次观察到蓝牙页和返回首页，且最后独立重访读得相同的开关值并再次回到首页，才记为成功。JSON 报告记录模型 ID、模型调用次数、动作前后的观察编号、检查点和耗时。遇到无法辨认的页面会报告 `needs_review`，模型协议、鉴权或设备故障会报告 `failed`。
+
+其他支持函数调用的 Chat Completions 服务可用 `--base-url` 和 `--model` 指定。需要鉴权时，使用 `--api-key-env` 指定该端点专用的凭据变量。本地免鉴权服务可省略该参数。
+
+```sh
+node dist/cli.js agent --device "$DEVICE" --task settings.bluetoothRoundTrip \
+  --base-url http://127.0.0.1:8000/v1 --model local-tool-model --json
+```
+
+### Agent 验证记录
+
+2026-11-19 通过默认端点连续运行，每端 5 轮。请求与服务回复的模型 ID 均为 `deepseek-flash`。耗时为五轮任务实测之和，包含基线采集、模型决策、设备动作和结束复查。
+
+| 设备 | 设置语言 | 结果 | 模型调用 | 五轮耗时 |
+| --- | --- | --- | ---: | ---: |
+| 鸿蒙 BRA-AL00 真机，7.0.0.111 | 简体中文 | [5/5](docs/validation/2026-11-19/agent/harmony.json) | 10 | 215.9 秒 |
+| iPhone 13 真机，iOS 18.7.7 | 英文 | [5/5](docs/validation/2026-11-19/agent/ios.json) | 10 | 226.8 秒 |
+| Android 15 模拟器，Google APIs ARM64，API 35 | 简体中文 | [5/5](docs/validation/2026-11-19/agent/android.json) | 30 | 164.3 秒 |
+
+三端每轮的初始、到达和复查读数均为开启，每轮均结束在设置首页。iPhone 13 使用机主现有的英文设置界面，页面识别依据该版 iOS 的蓝牙导航栏、开关和返回按钮。Android 每轮由模型选择六次动作，进入和返回各经过三级菜单。

@@ -21,16 +21,33 @@ function settingsNodes(node: Node, inherited = '', result: Attr[] = []): Attr[] 
   return result;
 }
 export function classifyHarmony(attrs: Attr[]): Screen {
+  if (attrs.some((n) => ['AlertDialog', 'Dialog', 'Sheet'].includes(n.type))) return { page: 'other' };
   const switches = attrs.filter(
     (n) => n.id === bluetoothToggle && n.type === 'Toggle' && n.checkable === 'true',
   );
   if (switches.length === 1 && ['true', 'false'].includes(switches[0].checked))
-    return { page: 'bluetooth', marker: bluetoothToggle, bluetooth: switches[0].checked === 'true' };
-  if (
-    attrs.some((n) => n.id === 'wifi_entry.title') &&
-    attrs.filter((n) => n.id === bluetoothTitle).length === 1
-  )
-    return { page: 'home', marker: bluetoothTitle };
+    return {
+      page: 'bluetooth',
+      marker: bluetoothToggle,
+      bluetooth: switches[0].checked === 'true',
+      layoutKey: switches[0].bounds,
+    };
+  const titles = attrs.filter((n) => n.id === bluetoothTitle);
+  if (attrs.filter((n) => n.id === 'wifi_entry.title').length === 1 && titles.length === 1) {
+    const rows = attrs.filter((n) => n.id === bluetoothTitle || n.id === 'wifi_entry.title');
+    return {
+      page: 'home',
+      marker: bluetoothTitle,
+      entries: rows.map((n) => ({
+        key: n.id,
+        label: ['星闪和蓝牙', '蓝牙', 'Bluetooth', 'WLAN', '无线局域网', 'Wi-Fi'].includes(n.text)
+          ? n.text
+          : n.id,
+        allowed: n.id === bluetoothTitle,
+      })),
+      layoutKey: rows.map((n) => n.bounds).join('/'),
+    };
+  }
   return { page: 'other' };
 }
 export class Harmony implements Device {
@@ -79,7 +96,7 @@ export class Harmony implements Device {
       }
     }
   }
-  async move(action: Move, from: Screen) {
+  async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {
       await this.dispatch(action, async () => {
         const out = await this.shell('aa', 'start', '-b', bundle, '-a', bundle + '.MainAbility');
@@ -88,12 +105,17 @@ export class Harmony implements Device {
       return;
     }
     const attrs = await this.nodes();
-    if (classifyHarmony(attrs).page !== from.page) throw new Error('STALE_OBSERVATION');
+    const current = classifyHarmony(attrs);
+    if (current.page !== from.page || current.layoutKey !== from.layoutKey)
+      throw new Error('STALE_OBSERVATION');
     let args: string[];
     if (action === 'back' && from.page === 'bluetooth') {
       args = ['keyEvent', 'Back'];
-    } else if (action === 'forward' && from.page === 'home') {
-      const title = attrs.find((n) => n.id === bluetoothTitle)!;
+    } else if ((action === 'forward' || action === 'tap') && from.page === 'home') {
+      const key = action === 'forward' ? bluetoothTitle : entryKey;
+      if (!current.entries?.some((e) => e.allowed && e.key === key))
+        throw new Error('TARGET_OUT_OF_SCOPE');
+      const title = attrs.find((n) => n.id === key)!;
       const box = /^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(title.bounds);
       if (!box || +box[3] <= +box[1] || +box[4] <= +box[2])
         throw new Error('Navigation entry has no visible bounds');

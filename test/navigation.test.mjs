@@ -80,3 +80,17 @@ test('Android switch needs its Settings package and Bluetooth-specific label', (
   assert.equal(classifyXml('android', xml('com.android.settings', '使用 WLAN')).page, 'other');
   assert.equal(classifyXml('android', xml('other', '启用蓝牙')).page, 'other');
 });
+test('iOS 18 requires the localized Bluetooth navigation bar and its own back button', () => {
+  const back = '<button type="XCUIElementTypeButton" name="Settings" visible="true"/>';
+  const bar = (inner) =>
+    '<bar type="XCUIElementTypeNavigationBar" name="Bluetooth" visible="true">' + inner + '</bar>';
+  const toggle = '<switch type="XCUIElementTypeSwitch" name="Bluetooth" value="1" visible="true"/>';
+  const xml = (body) => '<AppiumAUT>' + body + '</AppiumAUT>';
+  assert.equal(classifyXml('ios', xml(bar(back) + toggle)).bluetooth, true);
+  assert.equal(classifyXml('ios', xml(bar('') + back + toggle)).page, 'other');
+  assert.equal(
+    classifyXml('ios', xml(bar(back) + toggle + '<alert type="XCUIElementTypeAlert" visible="true"/>'))
+      .page,
+    'other',
+  );
+});

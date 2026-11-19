@@ -10,12 +10,46 @@ const iosSettings = 'com.apple.Preferences';
 const androidSettings = 'com.android.settings';
 const elementKey = 'element-6066-11e4-a52e-4f735466cecf';
 const other: View = { page: 'other' };
+function androidTitle(label: string): Locator {
+  return {
+    using: '-android uiautomator',
+    value: `new UiSelector().packageName("com.android.settings").resourceId("android:id/title").text(${JSON.stringify(label)})`,
+  };
+}
+const navigationLabels = new Set([
+  '已连接的设备',
+  'Connected devices',
+  '连接偏好设置',
+  'Connection preferences',
+  '蓝牙',
+  'Bluetooth',
+  '网络和互联网',
+  '网络和 Internet',
+  'Network & internet',
+  '显示',
+  'Display',
+  '配对新设备',
+  'Pair new device',
+  '投射',
+  'Cast',
+  'NFC',
+  '打印',
+  'Printing',
+]);
 
 export function classifyXml(platform: Family, source: string): View {
   const document = new DOMParser().parseFromString(source, 'application/xml');
   const nodes = Array.from(document.getElementsByTagName('*'));
+  const geometry = (node: (typeof nodes)[number]) =>
+    ['x', 'y', 'width', 'height', 'bounds'].map((k) => node.getAttribute(k) || '').join(',');
   if (platform === 'ios') {
     const visible = nodes.filter((n) => n.getAttribute('visible') === 'true');
+    if (
+      visible.some((n) =>
+        ['XCUIElementTypeAlert', 'XCUIElementTypeSheet'].includes(n.getAttribute('type') || ''),
+      )
+    )
+      return other;
     const match = (type: string, name: string) =>
       visible.filter(
         (n) => n.getAttribute('type') === 'XCUIElementType' + type && n.getAttribute('name') === name,
@@ -23,12 +57,30 @@ export function classifyXml(platform: Family, source: string): View {
     if (
       match('Button', 'com.apple.settings.bluetooth').length === 1 &&
       match('Button', 'com.apple.settings.wifi').length === 1
-    )
+    ) {
+      const rows = visible.filter(
+        (n) =>
+          n.getAttribute('type') === 'XCUIElementTypeButton' &&
+          ['com.apple.settings.wifi', 'com.apple.settings.bluetooth'].includes(
+            n.getAttribute('name') || '',
+          ),
+      );
       return {
         page: 'home',
         marker: 'com.apple.settings.bluetooth',
+        entries: rows.map((n) => {
+          const key = n.getAttribute('name')!;
+          const allowed = key === 'com.apple.settings.bluetooth';
+          // The full accessibility label can contain the current SSID or accessory name.
+          const title = Array.from(n.getElementsByTagName('XCUIElementTypeStaticText'))
+            .map((text) => text.getAttribute('label'))
+            .find((text) => ['蓝牙', 'Bluetooth', 'Wi-Fi', '无线局域网', 'WLAN'].includes(text || ''));
+          return { key, allowed, label: title || (allowed ? 'Bluetooth' : 'Wi-Fi') };
+        }),
+        layoutKey: rows.map(geometry).join('/'),
         forward: { using: 'accessibility id', value: 'com.apple.settings.bluetooth' },
       };
+    }
     const toggles = match('Switch', 'BLUETOOTH');
     const value = toggles[0]?.getAttribute('value');
     if (
@@ -40,11 +92,48 @@ export function classifyXml(platform: Family, source: string): View {
         page: 'bluetooth',
         bluetooth: value === '1',
         marker: 'BLUETOOTH',
+        layoutKey: geometry(match('Button', 'BackButton')[0]) + '/' + geometry(toggles[0]),
         back: { using: 'accessibility id', value: 'BackButton' },
       };
+    // iOS 18 exposes localized names for the switch and the parent-page back button.
+    for (const [title, parent] of [
+      ['Bluetooth', 'Settings'],
+      ['蓝牙', '设置'],
+    ]) {
+      const bars = match('NavigationBar', title);
+      const switches = match('Switch', title);
+      const buttons = match('Button', parent);
+      const state = switches[0]?.getAttribute('value');
+      if (
+        bars.length === 1 &&
+        buttons.length === 1 &&
+        switches.length === 1 &&
+        bars[0].contains(buttons[0]) &&
+        (state === '0' || state === '1')
+      ) {
+        return {
+          page: 'bluetooth',
+          bluetooth: state === '1',
+          marker: title + ' navigation bar + switch',
+          layoutKey: geometry(buttons[0]) + '/' + geometry(switches[0]),
+          back: {
+            using: '-ios predicate string',
+            value: `type == "XCUIElementTypeButton" AND name == "${parent}" AND visible == 1`,
+          },
+        };
+      }
+    }
     return other;
   }
   const owned = nodes.filter((n) => n.getAttribute('package') === androidSettings);
+  if (
+    nodes.some(
+      (n) =>
+        n.getAttribute('resource-id') === 'android:id/alertTitle' ||
+        n.getAttribute('package') === 'com.android.permissioncontroller',
+    )
+  )
+    return other;
   const id = (value: string) => owned.filter((n) => n.getAttribute('resource-id') === value);
   const switchLabel = id(androidSettings + ':id/switch_text');
   const toggle = id('android:id/switch_widget').filter(
@@ -60,6 +149,7 @@ export function classifyXml(platform: Family, source: string): View {
     return {
       page: 'bluetooth',
       marker: 'switch_text:bluetooth + switch_widget',
+      layoutKey: geometry(toggle[0]),
       bluetooth: checked === 'true',
     };
   const routes = [
@@ -74,13 +164,23 @@ export function classifyXml(platform: Family, source: string): View {
     );
     if (entries.length === 1) {
       const label = entries[0].getAttribute('text')!;
+      const titles = id('android:id/title');
+      const rows = titles.filter((n) => {
+        const text = n.getAttribute('text') || '';
+        return (
+          navigationLabels.has(text) &&
+          titles.filter((other) => other.getAttribute('text') === text).length === 1
+        );
+      });
       return {
         page: route.page,
         marker: 'android:id/title:' + label,
-        forward: {
-          using: '-android uiautomator',
-          value: `new UiSelector().packageName("com.android.settings").resourceId("android:id/title").text(${JSON.stringify(label)})`,
-        },
+        entries: rows.map((n) => {
+          const key = n.getAttribute('text')!;
+          return { key, label: key, allowed: route.labels.some((l) => l === key) };
+        }),
+        layoutKey: rows.map(geometry).join('/'),
+        forward: androidTitle(label),
       };
     }
   }
@@ -168,7 +268,7 @@ export class WebDriver implements Device {
     if ((await this.observe()).page !== screen.page) throw new Error('STALE_OBSERVATION');
     return { image, layout, screen };
   }
-  async move(action: Move, from: Screen) {
+  async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {
       await this.dispatch(action, async () => {
         if (this.platform === 'ios') await this.mobile('activateApp', { bundleId: iosSettings });
@@ -187,7 +287,8 @@ export class WebDriver implements Device {
       return;
     }
     const now = await this.observe();
-    if (now.page !== from.page || now.marker !== from.marker) throw new Error('STALE_OBSERVATION');
+    if (now.page !== from.page || now.marker !== from.marker || now.layoutKey !== from.layoutKey)
+      throw new Error('STALE_OBSERVATION');
     if (
       action === 'back' &&
       this.platform === 'android' &&
@@ -196,7 +297,15 @@ export class WebDriver implements Device {
       await this.dispatch(action, () => request(this.url + '/back', 'POST', {}));
       return;
     }
-    const locator = action === 'forward' ? now.forward : now.back;
+    let locator = action === 'forward' ? now.forward : now.back;
+    if (action === 'tap') {
+      const entry = now.entries?.find((e) => e.key === entryKey && e.allowed);
+      if (!entry) throw new Error('TARGET_OUT_OF_SCOPE');
+      locator =
+        this.platform === 'ios'
+          ? { using: 'accessibility id', value: entry.key }
+          : androidTitle(entry.key);
+    }
     if (!locator) throw new Error('Unsupported Settings navigation target');
     const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
     if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');

@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 const exec = promisify(execFile);
 export const hdc =
   process.env.HDC_PATH ||
@@ -23,6 +24,23 @@ export interface Target {
   id: string;
   model: string;
   available: boolean;
+}
+export async function agentToolchain(target: Target) {
+  if (target.platform === 'harmony') {
+    const [bridge, version] = await Promise.all([
+      run(hdc, ['-v']),
+      run(hdc, ['-t', target.id, 'shell', 'uitest', '--version']),
+    ]);
+    return { driver: 'UITest', version, bridge };
+  }
+  const require = createRequire(import.meta.url);
+  const pkg = target.platform === 'ios' ? 'appium-xcuitest-driver' : 'appium-uiautomator2-driver';
+  return {
+    driver: pkg,
+    version: require(pkg + '/package.json').version as string,
+    appium: require('appium/package.json').version as string,
+    source: 'local installation',
+  };
 }
 export async function list(platform: Platform): Promise<Target[]> {
   if (platform === 'ios') {

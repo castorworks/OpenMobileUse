@@ -5,11 +5,13 @@ export interface Screen {
   page: Page;
   bluetooth?: boolean;
   marker?: string;
+  entries?: { key: string; label: string; allowed: boolean }[];
+  layoutKey?: string;
 }
-export type Move = 'openSettings' | 'forward' | 'back';
+export type Move = 'openSettings' | 'forward' | 'back' | 'tap';
 export interface Device {
   observe(): Promise<Screen>;
-  move(action: Move, from: Screen): Promise<void>;
+  move(action: Move, from: Screen, entryKey?: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -66,6 +68,35 @@ async function wait(device: Device, match: (s: Screen) => boolean, timeout: numb
   throw new Error(`PAGE_NOT_OBSERVED: expected ${expected}, saw ${screen.page}`);
 }
 
+export async function route(device: Device, dest: 'home' | 'bluetooth', timeout: number) {
+  let s = await device.observe();
+  const seen = new Set<Page>();
+  while (s.page !== dest) {
+    if (s.page === 'other' || seen.has(s.page))
+      throw new Error(`UNSUPPORTED_ROUTE: ${s.page} to ${dest}`);
+    const previous = s.page;
+    seen.add(previous);
+    await device.move(dest === 'home' ? 'back' : 'forward', s);
+    s = await wait(device, (x) => x.page !== previous && x.page !== 'other', timeout, dest);
+  }
+  return s;
+}
+export function readBluetooth(s: Screen) {
+  if (s.page !== 'bluetooth' || typeof s.bluetooth !== 'boolean')
+    throw new Error('BLUETOOTH_STATE_UNREADABLE');
+  return s.bluetooth;
+}
+
+export async function prepareBluetooth(device: Device) {
+  await device.move('openSettings', { page: 'other' });
+  await wait(device, (s) => s.page !== 'other', 5000, 'Settings');
+  await route(device, 'home', 5000);
+  const baseline = await route(device, 'bluetooth', 5000);
+  readBluetooth(baseline);
+  await route(device, 'home', 5000);
+  return baseline;
+}
+
 export async function roundTrip(device: Device, script: Step[]) {
   const evidence: { seq: number; phase: string; page: Page; marker: string; bluetooth?: boolean }[] = [];
   const record = (phase: string, s: Screen) => {
@@ -78,37 +109,15 @@ export async function roundTrip(device: Device, script: Step[]) {
       bluetooth: s.bluetooth,
     });
   };
-  async function route(dest: 'home' | 'bluetooth', timeout: number) {
-    let s = await device.observe();
-    const seen = new Set<Page>();
-    while (s.page !== dest) {
-      if (s.page === 'other' || seen.has(s.page))
-        throw new Error(`UNSUPPORTED_ROUTE: ${s.page} to ${dest}`);
-      const previous = s.page;
-      seen.add(previous);
-      await device.move(dest === 'home' ? 'back' : 'forward', s);
-      s = await wait(device, (x) => x.page !== previous && x.page !== 'other', timeout, dest);
-    }
-    return s;
-  }
-  const readBluetooth = (s: Screen) => {
-    if (s.page !== 'bluetooth' || typeof s.bluetooth !== 'boolean')
-      throw new Error('BLUETOOTH_STATE_UNREADABLE');
-    return s.bluetooth;
-  };
-  await device.move('openSettings', { page: 'other' });
-  await wait(device, (s) => s.page !== 'other', 5000, 'Settings');
-  await route('home', 5000);
-  const pre = await route('bluetooth', 5000);
+  const pre = await prepareBluetooth(device);
   const initial = readBluetooth(pre);
   record('preflight', pre);
-  await route('home', 5000);
   const milestones = ['home', 'bluetooth', 'home'];
   let reached = 0;
   for (const step of script) {
     if (step.action === 'launchApp') await device.move('openSettings', { page: 'other' });
     if (step.action === 'route')
-      await route(step.name === 'settings.toBluetooth' ? 'bluetooth' : 'home', 5000);
+      await route(device, step.name === 'settings.toBluetooth' ? 'bluetooth' : 'home', 5000);
     if (step.action === 'waitFor') {
       const page = step.target === 'bluetooth.pageMarker' ? 'bluetooth' : 'home';
       const s = await wait(device, (o) => o.page === page, step.timeoutMs, page);
@@ -120,10 +129,10 @@ export async function roundTrip(device: Device, script: Step[]) {
   }
   if (reached !== milestones.length || (await device.observe()).page !== 'home')
     throw new Error('MISSING_EXECUTION_EVIDENCE');
-  const post = await route('bluetooth', 5000);
+  const post = await route(device, 'bluetooth', 5000);
   const final = readBluetooth(post);
   record('verification', post);
-  record('verification', await route('home', 5000));
+  record('verification', await route(device, 'home', 5000));
   if (final !== initial) throw new Error('BLUETOOTH_STATE_CHANGED');
   return { status: 'succeeded', initial, final, evidence };
 }
