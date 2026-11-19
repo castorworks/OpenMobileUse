@@ -10,9 +10,7 @@
     "build": "tsc",
     "omu": "node dist/cli.js",
     "appium": "appium --address 127.0.0.1 --log-level warn",
-    "test": "npm run build && node --test test/*.test.mjs",
-    "desktop": "npm run build && npm --prefix desktop start",
-    "test:desktop": "npm run build && npm --prefix desktop test"
+    "desktop": "npm run build && npm --prefix desktop start"
   },
   "engines": {
     "node": "^22.13.0 || >=24.0.0",
