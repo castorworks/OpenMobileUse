@@ -1,0 +1,239 @@
+{
+  "runId": "0f6354d8-ed05-4b6e-a83a-3613d68d945f",
+  "platform": "ios",
+  "model": "iPhone 15",
+  "started": "2026-11-19T04:06:04.835Z",
+  "status": "succeeded",
+  "rounds": [
+    {
+      "status": "succeeded",
+      "initial": true,
+      "final": true,
+      "evidence": [
+        {
+          "seq": 1,
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 2,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 3,
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 4,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 5,
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 6,
+          "phase": "verification",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "initial": true,
+      "final": true,
+      "evidence": [
+        {
+          "seq": 1,
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 2,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 3,
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 4,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 5,
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 6,
+          "phase": "verification",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "initial": true,
+      "final": true,
+      "evidence": [
+        {
+          "seq": 1,
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 2,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 3,
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 4,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 5,
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 6,
+          "phase": "verification",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "initial": true,
+      "final": true,
+      "evidence": [
+        {
+          "seq": 1,
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 2,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 3,
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 4,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 5,
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 6,
+          "phase": "verification",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        }
+      ]
+    },
+    {
+      "status": "succeeded",
+      "initial": true,
+      "final": true,
+      "evidence": [
+        {
+          "seq": 1,
+          "phase": "preflight",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 2,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 3,
+          "phase": "execution",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 4,
+          "phase": "execution",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        },
+        {
+          "seq": 5,
+          "phase": "verification",
+          "page": "bluetooth",
+          "marker": "BLUETOOTH",
+          "bluetooth": true
+        },
+        {
+          "seq": 6,
+          "phase": "verification",
+          "page": "home",
+          "marker": "com.apple.settings.bluetooth"
+        }
+      ]
+    }
+  ]
+}

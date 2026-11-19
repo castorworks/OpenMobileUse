@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "steps": [
+    { "action": "launchApp", "app": "settings" },
+    { "action": "waitFor", "target": "settings.homeMarker", "state": "visible", "timeoutMs": 5000 },
+    { "action": "route", "name": "settings.toBluetooth" },
+    { "action": "waitFor", "target": "bluetooth.pageMarker", "state": "visible", "timeoutMs": 5000 },
+    { "action": "route", "name": "bluetooth.toSettingsHome" },
+    { "action": "waitFor", "target": "settings.homeMarker", "state": "visible", "timeoutMs": 5000 }
+  ]
+}

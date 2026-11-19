@@ -1,0 +1,29 @@
+{
+  "name": "open-mobile-use",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "omu": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "omu": "node dist/cli.js",
+    "appium": "appium --address 127.0.0.1",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0",
+    "npm": ">=10"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "appium": "3.9.1",
+    "appium-uiautomator2-driver": "8.7.3",
+    "appium-xcuitest-driver": "12.22.8",
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "0.9.12"
+  }
+}
