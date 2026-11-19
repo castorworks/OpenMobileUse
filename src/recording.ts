@@ -25,7 +25,7 @@ export type RecordedStep = {
   reading?: Reading;
   screen?: { width: number; height: number; rotation: number; anchors: Selector[] };
 };
-export const maxRecordingSteps = 512;
+export const maxRecordingSteps = 1000;
 
 export function reading(node?: Control): Reading | undefined {
   if (!node || node.secret) return;

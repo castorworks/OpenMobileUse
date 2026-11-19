@@ -69,13 +69,17 @@ export function messagesFor(
   history: Message[][],
   current: object,
   tools: Tool[],
-  limit = 32000,
+  limit: number | { historyBytes: number } = 32000,
 ) {
   const first: Message = { role: 'system', content: system };
   const last: Message = { role: 'user', content: JSON.stringify(current) };
+  const maxBytes =
+    typeof limit === 'number'
+      ? limit
+      : Buffer.byteLength(JSON.stringify([[first, last], tools])) + limit.historyBytes;
   while (true) {
     const messages = [first, ...history.flat(), last];
-    if (Buffer.byteLength(JSON.stringify([messages, tools])) <= limit) return messages;
+    if (Buffer.byteLength(JSON.stringify([messages, tools])) <= maxBytes) return messages;
     if (!history.length) throw new Error('CONTEXT_BUDGET');
     history.shift();
   }

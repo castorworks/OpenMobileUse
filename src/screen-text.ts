@@ -33,11 +33,12 @@ export async function readScreenText(
   identity: string,
   before: View,
   signal: AbortSignal,
+  captured?: Buffer,
 ) {
   screenAvailable(before);
   signal.throwIfAborted();
   if (process.platform !== 'darwin') throw Error('SCREEN_TEXT_UNAVAILABLE');
-  const image = await device.screenshot();
+  const image = captured ?? (await device.screenshot());
   screenshotSize(image, before);
   const lines = await recognize(image, signal);
   const fresh = await device.snapshot();

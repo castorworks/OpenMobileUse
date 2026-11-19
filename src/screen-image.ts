@@ -66,6 +66,25 @@ export async function modelImage(png: Buffer) {
   return 'data:image/jpeg;base64,' + jpeg.toString('base64');
 }
 
+// Compare the content area for repeated scrolling. Ignore status bars, encoding and minor flicker.
+export async function swipePreview(png: Buffer) {
+  const { default: sharp } = await import('sharp');
+  return sharp(png, { limitInputPixels: 32000000 })
+    .resize(32, 32, { fit: 'fill' })
+    .extract({ left: 0, top: 3, width: 32, height: 26 })
+    .toColourspace('srgb')
+    .removeAlpha()
+    .raw()
+    .toBuffer();
+}
+
+export function swipePreviewChanged(before: Buffer | undefined, after: Buffer) {
+  if (!before) return true;
+  let difference = 0;
+  for (let i = 0; i < after.length; i++) difference += Math.abs(before[i] - after[i]);
+  return difference > after.length * 3;
+}
+
 export async function imageTarget(png: Buffer, point: Point): Promise<ImageTarget> {
   const frame = await pixels(png);
   const w = frame.info.width,

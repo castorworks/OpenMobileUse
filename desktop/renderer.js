@@ -51,6 +51,7 @@ const names = {
   needs_review: '待人工核查',
   STALE_OBSERVATION: '操作目标或前台窗口已变化',
   NO_PROGRESS: '目标状态未变化',
+  VISUAL_TARGET_UNCLEAR: '未能唯一定位画面目标',
   cancelled: '已停止',
 };
 const issues = {

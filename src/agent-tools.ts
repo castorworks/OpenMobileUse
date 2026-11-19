@@ -35,19 +35,18 @@ export function decode(tools: Tool[], name: string, raw: string) {
     !args ||
     typeof args !== 'object' ||
     Array.isArray(args) ||
-    Object.keys(args).length !== schema.required.length
+    schema.required.some((k) => !Object.hasOwn(args, k)) ||
+    Object.keys(args).some((k) => !Object.hasOwn(schema.properties, k))
   )
     return 'INVALID_ARGUMENTS';
   if (args.observationId !== (schema.properties.observationId as { enum: string[] }).enum[0])
     return 'STALE_OBSERVATION';
-  return schema.required.every(
-    (k) =>
-      Object.hasOwn(args, k) &&
-      (schema.properties[k].type === 'number'
-        ? typeof args[k] === 'number' && Number.isFinite(args[k]) && args[k] >= 0 && args[k] <= 1
-        : typeof args[k] === 'string' &&
-          (schema.properties[k].enum?.includes(args[k]) ??
-            args[k].length <= (schema.properties[k].maxLength ?? 0))),
+  return Object.keys(args).every((k) =>
+    schema.properties[k].type === 'number'
+      ? typeof args[k] === 'number' && Number.isFinite(args[k]) && args[k] >= 0 && args[k] <= 1
+      : typeof args[k] === 'string' &&
+        (schema.properties[k].enum?.includes(args[k]) ??
+          args[k].length <= (schema.properties[k].maxLength ?? 0)),
   )
     ? null
     : 'INVALID_ARGUMENTS';
