@@ -24,6 +24,9 @@ export interface Target {
   id: string;
   model: string;
   available: boolean;
+  connection?: string;
+  state?: string;
+  issue?: string;
 }
 export async function agentToolchain(target: Target) {
   if (target.platform === 'harmony') {
@@ -45,6 +48,8 @@ export async function agentToolchain(target: Target) {
 export async function list(platform: Platform): Promise<Target[]> {
   if (platform === 'ios') {
     const devices = JSON.parse(await run('xcrun', ['xcdevice', 'list', '--timeout', '2'])) as {
+      interface?: string;
+      error?: { description?: string };
       simulator: boolean;
       modelName: string;
       identifier: string;
@@ -52,14 +57,29 @@ export async function list(platform: Platform): Promise<Target[]> {
     }[];
     return devices
       .filter((d) => !d.simulator && d.modelName?.startsWith('iPhone'))
-      .map((d) => ({ platform, id: d.identifier, model: d.modelName, available: d.available }));
+      .map((d) => ({
+        platform,
+        id: d.identifier,
+        model: d.modelName,
+        available: d.available,
+        connection: d.interface,
+        state: d.available ? 'device' : 'unavailable',
+        issue: d.error?.description,
+      }));
   }
   if (platform === 'harmony') {
     const lines = (await run(hdc, ['list', 'targets', '-v'])).split('\n');
     return lines
       .map((l) => l.trim().split(/\s+/))
       .filter((parts) => parts.length >= 3 && ['USB', 'TCP'].includes(parts[1]))
-      .map(([id, , state]) => ({ platform, id, model: 'HarmonyOS', available: state === 'Connected' }));
+      .map(([id, connection, state]) => ({
+        platform,
+        id,
+        connection,
+        state,
+        model: 'HarmonyOS',
+        available: state === 'Connected',
+      }));
   }
   return (await run(adb, ['devices', '-l']))
     .split('\n')
@@ -69,6 +89,14 @@ export async function list(platform: Platform): Promise<Target[]> {
       platform,
       id,
       available: state === 'device',
+      state,
+      connection: id.startsWith('emulator-')
+        ? 'emulator'
+        : info.some((s) => s.startsWith('usb:'))
+          ? 'usb'
+          : id.includes(':')
+            ? 'network'
+            : 'unknown',
       model: info.find((k) => k.startsWith('model:'))?.slice(6) || 'Android',
     }));
 }

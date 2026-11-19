@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentToolchain, list, type Platform } from './host.js';
-import { Harmony } from './harmony.js';
-import { parseScript, roundTrip } from './navigation.js';
+import { openDevice, doctor, diagnose, connectionError } from './doctor.js';
+import { parseTask, runTask } from './task.js';
+import { readScript, runScript } from './script.js';
+import { roundTrip } from './navigation.js';
 import { pending, withDevice } from './session.js';
-import { WebDriver } from './webdriver.js';
 import { saveCapture } from './inspect.js';
 import { executeStep, parseStep, stepHelp } from './steps.js';
 import { text as streamText } from 'node:stream/consumers';
@@ -21,7 +22,7 @@ omu devices --json
 omu doctor --device <platform:id> --json
 omu inspect --device <platform:id> --output <dir>
 omu run --device <platform:id> --script examples/settings-bluetooth.json [--repeat 5] [--output <dir>] --json
-omu agent --device <platform:id> --task settings.bluetoothRoundTrip [--model <id>] [--base-url <url>] [--api-key-env <name>] [--repeat 5] [--output <dir>] --json`;
+omu agent --device <platform:id> --task <settings.bluetoothRoundTrip|task.json> [--vision] [--model <id>] [--base-url <url>] [--api-key-env <name>] [--repeat 5] [--output <dir>] --json`;
 function commonArgs(args: string[]) {
   return parseArgs({
     args,
@@ -29,6 +30,7 @@ function commonArgs(args: string[]) {
       device: { type: 'string' },
       script: { type: 'string' },
       task: { type: 'string' },
+      vision: { type: 'boolean' },
       model: { type: 'string' },
       'base-url': { type: 'string' },
       'api-key-env': { type: 'string' },
@@ -45,7 +47,7 @@ async function main() {
     return;
   }
   const args = process.argv.slice(3);
-  const single = ['tap', 'swipe', 'input', 'launch'].includes(command)
+  const single = ['tap', 'swipe', 'input', 'launch', 'back', 'waitFor'].includes(command)
     ? await parseStep(command, args, () => streamText(process.stdin))
     : undefined;
   const values: ReturnType<typeof commonArgs> = single ? { device: single.device } : commonArgs(args);
@@ -69,8 +71,16 @@ async function main() {
     throw new Error(help);
   if (command === 'inspect' && !values.output) throw new Error('--output is required for inspect');
   if (command === 'run' && !values.script) throw new Error('--script is required');
-  if (command === 'agent' && (values.task !== bluetoothTask || values.script))
-    throw new Error('agent requires --task ' + bluetoothTask);
+  if (command === 'agent' && (!values.task || values.script))
+    throw new Error('agent requires --task <registered ID or task.json>');
+  if (values.vision && (command !== 'agent' || values.task === bluetoothTask))
+    throw new Error('--vision requires a task with permitted visual controls');
+  const task =
+    command === 'agent' && values.task !== bluetoothTask
+      ? await parseTask(JSON.parse(await readFile(values.task!, 'utf8')), platform as Platform)
+      : undefined;
+  if (values.vision && !task?.actions.some((a) => a.visual))
+    throw new Error('TASK_HAS_NO_VISUAL_ACTIONS');
   const config =
     command === 'agent'
       ? modelConfig({
@@ -83,32 +93,49 @@ async function main() {
   // Device bridges are child processes. Only the HTTP client needs this credential.
   if (config?.keyEnv) delete process.env[config.keyEnv];
   const cancellation = new AbortController();
-  const cancel = () => cancellation.abort();
+  const cancel = () => cancellation.abort(new Error('CANCELLED'));
   const decide = config && chatClient(config, fetch, (id) => servedModels.add(id), cancellation.signal);
   const script =
-    command === 'run' ? parseScript(JSON.parse(await readFile(values.script!, 'utf8'))) : [];
+    command === 'run'
+      ? await readScript(JSON.parse(await readFile(values.script!, 'utf8')), platform as Platform)
+      : undefined;
   const count = Number(values.repeat || 1);
   if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('--repeat must be 1..100');
   process.exitCode = 1;
-  const target = (await list(platform as Platform)).find((t) => t.id === id);
-  if (command === 'doctor') {
-    const device = target ?? { platform: platform as Platform, id, model: 'unknown', available: false };
-    json({ platform, model: device.model, connected: device.available, unconfirmed: pending(device) });
-    process.exitCode = device.available ? 0 : 1;
+  const runId = randomUUID();
+  let targets;
+  try {
+    targets = await list(platform as Platform);
+  } catch (e) {
+    if (command !== 'doctor') throw e;
+    json({
+      platform,
+      connected: false,
+      controllable: false,
+      unconfirmed: pending({ id, platform: platform as Platform, model: 'unknown', available: false }),
+      probes: [{ stage: 'discovery', ok: false, error: diagnose(e) }],
+    });
     return;
   }
-  if (!target?.available) throw new Error('DEVICE_UNAVAILABLE');
-  const runId = randomUUID();
+  const target = targets.find((t) => t.id === id);
+  if (command === 'doctor') {
+    const device = target ?? { platform: platform as Platform, id, model: 'unknown', available: false };
+    const report = await doctor(device, runId);
+    json(report);
+    process.exitCode = report.controllable ? 0 : 1;
+    return;
+  }
+  if (!target?.available) {
+    json({ runId, platform, status: 'failed', error: connectionError(target) });
+    return;
+  }
   if (single || command === 'inspect') {
     const started = Date.now();
     if (!single) await mkdir(values.output!, { recursive: true, mode: 0o700 });
     try {
       let cleanupError: string | undefined;
       const result = await withDevice(target, runId, async (dispatch) => {
-        const driver =
-          target.platform === 'harmony'
-            ? new Harmony(id, dispatch)
-            : await WebDriver.open(target.platform, id, dispatch, 'foreground');
+        const driver = await openDevice(target, dispatch);
         try {
           return single
             ? await executeStep(driver, values.device!, single.step, single.observation)
@@ -143,7 +170,7 @@ async function main() {
     runId,
     platform,
     model: target.model,
-    task: config && bluetoothTask,
+    task: config && (task?.id ?? bluetoothTask),
     modelId: config?.model,
     endpoint: config?.baseURL,
     servedModels: config ? ([] as string[]) : undefined,
@@ -151,7 +178,9 @@ async function main() {
     cleanupError: undefined as string | undefined,
     started: new Date().toISOString(),
     status: 'failed',
-    rounds: [] as Awaited<ReturnType<typeof roundTrip | typeof runAgent>>[],
+    rounds: [] as Awaited<
+      ReturnType<typeof roundTrip | typeof runAgent | typeof runTask | typeof runScript>
+    >[],
     error: undefined as string | undefined,
   };
   if (config)
@@ -160,24 +189,36 @@ async function main() {
         config.baseURL +
         ' (' +
         config.model +
-        '): Settings navigation labels, Bluetooth state, and task checkpoints',
+        (task
+          ? '): task action names and checkpoints' + (values.vision ? ', requested control images' : '')
+          : '): Settings navigation labels, Bluetooth state, and task checkpoints'),
     );
-  if (decide) {
-    process.once('SIGINT', cancel);
-    process.once('SIGTERM', cancel);
-  }
+  process.once('SIGINT', cancel);
+  process.once('SIGTERM', cancel);
   try {
     await withDevice(target, runId, async (dispatch) => {
       if (config) report.toolchain = await agentToolchain(target);
-      const device =
-        target.platform === 'harmony'
-          ? new Harmony(id, dispatch)
-          : await WebDriver.open(target.platform, id, dispatch);
+      const device = await openDevice(
+        target,
+        (kind, perform) => {
+          cancellation.signal.throwIfAborted();
+          return dispatch(kind, perform);
+        },
+        script?.kind === 'general' || task ? 'foreground' : 'settings',
+      );
       try {
+        const runRound = () => {
+          const signal = cancellation.signal;
+          signal.throwIfAborted();
+          if (decide && task)
+            return runTask(device, values.device!, task, decide, !!values.vision, signal);
+          if (decide) return runAgent(device, decide, undefined, signal);
+          if (script?.kind === 'bluetooth') return roundTrip(device, script.steps, signal);
+          if (script?.kind === 'general') return runScript(device, values.device!, script.steps, signal);
+          throw new Error('MISSING_TASK_OR_SCRIPT');
+        };
         for (let i = 0; i < count; i++) {
-          const round = decide
-            ? await runAgent(device, decide, undefined, cancellation.signal)
-            : await roundTrip(device, script);
+          const round = await runRound();
           report.rounds.push(round);
           if ('reason' in round && round.status !== 'succeeded') {
             report.status = round.status;
@@ -190,7 +231,6 @@ async function main() {
         try {
           await device.close();
         } catch (e) {
-          if (!config) throw e;
           report.cleanupError = 'DEVICE_SESSION_CLOSE_FAILED';
         }
       }

@@ -1,0 +1,433 @@
+{
+  "date": "2026-11-19",
+  "platform": "ios",
+  "model": "iPhone 13",
+  "deviceType": "physical",
+  "system": "iOS 18.7.7 (22H340)",
+  "locale": "Simplified Chinese (zh-Hans)",
+  "localeSetup": "Settings launched with process-local AppleLanguages and AppleLocale arguments. Device-wide language was English.",
+  "toolchain": {
+    "driver": "appium-xcuitest-driver",
+    "version": "12.22.8",
+    "appium": "3.9.1",
+    "source": "local installation"
+  },
+  "bluetoothScript": {
+    "runId": "80d632de-7d1b-47e3-a528-60a7f5788fe5",
+    "started": "2026-11-19T06:50:30.759Z",
+    "status": "succeeded",
+    "rounds": [
+      {
+        "round": 1,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          47,
+          2452,
+          6833,
+          840,
+          5330,
+          2419
+        ]
+      },
+      {
+        "round": 2,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          40,
+          2440,
+          7031,
+          851,
+          5266,
+          2402
+        ]
+      },
+      {
+        "round": 3,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          39,
+          2469,
+          6903,
+          1292,
+          5392,
+          2496
+        ]
+      },
+      {
+        "round": 4,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          39,
+          2442,
+          6885,
+          888,
+          5239,
+          2466
+        ]
+      },
+      {
+        "round": 5,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          45,
+          2489,
+          7001,
+          935,
+          5377,
+          2480
+        ]
+      }
+    ],
+    "earlierAttempt": {
+      "runId": "ae23564a-78bf-4b99-a7c9-beeea867319f",
+      "started": "2026-11-19T06:47:12.363Z",
+      "status": "failed",
+      "error": "PAGE_NOT_OBSERVED: expected bluetooth, saw other",
+      "fix": "Recognize English Bluetooth navigation identifier with a localized Chinese switch and back control on iOS 18."
+    }
+  },
+  "bluetoothAgent": {
+    "runId": "f0745a7b-574a-4ccb-8c3a-6b0e67955122",
+    "started": "2026-11-19T06:54:46.459Z",
+    "status": "succeeded",
+    "task": "settings.bluetoothRoundTrip",
+    "modelId": "deepseek-flash",
+    "servedModels": [
+      "deepseek-flash"
+    ],
+    "endpoint": "https://api.deepseek.com",
+    "rounds": [
+      {
+        "round": 1,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 2,
+        "modelCalls": 2,
+        "durationMs": 48192,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o3",
+          "returned": "o4",
+          "finalHome": "o6",
+          "statePreserved": "o5"
+        },
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "back"
+        ]
+      },
+      {
+        "round": 2,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 2,
+        "modelCalls": 2,
+        "durationMs": 48712,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o3",
+          "returned": "o4",
+          "finalHome": "o6",
+          "statePreserved": "o5"
+        },
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "back"
+        ]
+      },
+      {
+        "round": 3,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 2,
+        "modelCalls": 2,
+        "durationMs": 48562,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o3",
+          "returned": "o4",
+          "finalHome": "o6",
+          "statePreserved": "o5"
+        },
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "back"
+        ]
+      },
+      {
+        "round": 4,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 2,
+        "modelCalls": 2,
+        "durationMs": 48915,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o3",
+          "returned": "o4",
+          "finalHome": "o6",
+          "statePreserved": "o5"
+        },
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "back"
+        ]
+      },
+      {
+        "round": 5,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 2,
+        "modelCalls": 2,
+        "durationMs": 45097,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o3",
+          "returned": "o4",
+          "finalHome": "o6",
+          "statePreserved": "o5"
+        },
+        "arrivedMarker": "蓝牙 navigation bar + switch",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "back"
+        ]
+      }
+    ]
+  },
+  "portableSettingsSearch": {
+    "runId": "c5d31e85-1630-48a3-a465-657eac8050bd",
+    "started": "2026-11-19T07:02:52.317Z",
+    "status": "succeeded",
+    "file": "examples/settings-search.json",
+    "steps": [
+      {
+        "index": 1,
+        "action": "launch",
+        "status": "succeeded",
+        "durationMs": 758
+      },
+      {
+        "index": 2,
+        "action": "tap",
+        "status": "succeeded",
+        "durationMs": 5657
+      },
+      {
+        "index": 3,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 6307
+      },
+      {
+        "index": 4,
+        "action": "input",
+        "status": "succeeded",
+        "durationMs": 12506
+      },
+      {
+        "index": 5,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 6644
+      },
+      {
+        "index": 8,
+        "action": "back",
+        "status": "succeeded",
+        "durationMs": 12625
+      },
+      {
+        "index": 9,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 2989
+      },
+      {
+        "index": 10,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 3118
+      }
+    ]
+  },
+  "visualSettingsSearch": {
+    "runId": "df019f9f-9db8-4f2c-a05c-8a1286a81baa",
+    "started": "2026-11-19T06:58:55.777Z",
+    "status": "succeeded",
+    "task": "ios.openSettingsSearch",
+    "modelId": "deepseek-flash",
+    "servedModels": [
+      "deepseek-flash"
+    ],
+    "endpoint": "https://api.deepseek.com",
+    "file": "examples/agent-open-search-ios.json",
+    "round": {
+      "status": "succeeded",
+      "decisions": 2,
+      "modelCalls": 3,
+      "actions": [
+        {
+          "observationId": "8367bbbb306628849425cfbcc18fc5ef4c175d607c0795dd86bd66030f1191c8",
+          "tool": "request_view",
+          "action": "openSearch",
+          "outcome": "observed"
+        },
+        {
+          "observationId": "8367bbbb306628849425cfbcc18fc5ef4c175d607c0795dd86bd66030f1191c8",
+          "tool": "tap_visual",
+          "action": "openSearch",
+          "outcome": "dispatched"
+        }
+      ],
+      "evidence": [
+        {
+          "name": "searchPageVisible",
+          "observationId": "94ee52ef455f837b742692ffcb8d6175714280d4e52df55d613b6a69e7ebcfa3"
+        }
+      ],
+      "durationMs": 62968,
+      "missing": []
+    },
+    "independentVerification": {
+      "app": "com.apple.Preferences",
+      "control": "取消",
+      "independentReadback": true
+    }
+  },
+  "interruptAndConcurrentAccess": {
+    "status": "passed",
+    "busy": "DEVICE_BUSY",
+    "interruption": "CANCELLED",
+    "attemptedSteps": 1,
+    "postProbe": "home"
+  },
+  "lostWriteAcknowledgement": {
+    "status": "passed",
+    "forwardedWrites": 1,
+    "error": "ACTION_OUTCOME_UNKNOWN",
+    "pendingKind": "tap",
+    "newSessionForeground": "com.apple.Preferences",
+    "newSessionPage": "other",
+    "method": "dropped bridge reply after confirmed native click; physical cable remained connected"
+  },
+  "usbRecovery": {
+    "lost": {
+      "transport": "network",
+      "discovered": true,
+      "controllable": false,
+      "code": "PROBE_FAILED"
+    },
+    "restored": {
+      "connection": "usb",
+      "currentApp": "com.apple.springboard",
+      "page": "other",
+      "controllable": true
+    },
+    "diagnosticUpdate": "Unplugging left a network discovery entry. XCUITest returned Unknown device or simulator UDID. A regression test now maps that observed error to DEVICE_UNAVAILABLE."
+  },
+  "targetSelection": {
+    "target": "ios",
+    "targetForeground": "com.apple.calculator",
+    "otherPages": {
+      "harmony": [
+        "com.huawei.hmos.settings",
+        "home"
+      ],
+      "android": [
+        "com.android.settings",
+        "home"
+      ]
+    },
+    "status": "passed"
+  },
+  "isolatedInstallation": {
+    "newSessionMs": 28068,
+    "firstObservationMs": 2832,
+    "warmScreenshotMs": [
+      190,
+      125,
+      122
+    ],
+    "app": "com.apple.Preferences",
+    "actionSize": [
+      390,
+      844
+    ],
+    "languageEvidence": [
+      "无线局域网",
+      "蓝牙"
+    ]
+  },
+  "selectorFailures": {
+    "missing": "WAIT_TIMEOUT",
+    "duplicate": "AMBIGUOUS_ELEMENT"
+  },
+  "finalCheck": {
+    "connection": "usb",
+    "page": "home",
+    "app": "com.apple.Preferences",
+    "controllable": true,
+    "probeStages": [
+      "connection",
+      "toolchain",
+      "session",
+      "observation"
+    ],
+    "settingsLanguage": "English"
+  }
+}

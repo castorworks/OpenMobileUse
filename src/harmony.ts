@@ -1,3 +1,4 @@
+import { bluetoothDefinition } from './bluetooth-task.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,7 +18,7 @@ import {
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
 import type { Dispatch } from './session.js';
-const bundle = 'com.huawei.hmos.settings';
+const bundle = bluetoothDefinition.apps.harmony;
 const bluetoothTitle = 'bluetooth_entry.title';
 const bluetoothToggle = 'Setting.Fusion.BluetoothSwitchGroup.BluetoothSwitchItem.result';
 type Attr = Record<string, string>;
@@ -184,6 +185,9 @@ export class Harmony implements Device {
   private async inject(...args: string[]) {
     if (!(await this.shell('uitest', 'uiInput', ...args)).includes('No Error'))
       throw new Error('HDC_INPUT_FAILED');
+  }
+  async back() {
+    await this.dispatch('back', () => this.inject('keyEvent', 'Back'));
   }
   async perform(step: Step, view: View, node?: Control) {
     if (step.kind === 'swipe') {

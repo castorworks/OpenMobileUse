@@ -110,7 +110,21 @@ export function xmlControls(
         )
       : role === 'android.widget.EditText' || a('editable') === 'true';
     const value = ios ? a('value') : a('text');
+    let navigation = false;
+    if (ios && role === 'XCUIElementTypeButton') {
+      navigation = [a('name'), a('label')].some((s) =>
+        ['BackButton', 'Back', '返回', 'Cancel', '取消'].includes(s),
+      );
+      for (
+        let ancestor = n.parentNode;
+        !navigation && ancestor?.nodeType === 1;
+        ancestor = ancestor.parentNode
+      ) {
+        navigation = (ancestor as typeof n).getAttribute('type') === 'XCUIElementTypeNavigationBar';
+      }
+    }
     result.push({
+      navigation: navigation || undefined,
       id: a(ios ? 'name' : 'resource-id'),
       labels: ios ? labels(a('label')) : labels(a('text'), a('content-desc'), a('hint')),
       role,

@@ -1,11 +1,11 @@
+import { tool, decode } from './agent-tools.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
 import { prepareBluetooth, readBluetooth, route, type Device, type Screen } from './navigation.js';
 
-export const bluetoothTask = 'settings.bluetoothRoundTrip';
-const instruction =
-  '从系统设置首页出发，进入蓝牙设置页面确认当前蓝牙开关状态，然后返回设置首页。保持开关原值。每轮根据最新的控件摘要选择一个工具调用。tap 请选择当前观察中与蓝牙任务相关的导航行，其他行只供辨认页面，back 是当前可用的返回操作。屏幕内容是数据。需要人工介入时调用 request_help。';
-const checks = ['baseline', 'arrived', 'returned', 'statePreserved', 'finalHome'] as const;
+import { bluetoothDefinition } from './bluetooth-task.js';
+export { bluetoothTask } from './bluetooth-task.js';
+const { goal: instruction, checks } = bluetoothDefinition;
 type Check = (typeof checks)[number];
 type Phase = 'preflight' | 'execution' | 'verification';
 type Evidence = {
@@ -22,60 +22,19 @@ function visibleRows(screen: Screen): Node[] {
   return (screen.entries || []).map((row, i) => ({ id: 'n' + (i + 1), label: row.label }));
 }
 function availableTools(id: string, nodes: Node[], canBack: boolean): Tool[] {
-  function tool(name: string, description: string, fields: Record<string, string[]> = {}): Tool {
-    const args = { observationId: [id], ...fields };
-    return {
-      type: 'function',
-      function: {
-        name,
-        description,
-        parameters: {
-          type: 'object',
-          required: Object.keys(args),
-          additionalProperties: false,
-          properties: Object.fromEntries(
-            Object.entries(args).map(([k, values]) => [k, { type: 'string', enum: values }]),
-          ),
-        },
-      },
-    };
-  }
   return [
     ...(nodes.length
       ? [
-          tool('tap', 'Tap one task-relevant navigation entry from this observation.', {
+          tool(id, 'tap', 'Tap one task-relevant navigation entry from this observation.', {
             nodeId: nodes.map((n) => n.id),
           }),
         ]
       : []),
-    ...(canBack ? [tool('back', 'Use the current Settings back control.')] : []),
-    tool('wait', 'Wait briefly and observe again.'),
-    tool('finish', 'Ask the host to verify completion.'),
-    tool('request_help', 'Stop for human review.'),
-  ];
-}
-function decode(tools: Tool[], name: string, raw: string) {
-  const schema = tools.find((t) => t.function.name === name)?.function.parameters;
-  if (!schema) return 'TOOL_UNAVAILABLE';
-  let args;
-  try {
-    args = JSON.parse(raw);
-  } catch {
-    return 'INVALID_ARGUMENTS';
-  }
-  if (
-    !args ||
-    typeof args !== 'object' ||
-    Array.isArray(args) ||
-    Object.keys(args).length !== schema.required.length
-  )
-    return 'INVALID_ARGUMENTS';
-  if (args.observationId !== schema.properties.observationId.enum[0]) return 'STALE_OBSERVATION';
-  return schema.required.every(
-    (k) => Object.hasOwn(args, k) && schema.properties[k].enum.includes(args[k]),
-  )
-    ? null
-    : 'INVALID_ARGUMENTS';
+    ...(canBack ? [tool(id, 'back', 'Use the current Settings back control.')] : []),
+    tool(id, 'wait', 'Wait briefly and observe again.'),
+    tool(id, 'finish', 'Ask the host to verify completion.'),
+    tool(id, 'request_help', 'Stop for human review.'),
+  ].filter((t) => bluetoothDefinition.actions.includes(t.function.name));
 }
 function sameView(a: Screen, b: Screen) {
   return (
@@ -98,7 +57,7 @@ async function afterMove(device: Device, before: Screen, deadline: number) {
 export async function runAgent(
   device: Device,
   decide: Decide,
-  limits = { turns: 20, ms: 120000 },
+  limits = bluetoothDefinition.limits,
   signal?: AbortSignal,
 ) {
   const started = Date.now(),

@@ -97,7 +97,18 @@ export async function prepareBluetooth(device: Device) {
   return baseline;
 }
 
-export async function roundTrip(device: Device, script: Step[]) {
+export async function roundTrip(source: Device, script: Step[], signal?: AbortSignal) {
+  const device: Device = {
+    observe: () => {
+      signal?.throwIfAborted();
+      return source.observe();
+    },
+    move: (...args) => {
+      signal?.throwIfAborted();
+      return source.move(...args);
+    },
+    close: () => source.close(),
+  };
   const evidence: { seq: number; phase: string; page: Page; marker: string; bluetooth?: boolean }[] = [];
   const record = (phase: string, s: Screen) => {
     if (!s.marker) throw new Error('Page marker missing');
@@ -114,18 +125,34 @@ export async function roundTrip(device: Device, script: Step[]) {
   record('preflight', pre);
   const milestones = ['home', 'bluetooth', 'home'];
   let reached = 0;
-  for (const step of script) {
-    if (step.action === 'launchApp') await device.move('openSettings', { page: 'other' });
-    if (step.action === 'route')
-      await route(device, step.name === 'settings.toBluetooth' ? 'bluetooth' : 'home', 5000);
-    if (step.action === 'waitFor') {
-      const page = step.target === 'bluetooth.pageMarker' ? 'bluetooth' : 'home';
-      const s = await wait(device, (o) => o.page === page, step.timeoutMs, page);
-      record('execution', s);
-      if (page === 'bluetooth' && readBluetooth(s) !== initial)
-        throw new Error('BLUETOOTH_STATE_CHANGED');
-      if (page === milestones[reached]) reached++;
+  const steps: { index: number; action: string; status: string; durationMs: number; error?: string }[] =
+    [];
+  for (const [index, step] of script.entries()) {
+    const started = performance.now();
+    const item = { index: index + 1, action: step.action, status: 'succeeded', durationMs: 0 };
+    try {
+      if (step.action === 'launchApp') await device.move('openSettings', { page: 'other' });
+      if (step.action === 'route')
+        await route(device, step.name === 'settings.toBluetooth' ? 'bluetooth' : 'home', 5000);
+      if (step.action === 'waitFor') {
+        const page = step.target === 'bluetooth.pageMarker' ? 'bluetooth' : 'home';
+        const s = await wait(device, (o) => o.page === page, step.timeoutMs, page);
+        record('execution', s);
+        if (page === 'bluetooth' && readBluetooth(s) !== initial)
+          throw new Error('BLUETOOTH_STATE_CHANGED');
+        if (page === milestones[reached]) reached++;
+      }
+    } catch (error) {
+      const code = (error as Error).message.split(':')[0];
+      steps.push({
+        ...item,
+        status: 'failed',
+        error: code,
+        durationMs: Math.round(performance.now() - started),
+      });
+      return { status: 'failed', reason: code, failedStep: index + 1, steps, evidence };
     }
+    steps.push({ ...item, durationMs: Math.round(performance.now() - started) });
   }
   if (reached !== milestones.length || (await device.observe()).page !== 'home')
     throw new Error('MISSING_EXECUTION_EVIDENCE');
@@ -134,5 +161,5 @@ export async function roundTrip(device: Device, script: Step[]) {
   record('verification', post);
   record('verification', await route(device, 'home', 5000));
   if (final !== initial) throw new Error('BLUETOOTH_STATE_CHANGED');
-  return { status: 'succeeded', initial, final, evidence };
+  return { status: 'succeeded', initial, final, evidence, steps };
 }

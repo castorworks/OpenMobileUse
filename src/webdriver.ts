@@ -1,3 +1,4 @@
+import { bluetoothDefinition } from './bluetooth-task.js';
 import { DOMParser } from '@xmldom/xmldom';
 import { adb, run } from './host.js';
 import { nodeXPath, xmlControls } from './native-layout.js';
@@ -17,8 +18,7 @@ import type { Dispatch } from './session.js';
 type Family = 'android' | 'ios';
 type Locator = { using: string; value: string };
 type View = Screen & { forward?: Locator; back?: Locator };
-const iosSettings = 'com.apple.Preferences';
-const androidSettings = 'com.android.settings';
+const { ios: iosSettings, android: androidSettings } = bluetoothDefinition.apps;
 const elementKey = 'element-6066-11e4-a52e-4f735466cecf';
 const other: View = { page: 'other' };
 function androidTitle(label: string): Locator {
@@ -111,7 +111,7 @@ export function classifyXml(platform: Family, source: string): View {
       ['Bluetooth', 'Settings'],
       ['蓝牙', '设置'],
     ]) {
-      const bars = match('NavigationBar', title);
+      const bars = [...match('NavigationBar', 'Bluetooth'), ...match('NavigationBar', '蓝牙')];
       const switches = match('Switch', title);
       const buttons = match('Button', parent);
       const state = switches[0]?.getAttribute('value');
@@ -419,6 +419,10 @@ export class WebDriver implements Device {
     const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
     if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
     return this.url + '/element/' + encodeURIComponent(hits[0][elementKey]);
+  }
+  async back() {
+    if (this.platform !== 'android') throw new Error('NAVIGATION_BUTTON_REQUIRED');
+    await this.dispatch('back', () => request(this.url + '/back', 'POST', {}));
   }
   async perform(step: Step, view: StepView, node?: Control) {
     if (step.kind === 'swipe' || 'point' in step) {

@@ -14,6 +14,7 @@ export interface Control {
   focused: boolean;
   editable: boolean;
   secret: boolean;
+  navigation?: boolean;
   value?: string;
 }
 export interface View {
@@ -32,6 +33,14 @@ export type LaunchStep = { kind: 'launch'; app: string; ability?: string; module
 export function isAppIdentifier(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/.test(value);
 }
+export type BackStep = { kind: 'back'; selector?: Selector };
+export type WaitStep = {
+  kind: 'waitFor';
+  selector: Selector;
+  state: 'visible' | 'hidden';
+  timeoutMs: number;
+};
+export type CommandStep = Step | BackStep | WaitStep | LaunchStep;
 export type Step =
   | { kind: 'tap'; selector: Selector }
   | { kind: 'tap'; point: Point }
@@ -41,6 +50,7 @@ export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
   perform(step: Step, view: View, node?: Control): Promise<void>;
+  back(): Promise<void>;
   launch(step: LaunchStep): Promise<string>;
   foregroundApp(): Promise<string>;
 }
@@ -49,6 +59,8 @@ omu tap --device <platform:id> --x <0..1> --y <0..1>
 omu swipe --device <platform:id> --from-x <x> --from-y <y> --to-x <x> --to-y <y> [--duration-ms 400]
 omu input --device <platform:id> [--id <id> | --label <label>] [--role <role>] (--text <text> | --stdin) [--replace]
 omu launch --device <platform:id> --app <settings|package-or-bundle-id> [--ability <name>] [--module <name>]
+omu back --device <platform:id> [--id <navigation-control> | --label <name>] [--role <role>]
+omu waitFor --device <platform:id> (--id <id> | --label <name>) [--role <role>] [--state visible|hidden] [--timeout-ms 5000]
 --ability and --module are Harmony-only. All commands accept [--observation <observationId>] [--json].`;
 export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
@@ -75,12 +87,16 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       app: str,
       ability: str,
       module: str,
+      state: str,
+      'timeout-ms': str,
     },
   });
   const byKind: Record<string, string[]> = {
     tap: ['id', 'label', 'role', 'x', 'y'],
     input: ['id', 'label', 'role', 'text', 'stdin', 'replace'],
     swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
+    waitFor: ['id', 'label', 'role', 'state', 'timeout-ms'],
+    back: ['id', 'label', 'role'],
     launch: ['app', 'ability', 'module'],
   };
   const allowed = ['device', 'observation', 'json', ...(byKind[kind] ?? [])];
@@ -106,7 +122,28 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       throw new Error('COORDINATE_OUT_OF_RANGE');
     return Number(raw);
   }
-  let step: Step;
+  let step: CommandStep;
+  if (kind === 'back') {
+    const specified = !!(selector.id || selector.label);
+    if (device.startsWith('ios:') ? !specified : specified || selector.role)
+      throw new Error('BACK_REQUIRES_IOS_NAVIGATION_SELECTOR_ONLY');
+    step = { kind, selector: specified ? selector : undefined };
+    return { step, device, observation };
+  }
+  if (kind === 'waitFor') {
+    const state = v.state ?? 'visible',
+      timeoutMs = Number(v['timeout-ms'] ?? 5000);
+    if (
+      (!selector.id && !selector.label) ||
+      !['visible', 'hidden'].includes(state) ||
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > 60000
+    )
+      throw new Error('INVALID_WAIT');
+    step = { kind, selector, state: state as WaitStep['state'], timeoutMs };
+    return { step, device, observation };
+  }
   if (kind === 'swipe') {
     const from = { x: coordinate(v['from-x']), y: coordinate(v['from-y']) },
       to = { x: coordinate(v['to-x']), y: coordinate(v['to-y']) };
@@ -150,14 +187,18 @@ export function observationId(device: string, view: View) {
     )
     .digest('hex');
 }
-export function resolveControl(view: View, selector: Selector, input: boolean) {
-  const focusedOnly = input && !selector.id && !selector.label;
-  const hits = view.controls.filter(
+export function matchingControls(view: View, selector: Selector) {
+  return view.controls.filter(
     (n) =>
       (!selector.id || n.id === selector.id) &&
       (!selector.label || n.labels.includes(selector.label)) &&
-      (!selector.role || selector.role === n.role) &&
-      (!focusedOnly || (n.focused && (n.editable || n.secret))),
+      (!selector.role || n.role === selector.role),
+  );
+}
+export function resolveControl(view: View, selector: Selector, input: boolean) {
+  const focusedOnly = input && !selector.id && !selector.label;
+  const hits = matchingControls(view, selector).filter(
+    (n) => !focusedOnly || (n.focused && (n.editable || n.secret)),
   );
   if (!hits.length) throw new Error(focusedOnly ? 'NO_FOCUSED_FIELD' : 'ELEMENT_NOT_FOUND');
   if (hits.length !== 1)
@@ -203,9 +244,11 @@ export async function verifyForeground(read: () => Promise<string>, target: stri
 export async function executeStep(
   device: StepDevice,
   identity: string,
-  step: Step | LaunchStep,
+  step: CommandStep,
   expected?: string,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   if (step.kind === 'launch') {
     if (expected && observationId(identity, await device.snapshot()) !== expected)
       throw new Error('STALE_OBSERVATION');
@@ -221,9 +264,43 @@ export async function executeStep(
       observationId: expected,
     };
   }
+  if (step.kind === 'waitFor') {
+    const end = Date.now() + step.timeoutMs;
+    let first = true;
+    for (;;) {
+      signal?.throwIfAborted();
+      try {
+        const current = await device.snapshot();
+        const token = observationId(identity, current);
+        if (first && expected && expected !== token) throw new Error('STALE_OBSERVATION');
+        first = false;
+        const hits = matchingControls(current, step.selector);
+        if (hits.length > 1) throw new Error('AMBIGUOUS_ELEMENT');
+        if ((hits.length === 1) === (step.state === 'visible'))
+          return { action: step.kind, status: 'succeeded', observationId: token };
+      } catch (e) {
+        if (
+          expected ||
+          !['STALE_OBSERVATION', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes((e as Error).message)
+        )
+          throw e;
+      }
+      if (Date.now() >= end) throw new Error('WAIT_TIMEOUT');
+      await sleep(Math.min(200, end - Date.now()), undefined, { signal });
+    }
+  }
   const view = await device.snapshot();
   const id = observationId(identity, view);
   if (expected && expected !== id) throw new Error('STALE_OBSERVATION');
+  signal?.throwIfAborted();
+  if (step.kind === 'back') {
+    if (step.selector) {
+      const node = resolveControl(view, step.selector, false);
+      if (!node.navigation) throw new Error('NAVIGATION_BUTTON_REQUIRED');
+      await device.perform({ kind: 'tap', selector: step.selector }, view, node);
+    } else await device.back();
+    return { action: step.kind, status: 'succeeded', observationId: id };
+  }
   const node =
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);

@@ -1,0 +1,444 @@
+{
+  "date": "2026-11-19",
+  "platform": "android",
+  "model": "Google APIs ARM64",
+  "deviceType": "emulator",
+  "system": "Android 15 (API 35)",
+  "locale": "Simplified Chinese (zh-CN)",
+  "toolchain": {
+    "driver": "appium-uiautomator2-driver",
+    "version": "8.7.3",
+    "appium": "3.9.1",
+    "source": "local installation"
+  },
+  "bluetoothScript": {
+    "runId": "e61b0573-1f7f-465c-a941-b1395fe4253f",
+    "started": "2026-11-19T06:47:23.035Z",
+    "status": "succeeded",
+    "rounds": [
+      {
+        "round": 1,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          33,
+          43,
+          3895,
+          32,
+          3363,
+          40
+        ]
+      },
+      {
+        "round": 2,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          29,
+          36,
+          3868,
+          31,
+          3347,
+          46
+        ]
+      },
+      {
+        "round": 3,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          30,
+          37,
+          3883,
+          28,
+          3342,
+          41
+        ]
+      },
+      {
+        "round": 4,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          36,
+          43,
+          3829,
+          31,
+          3347,
+          45
+        ]
+      },
+      {
+        "round": 5,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "scriptStepTimesMs": [
+          29,
+          40,
+          4185,
+          36,
+          3366,
+          36
+        ]
+      }
+    ]
+  },
+  "bluetoothAgent": {
+    "runId": "3e41d71c-fb26-4262-a7b4-982d47d9a9ab",
+    "started": "2026-11-19T06:49:14.972Z",
+    "status": "succeeded",
+    "task": "settings.bluetoothRoundTrip",
+    "modelId": "deepseek-flash",
+    "servedModels": [
+      "deepseek-flash"
+    ],
+    "endpoint": "https://api.deepseek.com",
+    "rounds": [
+      {
+        "round": 1,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 6,
+        "modelCalls": 6,
+        "durationMs": 31429,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o5",
+          "returned": "o8",
+          "finalHome": "o10",
+          "statePreserved": "o9"
+        },
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "tap",
+          "tap",
+          "back",
+          "back",
+          "back"
+        ]
+      },
+      {
+        "round": 2,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 6,
+        "modelCalls": 6,
+        "durationMs": 31852,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o5",
+          "returned": "o8",
+          "finalHome": "o10",
+          "statePreserved": "o9"
+        },
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "tap",
+          "tap",
+          "back",
+          "back",
+          "back"
+        ]
+      },
+      {
+        "round": 3,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 6,
+        "modelCalls": 6,
+        "durationMs": 51936,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o5",
+          "returned": "o8",
+          "finalHome": "o10",
+          "statePreserved": "o9"
+        },
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "tap",
+          "tap",
+          "back",
+          "back",
+          "back"
+        ]
+      },
+      {
+        "round": 4,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 6,
+        "modelCalls": 6,
+        "durationMs": 28076,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o5",
+          "returned": "o8",
+          "finalHome": "o10",
+          "statePreserved": "o9"
+        },
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "tap",
+          "tap",
+          "back",
+          "back",
+          "back"
+        ]
+      },
+      {
+        "round": 5,
+        "status": "succeeded",
+        "initial": true,
+        "final": true,
+        "decisions": 6,
+        "modelCalls": 6,
+        "durationMs": 30470,
+        "satisfied": {
+          "baseline": "o1",
+          "arrived": "o5",
+          "returned": "o8",
+          "finalHome": "o10",
+          "statePreserved": "o9"
+        },
+        "arrivedMarker": "switch_text:bluetooth + switch_widget",
+        "arrivedReading": true,
+        "verifiedReading": true,
+        "finalPage": "home",
+        "tools": [
+          "tap",
+          "tap",
+          "tap",
+          "back",
+          "back",
+          "back"
+        ]
+      }
+    ]
+  },
+  "portableSettingsSearch": {
+    "runId": "ca549abc-f58e-489f-a824-1e008000789b",
+    "started": "2026-11-19T06:53:56.247Z",
+    "status": "succeeded",
+    "file": "examples/settings-search.json",
+    "steps": [
+      {
+        "index": 1,
+        "action": "launch",
+        "status": "succeeded",
+        "durationMs": 332
+      },
+      {
+        "index": 2,
+        "action": "tap",
+        "status": "succeeded",
+        "durationMs": 327
+      },
+      {
+        "index": 3,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 1538
+      },
+      {
+        "index": 4,
+        "action": "input",
+        "status": "succeeded",
+        "durationMs": 772
+      },
+      {
+        "index": 5,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 100
+      },
+      {
+        "index": 6,
+        "action": "back",
+        "status": "succeeded",
+        "durationMs": 187
+      },
+      {
+        "index": 7,
+        "action": "back",
+        "status": "succeeded",
+        "durationMs": 787
+      },
+      {
+        "index": 9,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 1366
+      },
+      {
+        "index": 10,
+        "action": "waitFor",
+        "status": "succeeded",
+        "durationMs": 87
+      }
+    ]
+  },
+  "visualSettingsSearch": {
+    "runId": "10921f8d-467c-4471-a852-e3eef5999f73",
+    "started": "2026-11-19T06:52:13.994Z",
+    "status": "succeeded",
+    "task": "android.openSettingsSearch",
+    "modelId": "deepseek-flash",
+    "servedModels": [
+      "deepseek-flash"
+    ],
+    "endpoint": "https://api.deepseek.com",
+    "file": "examples/agent-open-search-android.json",
+    "round": {
+      "status": "succeeded",
+      "decisions": 2,
+      "modelCalls": 2,
+      "actions": [
+        {
+          "observationId": "7a0c3cb00353a8822714a622ccaefa0cf946821006475a31f78250364b06bf60",
+          "tool": "request_view",
+          "action": "openSearch",
+          "outcome": "observed"
+        },
+        {
+          "observationId": "7a0c3cb00353a8822714a622ccaefa0cf946821006475a31f78250364b06bf60",
+          "tool": "tap_visual",
+          "action": "openSearch",
+          "outcome": "dispatched"
+        }
+      ],
+      "evidence": [
+        {
+          "name": "searchPageVisible",
+          "observationId": "fd4780096ad94e66d246324a3e127cd8bd7cc16cfaf7038b08359d395cd43fd5"
+        }
+      ],
+      "durationMs": 5877,
+      "missing": []
+    },
+    "independentVerification": {
+      "app": "com.google.android.settings.intelligence",
+      "control": "com.google.android.settings.intelligence:id/open_search_view_edit_text",
+      "independentReadback": true
+    }
+  },
+  "interruptAndConcurrentAccess": {
+    "status": "passed",
+    "busy": "DEVICE_BUSY",
+    "interruption": "CANCELLED",
+    "attemptedSteps": 1,
+    "postProbe": "home"
+  },
+  "lostWriteAcknowledgement": {
+    "status": "passed",
+    "forwardedWrites": 1,
+    "error": "ACTION_OUTCOME_UNKNOWN",
+    "pendingKind": "tap",
+    "newSessionForeground": "com.google.android.settings.intelligence",
+    "newSessionPage": "other",
+    "method": "Dropped Appium reply after the emulator executed a native click."
+  },
+  "adbDiagnostics": {
+    "testDevice": "Separate Google Play API 28 virtual device with secure ADB and a fresh ADB client identity over TCP",
+    "authorization": {
+      "platform": "android",
+      "connection": "network",
+      "discovered": true,
+      "controllable": false,
+      "state": "unauthorized",
+      "error": "AUTHORIZATION_REQUIRED",
+      "recovery": "Approved the Android system trust prompt on the disposable virtual device; the same isolated ADB client then read SDK level 28.",
+      "secureAdb": true
+    },
+    "offline": {
+      "platform": "android",
+      "connection": "network",
+      "discovered": true,
+      "controllable": false,
+      "state": "offline",
+      "error": "DEVICE_OFFLINE"
+    }
+  },
+  "targetSelection": {
+    "target": "android",
+    "targetForeground": "com.google.android.deskclock",
+    "otherPages": {
+      "ios": [
+        "com.apple.Preferences",
+        "home"
+      ],
+      "harmony": [
+        "com.huawei.hmos.settings",
+        "home"
+      ]
+    },
+    "status": "passed"
+  },
+  "isolatedInstallation": {
+    "newSessionMs": 1576,
+    "firstObservationMs": 124,
+    "warmScreenshotMs": [
+      58,
+      15,
+      14
+    ],
+    "app": "com.android.settings",
+    "actionSize": [
+      320,
+      640
+    ],
+    "languageEvidence": [
+      "网络和互联网",
+      "已连接的设备"
+    ]
+  },
+  "selectorFailures": {
+    "missing": "WAIT_TIMEOUT",
+    "duplicate": "AMBIGUOUS_ELEMENT"
+  }
+}

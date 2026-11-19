@@ -31,6 +31,10 @@ export interface Reply {
 type Message =
   | Reply
   | { role: 'user' | 'system'; content: string }
+  | {
+      role: 'user';
+      content: ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[];
+    }
   | { role: 'tool'; content: string; tool_call_id: string };
 export interface Tool {
   type: 'function';
@@ -39,7 +43,10 @@ export interface Tool {
     description: string;
     parameters: {
       type: 'object';
-      properties: Record<string, { type: 'string'; enum: string[] }>;
+      properties: Record<
+        string,
+        { type: 'string'; enum: string[] } | { type: 'number'; minimum: 0; maximum: 1 }
+      >;
       required: string[];
       additionalProperties: false;
     };

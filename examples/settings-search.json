@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "targets": {
+    "entry": {
+      "ios": {
+        "id": "搜索"
+      },
+      "android": {
+        "id": "com.android.settings:id/search_bar"
+      },
+      "harmony": {
+        "id": "homPageSearchInputColumn"
+      }
+    },
+    "editor": {
+      "ios": {
+        "id": "搜索"
+      },
+      "android": {
+        "id": "com.google.android.settings.intelligence:id/open_search_view_edit_text"
+      },
+      "harmony": {
+        "id": "__SearchField__searchComponent"
+      }
+    },
+    "result": {
+      "ios": {
+        "label": "蓝牙、蓝牙",
+        "role": "XCUIElementTypeButton"
+      },
+      "android": {
+        "label": "蓝牙地址",
+        "role": "android.widget.TextView"
+      },
+      "harmony": {
+        "label": "蓝牙地址",
+        "role": "Text"
+      }
+    },
+    "dismissed": {
+      "ios": {
+        "id": "取消"
+      },
+      "android": {
+        "id": "com.google.android.settings.intelligence:id/open_search_view_edit_text"
+      },
+      "harmony": {
+        "id": "__SearchField__searchComponent"
+      }
+    },
+    "cancel": {
+      "ios": {
+        "id": "取消",
+        "role": "XCUIElementTypeButton"
+      }
+    }
+  },
+  "steps": [
+    {
+      "action": "launchApp",
+      "app": "settings"
+    },
+    {
+      "action": "tap",
+      "target": "entry"
+    },
+    {
+      "action": "waitFor",
+      "target": "editor"
+    },
+    {
+      "action": "input",
+      "target": "editor",
+      "replace": true,
+      "text": "蓝牙"
+    },
+    {
+      "action": "waitFor",
+      "target": "result",
+      "timeoutMs": 15000
+    },
+    {
+      "action": "back",
+      "platforms": [
+        "android",
+        "harmony"
+      ]
+    },
+    {
+      "action": "back",
+      "platforms": [
+        "android",
+        "harmony"
+      ]
+    },
+    {
+      "action": "back",
+      "platforms": [
+        "ios"
+      ],
+      "target": "cancel"
+    },
+    {
+      "action": "waitFor",
+      "target": "dismissed",
+      "state": "hidden"
+    },
+    {
+      "action": "waitFor",
+      "target": "entry"
+    }
+  ]
+}

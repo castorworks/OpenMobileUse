@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "ios.openSettingsSearch",
+  "goal": "打开设置的搜索页。调用 request_view 查看批准的搜索入口，然后在提供的截图区域内选择坐标并调用 tap_visual。",
+  "apps": [
+    "com.apple.Preferences"
+  ],
+  "actions": [
+    {
+      "name": "openSearch",
+      "app": "com.apple.Preferences",
+      "visual": true,
+      "step": {
+        "action": "tap",
+        "id": "搜索"
+      }
+    }
+  ],
+  "checkpoints": [
+    {
+      "name": "searchPageVisible",
+      "app": "com.apple.Preferences",
+      "afterAction": "openSearch",
+      "target": {
+        "id": "取消"
+      }
+    }
+  ]
+}

@@ -1,6 +1,8 @@
 # Open Mobile Use
 
-从 Mac 操作已授权的鸿蒙、iPhone 和 Android 设备。CLI 可以启动指定的已安装 App、查看当前界面、按控件或坐标点击、滑动，并在普通输入框中输入中英文。系统设置中的蓝牙导航还支持运行同一份离线脚本，或让 Agent 按实时控件树选择下一步。两种导航模式均由主机检查实际页面和蓝牙读数。[蓝牙脚本](examples/settings-bluetooth.json)
+从 Mac 操作已授权的鸿蒙、iPhone 和 Android 设备。CLI 支持启动应用、查看界面、点击、滑动、中英文输入、返回和条件等待。可以编写离线脚本，也可以让使用 OpenAI 兼容接口的 Agent 根据当前页面选择下一步。默认模型为 `deepseek-flash`。主机负责执行动作、检查任务结果和保留未决操作记录。
+
+鸿蒙 BRA-AL00、iPhone 13 真机和 Android 15 模拟器均已在简体中文设置中连续通过蓝牙脚本和 Agent 各 5 轮，逐轮保持蓝牙开关原值。三端也已验证同一份设置搜索脚本、基于控件裁剪图的点击和多设备选择。[最新验收记录及耗时](docs/validation/2026-11-19/release/README.md) · [设置搜索脚本](examples/settings-search.json)
 
 ## 已验证的设备
 
@@ -109,6 +111,25 @@ printf '%s' ' 中文 "OK" ' | node dist/cli.js input --device "$DEVICE" --stdin
 | iPhone 13 真机，iOS 18.7.7 | 在临时 UIKit 测试 App 中回读输入和点击计数，滚动后检查按钮移出屏幕。竖屏截图为 1170×2532 像素，触控空间为 390×844 点 | [10/10](docs/validation/2026-11-19/steps/ios.json) |
 | Android 15 模拟器，API 35 | 在系统设置及其搜索页回读输入，滚动设置列表，竖屏进入“已连接的设备”，横屏按坐标打开搜索框 | [10/10](docs/validation/2026-11-19/steps/android.json) |
 
+## 通用脚本和条件等待
+
+`run` 每轮独占一台设备，在同一个会话里按序执行。下面的中文设置搜索示例可在三个平台运行。它输入「蓝牙」、等待具体搜索结果、退出搜索，再确认搜索界面已消失且首页入口可见。iOS 示例使用简体中文设置。
+
+```sh
+node dist/cli.js run --device "$DEVICE" --script examples/settings-search.json --output ./results --json
+node dist/cli.js waitFor --device "$DEVICE" --label '蓝牙地址' --state visible --timeout-ms 10000
+```
+
+脚本使用 `schemaVersion: 1`。步骤支持 `launchApp`、`tap`、`swipe`、`input`、`back` 和 `waitFor`，参数沿用单步命令，JSON 中使用 `fromX`、`durationMs`、`timeoutMs` 等小驼峰字段。可直接写 `id`、`label`、`role`，或用 `target` 引用顶层 `targets` 中按平台定义的选择器。`platforms` 可限定某步适用的平台。iOS 的 `back` 指定页面上的导航或取消按钮，鸿蒙与 Android 使用系统返回键。软件键盘打开时，第一次返回可能只收起键盘。[完整示例](examples/settings-search.json)
+
+`waitFor` 接受 `visible` 和 `hidden`，对当前前台页面进行有界轮询。未找到可继续等，重名返回 `AMBIGUOUS_ELEMENT`。步骤失败后，报告返回原脚本中从 1 开始的 `failedStep`、已执行步骤的耗时和错误码。退出码 0 表示成功，1 表示执行失败，2 表示参数或脚本无效。原有蓝牙脚本继续执行独立的开关初值和终值核查。
+
+### 诊断和恢复
+
+`devices` 返回设备状态和连接方式。`doctor` 依次探测连接、工具链、会话和界面读取，报告 `controllable`、前台应用、观察标识及未决动作。ADB 的 `unauthorized` 和 `offline` 有独立错误码，WDA 签名、锁屏和 Appium 连接失败提供对应的处理提示。在同一台 Mac 运行多个 Appium 服务时，为各个 iOS 会话选择不同的 WDA 转发端口，例如为第二个服务的 CLI 设置 `OMU_WDA_PORT=8165`。端口已被占用时，`doctor` 返回 `PORT_IN_USE`。
+
+脚本运行中按 Ctrl+C 会停止调度后续步骤并关闭会话。同设备第二个运行会收到 `DEVICE_BUSY`。动作已发出但回执丢失时，JSON 报告返回 `ACTION_OUTCOME_UNKNOWN`。重新连接后运行 `doctor`，对照 `unconfirmed` 和当前页面核实，再决定从哪一步继续。持久记录仅含动作类型、序号、时间和运行编号。
+
 ## 用 Agent 自主导航
 
 完成上面的设备接入，在运行 CLI 的终端设置模型凭据。以下为 macOS 默认 zsh 的输入方式。省略 `--model` 会向 DeepSeek 的 OpenAI 兼容 `/chat/completions` 接口请求 `deepseek-flash`。[DeepSeek 接口文档](https://api-docs.deepseek.com/)
@@ -131,6 +152,19 @@ node dist/cli.js agent --device "$DEVICE" --task settings.bluetoothRoundTrip \
   --base-url http://127.0.0.1:8000/v1 --model local-tool-model --json
 ```
 
+### 自定义任务与视觉定位
+
+`--task` 也接受本地任务 JSON。定义包含 `id`、`goal`、允许的前台 `apps`、命名的 `actions`、有序 `checkpoints`，以及可选的 `limits.turns`、`limits.ms`。每个动作指定所在 App 和一个通用脚本步骤。检查点指定所需动作 `afterAction`、目标 App、控件及所需状态。主机根据新观察独立复核，模型仅能提议已授权的动作。蓝牙内置任务另外验证开关原值及往返顺序。
+
+下例从 Android 简体中文设置首页打开搜索。按设备选择对应任务文件，所选模型需要支持图像和函数调用。[Android 任务](examples/agent-open-search-android.json) · [鸿蒙任务](examples/agent-open-search-harmony.json) · [iPhone 任务](examples/agent-open-search-ios.json)
+
+```sh
+node dist/cli.js launch --device "$DEVICE" --app settings
+node dist/cli.js agent --device "$DEVICE" --task examples/agent-open-search-android.json --vision --json
+```
+
+普通任务向模型提供当前 App、允许的动作名称和检查点。视觉动作需在任务中声明 `visual: true` 并指定可唯一定位的控件，可以是包含图像的画布。启用 `--vision` 后，模型可用 `request_view` 请求该控件的可见区域。主机核对采集前后的观察，裁剪 PNG，在工具结果之后发送带来源调用 ID 的图片；`tap_visual` 接受裁剪图中的归一化位置，主机将其换算为设备触控坐标并再次核对观察。图像只在内存中保留，运行报告记录动作和证据。遇到未授权 App、可识别的敏感输入或阻塞弹窗，任务交由人工处理。
+
 ### Agent 验证记录
 
 2026-11-19 通过默认端点连续运行，每端 5 轮。请求与服务回复的模型 ID 均为 `deepseek-flash`。耗时为五轮任务实测之和，包含基线采集、模型决策、设备动作和结束复查。
@@ -141,4 +175,6 @@ node dist/cli.js agent --device "$DEVICE" --task settings.bluetoothRoundTrip \
 | iPhone 13 真机，iOS 18.7.7 | 英文 | [5/5](docs/validation/2026-11-19/agent/ios.json) | 10 | 226.8 秒 |
 | Android 15 模拟器，Google APIs ARM64，API 35 | 简体中文 | [5/5](docs/validation/2026-11-19/agent/android.json) | 30 | 164.3 秒 |
 
-三端每轮的初始、到达和复查读数均为开启，每轮均结束在设置首页。iPhone 13 使用机主现有的英文设置界面，页面识别依据该版 iOS 的蓝牙导航栏、开关和返回按钮。Android 每轮由模型选择六次动作，进入和返回各经过三级菜单。
+三端每轮的初始、到达和复查读数均为开启，每轮均结束在设置首页。本表记录的是较早的 iPhone 13 英文设置验收。随后在同一台手机的简体中文设置中重新完成了 5 轮脚本和 5 轮 Agent 验证。[iPhone 13 简体中文记录](docs/validation/2026-11-19/release/ios.json)
+
+Android 每轮由模型选择六次动作，进入和返回各经过三级菜单。
