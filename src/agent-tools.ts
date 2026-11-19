@@ -45,7 +45,9 @@ export function decode(tools: Tool[], name: string, raw: string) {
       Object.hasOwn(args, k) &&
       (schema.properties[k].type === 'number'
         ? typeof args[k] === 'number' && Number.isFinite(args[k]) && args[k] >= 0 && args[k] <= 1
-        : schema.properties[k].enum.includes(args[k])),
+        : typeof args[k] === 'string' &&
+          (schema.properties[k].enum?.includes(args[k]) ??
+            args[k].length <= (schema.properties[k].maxLength ?? 0))),
   )
     ? null
     : 'INVALID_ARGUMENTS';

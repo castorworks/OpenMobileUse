@@ -1,5 +1,5 @@
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
-const { join } = require('node:path');
+const { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, shell } = require('electron');
+const { basename, join } = require('node:path');
 const { pathToFileURL } = require('node:url');
 const entry = join(__dirname, 'index.html');
 const pageURL = pathToFileURL(entry).href;
@@ -10,10 +10,40 @@ let window,
 
 function startWorkbench(options) {
   return app.whenReady().then(async () => {
+    if (!app.isPackaged && app.dock) app.dock.setIcon(join(__dirname, 'brand.png'));
+    const { configureHost } = await import('./setup.mjs');
+    await configureHost();
+    const { scriptEntry } = await import('./script-library.mjs');
     const { Workbench, errorCode } = await import('./workbench.mjs');
-    workbench = new Workbench((event) => {
-      if (window && !window.isDestroyed()) window.webContents.send('omu:event', event);
-    }, options);
+    workbench = new Workbench(
+      (event) => {
+        if (window && !window.isDestroyed()) window.webContents.send('omu:event', event);
+      },
+      {
+        secure: safeStorage,
+        confirmSetup: async (message, detail, url) => {
+          for (;;) {
+            const { response } = await dialog.showMessageBox(window, {
+              type: 'question',
+              message,
+              detail,
+              buttons: ['取消', '查看许可协议', '同意并安装'],
+              defaultId: 0,
+              cancelId: 0,
+            });
+            if (response !== 1) return response === 2;
+            await shell.openExternal(url);
+          }
+        },
+        ...options,
+      },
+    );
+    await workbench.preferences.load();
+    const resources = {
+      android: 'https://developer.android.com/studio',
+      ios: 'https://apps.apple.com/app/xcode/id497799835',
+      harmony: 'https://developer.huawei.com/consumer/cn/deveco-studio/',
+    };
     const methods = [
       'devices',
       'probe',
@@ -23,7 +53,18 @@ function startWorkbench(options) {
       'stop',
       'history',
       'config',
-      'setKey',
+      'saveSettings',
+      'library',
+      'conversation',
+      'scripts',
+      'importScript',
+      'renameScript',
+      'removeScript',
+      'restoreRecording',
+      'exportScript',
+      'startEmulator',
+      'environment',
+      'platformSetup',
     ];
     ipcMain.handle('omu:request', async (event, name, ...args) => {
       if (
@@ -35,6 +76,29 @@ function startWorkbench(options) {
       )
         throw Error('Invalid workbench request');
       try {
+        if (name === 'environment') {
+          return { ok: true, value: await configureHost() };
+        }
+        if (name === 'platformSetup') {
+          if (!Object.hasOwn(resources, args[0])) throw Error('INVALID_PLATFORM');
+          if (args[0] === 'android') await workbench.emulator.ensure();
+          else await shell.openExternal(resources[args[0]]);
+          return { ok: true };
+        }
+        if (name === 'exportScript') {
+          const { script, title } = await scriptEntry(args[0]);
+          const file = await dialog.showSaveDialog(window, {
+            defaultPath: basename(title).replace(/[\x00-\x1f:/]/g, '_') + '.json',
+            filters: [{ name: '脚本', extensions: ['json'] }],
+          });
+          if (!file.canceled)
+            await require('node:fs/promises').writeFile(
+              file.filePath,
+              JSON.stringify(script, null, 2) + '\n',
+              { mode: 0o600 },
+            );
+          return { ok: true, value: !file.canceled };
+        }
         return { ok: true, value: await workbench[name](...args) };
       } catch (e) {
         return {
@@ -52,7 +116,7 @@ function startWorkbench(options) {
       height: 890,
       minWidth: 960,
       minHeight: 680,
-      backgroundColor: '#f4f5ef',
+      backgroundColor: '#ffffff',
       title: 'Open Mobile Use',
       show: false,
       webPreferences: {

@@ -61,6 +61,7 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
         focused: a.focused === 'true' || (searchFocused && a.type === 'SearchField'),
         editable,
         secret,
+        checked: a.checkable === 'true' || a.type === 'Toggle' ? a.checked === 'true' : undefined,
         value: editable && !secret ? a.text : undefined,
       });
     }
@@ -125,6 +126,13 @@ export function xmlControls(
     }
     result.push({
       navigation: navigation || undefined,
+      checked: ios
+        ? role === 'XCUIElementTypeSwitch'
+          ? value === '1'
+          : undefined
+        : a('checkable') === 'true'
+          ? a('checked') === 'true'
+          : undefined,
       id: a(ios ? 'name' : 'resource-id'),
       labels: ios ? labels(a('label')) : labels(a('text'), a('content-desc'), a('hint')),
       role,

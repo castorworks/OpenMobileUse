@@ -8,6 +8,10 @@ let devices = [],
   model,
   mode = 'select',
   scanPending = false;
+let workspaceMode = 'chat',
+  scripts = [],
+  scriptsVersion = 0,
+  managedScript = null;
 const names = {
   ios: 'iOS',
   android: 'Android',
@@ -20,6 +24,12 @@ const names = {
   execution: '执行',
   verification: '复查',
   tap: '点击',
+  ask_user: '等待回复',
+  finish: '完成',
+  check: '核对界面',
+  pause: '等待',
+  input_text: '输入文字',
+  launch_app: '启动应用',
   back: '返回',
   forward: '进入',
   launchApp: '启动应用',
@@ -35,22 +45,39 @@ const names = {
   running: '运行中',
   failed: '失败',
   needs_review: '待人工核查',
+  STALE_OBSERVATION: '操作目标或前台窗口已变化',
+  NO_PROGRESS: '目标状态未变化',
   cancelled: '已停止',
 };
 const issues = {
+  SETUP_CANCELLED: '已取消环境配置。',
+  ANDROID_DOWNLOAD_CHECKSUM: '下载文件校验失败，请重试。',
+  ANDROID_SDK_INSTALL_FAILED: 'Android 工具安装失败，请检查网络、磁盘空间和 SDK 许可后重试。',
+  AVD_CREATE_FAILED: '无法创建工作台模拟器，请检查 SDK 镜像与可用磁盘空间。',
+  EMULATOR_START_FAILED: '模拟器启动失败，请检查虚拟化支持和可用磁盘空间。',
+  EMULATOR_BOOT_TIMEOUT: '模拟器仍在启动，可稍后重新扫描。',
   DEVICE_BUSY: '设备正在执行其他操作。',
-  STALE_OBSERVATION: '手机页面已变化，请刷新画面重新定位。',
+  STALE_OBSERVATION: '操作目标或前台窗口已变化，请核对当前画面。',
+  FOREGROUND_WINDOW_AMBIGUOUS: '手机正在切换前台窗口，暂时无法确认操作目标。',
+  APP_NOT_INSTALLED: '设备上没有找到对应的应用。',
+  APP_NOT_LAUNCHABLE: '没有找到可以直接启动的应用入口。',
+  ELEMENT_NOT_FOUND: '当前页面上找不到刚才选中的控件。',
+  AMBIGUOUS_OR_MISSING_ELEMENT: '设备没有找到唯一匹配的控件。',
   DEVICE_UNAVAILABLE: '请检查 USB 连接并重新扫描设备。',
   DEVICE_OFFLINE: '设备已离线，请重新连接。',
   AUTHORIZATION_REQUIRED: '请解锁手机并确认 USB 调试或信任授权。',
   DEVICE_LOCKED: '请解锁手机并保持亮屏。',
   APPIUM_UNREACHABLE: '本机 Appium 连接中断或未响应，下次连接会自动检查服务。',
   APPIUM_ENDPOINT_CONFLICT: '配置的端口没有返回 Appium 状态，请检查 OMU_APPIUM_URL 和端口占用。',
-  APPIUM_NOT_INSTALLED: '项目缺少 Appium 依赖，请在项目根目录运行 npm ci。',
-  APPIUM_START_FAILED: '本机 Appium 启动失败，请查看启动工作台的终端日志。',
+  APPIUM_NOT_INSTALLED: '应用缺少内置 Appium，请重新打开完整的工作台应用。',
+  APPIUM_START_FAILED: '本机 Appium 启动失败，请检查本机端口后重新连接。',
   APPIUM_START_TIMEOUT: '等待本机 Appium 就绪超时，请检查服务日志和端口配置。',
   APPIUM_INVALID_URL: '请将 OMU_APPIUM_URL 设为本机回环地址，可包含端口和服务路径。',
-  APPIUM_HTTPS_UNAVAILABLE: '配置的本机 HTTPS 服务尚未启动。请检查 TLS 服务，或使用 HTTP 回环地址以自动启动。',
+  MODEL_HTTP_401: '模型服务拒绝了凭据，请在工作台设置中更新 API Key。',
+  MODEL_HTTP_403: '此凭据无权调用当前模型，请检查工作台设置。',
+  MODEL_HTTP_404: '模型或接口不存在，请检查模型名称和接口地址。',
+  APPIUM_HTTPS_UNAVAILABLE:
+    '配置的本机 HTTPS 服务尚未启动。请检查 TLS 服务，或使用 HTTP 回环地址以自动启动。',
   WDA_SIGNING_FAILED: '请检查 WDA 签名配置和开发者信任。',
   WDA_SESSION_FAILED: '请检查开发者模式及 Xcode 的 WDA 构建日志。',
   ACTION_OUTCOME_UNKNOWN: '操作已发出，回执丢失。请刷新画面并核对未决动作。',
@@ -58,8 +85,26 @@ const issues = {
   AMBIGUOUS_ELEMENT: '存在同名控件，请缩小选择范围或使用坐标。',
   NO_FOCUSED_FIELD: '请先选中普通输入框。',
   INVALID_JSON: '文件不是有效的 JSON。',
+  INVALID_SCRIPT_NAME: '脚本名称需要 1 到 100 个字符。',
+  INVALID_SCRIPT: '文件缺少有效的脚本步骤。',
+  INVALID_SCRIPT_STEP: '脚本含有无法执行的步骤。',
+  INVALID_RECORDING: '录制脚本格式无效。',
+  SCRIPT_PLATFORM_MISMATCH: '请选择与脚本兼容的设备。',
+  UNKNOWN_SCRIPT: '脚本已从脚本库移除。',
   INVALID_FILE: '请选择有效的任务 JSON 文件。',
   CANCELLED: '已停止调度后续步骤。',
+  RECORDING_STATE_MISMATCH: '当前应用、控件或读数与录制不同。请恢复此步骤的起始界面。',
+  RECORDING_PLATFORM_MISMATCH: '请选择与录制相同平台的设备。',
+  RECORDING_WRITE_FAILED: '保存录制失败，操作可能已执行。请检查磁盘后核对画面。',
+  RECORDING_TARGET_UNAVAILABLE: '录制此操作需要能唯一定位的控件，请选择目标。',
+  RECORDING_FULL: '本段录制已满，请新建对话继续。',
+  SENSITIVE_OR_BLOCKED_SCREEN: '请先在设备上处理密码或系统弹窗，再回复以继续。',
+  NO_PROGRESS: '连续几次尝试都没有进展，已暂停。可展开本轮执行过程查看原因。',
+  DECISION_BUDGET: '已到本轮决策上限，可以回复以继续。',
+  TIME_BUDGET: '本轮已超时，可以回复以继续。',
+  MODEL_KEY_REQUIRED: '请在工作台设置中填写 API Key。',
+  INVALID_SETTINGS: '请检查接口地址、模型名称和签名配置。',
+  KEYCHAIN_UNAVAILABLE: '无法保存密钥，请解锁 macOS 钥匙串后重试。',
 };
 const nice = (s) => names[s] || s || '—';
 const describe = (s) => (issues[s] ? issues[s] + ' (' + s + ')' : s);
@@ -68,6 +113,12 @@ function state(id = selected) {
   if (!states.has(id))
     states.set(id, {
       history: [],
+      chats: [],
+      chat: null,
+      draft: '',
+      libraryVersion: 0,
+      loadingChat: false,
+      recordManual: false,
       frame: null,
       hit: null,
       point: null,
@@ -97,6 +148,17 @@ function renderDevices() {
   $('devices').replaceChildren(
     ...devices.map((t) => {
       const b = element('button', undefined, 'device' + (t.available ? ' online' : ''));
+      const s = state(t.id);
+      const status = s.active
+        ? 'running'
+        : !t.available
+          ? 'offline'
+          : s.diagnostic?.controllable === false
+            ? 'warning'
+            : s.frame
+              ? 'ready'
+              : 'discovered';
+      b.dataset.state = status;
       b.dataset.device = t.id;
       b.setAttribute('aria-current', String(t.id === selected));
       b.title = t.id;
@@ -114,15 +176,13 @@ function renderDevices() {
                 .filter(Boolean)
                 .join(' · ')) +
             ' · ' +
-            (state(t.id).active
-              ? '运行中'
-              : !t.available
-                ? '不可用'
-                : state(t.id).diagnostic?.controllable === false
-                  ? '诊断失败'
-                  : state(t.id).frame
-                    ? '可控制'
-                    : '已发现'),
+            {
+              running: '运行中',
+              offline: '不可用',
+              warning: '诊断失败',
+              ready: '可控制',
+              discovered: '已发现',
+            }[status],
         ),
       );
       b.append(element('span', undefined, 'device-symbol'), wrap, element('i'));
@@ -146,6 +206,8 @@ async function scan() {
       .filter(Boolean)
       .join(' · ');
     render();
+    const online = devices.filter((t) => t.available);
+    if (!selected && online.length === 1) await selectDevice(online[0]);
   } catch (e) {
     $('scan-status').textContent = e.message;
   } finally {
@@ -156,6 +218,7 @@ async function scan() {
 function markFrame(id, frame) {
   const s = state(id);
   s.frame = frame;
+  if (frame?.observationId) s.diagnostic = { controllable: true };
   s.hit = null;
   s.point = null;
   if (id === selected) renderFrame();
@@ -167,26 +230,37 @@ async function selectDevice(t) {
   $('text').value = '';
   render();
   const s = state(t.id);
+  const chats = refreshLibrary(t.id, s.chat?.id);
   const history = api
-    .history(t.id)
+    .history(t.id, true)
     .then((data) => {
       s.history = data.history;
-      if (data.current?.status === 'running') s.active = data.current;
-      if (!s.current) s.current = s.active || s.history[0];
-      if (selected === t.id) renderJournal();
+      if (data.current?.status === 'running') {
+        s.active = data.current;
+        if (s.active.mode === 'chat' && s.chat?.id !== s.active.chatId)
+          refreshLibrary(t.id, s.active.chatId);
+      }
+      if (!s.current) s.current = s.active?.mode === 'script' ? s.active : s.history[0];
+      if (selected === t.id) render();
     })
     .catch((e) => message(t.id, e.message));
   if (!s.busy && !s.active && t.available) await refresh(t.id);
-  await history;
+  await Promise.all([history, chats]);
 }
-function message(id, value) {
+function message(id, value, tone = 'error') {
   state(id).notice = value || '';
+  state(id).noticeTone = tone;
   if (id === selected) renderNotice();
+}
+function feedback(id, text, tone) {
+  const node = $(id);
+  node.dataset.tone = tone;
+  node.textContent = text;
 }
 function renderNotice() {
   const note = selected ? state().notice : '';
   $('notice').hidden = !note;
-  $('notice').textContent = note;
+  feedback('notice', note, state().noticeTone || 'info');
 }
 function canAct() {
   const s = state(),
@@ -197,8 +271,7 @@ function canAct() {
     t?.available &&
     !s.busy &&
     !s.active &&
-    s.frame?.observationId &&
-    !s.frame.controlsChangedDuringCapture
+    s.frame?.observationId
   );
 }
 function renderButtons() {
@@ -218,10 +291,31 @@ function renderButtons() {
   $('select-mode').setAttribute('aria-pressed', String(mode === 'select'));
   $('swipe-mode').setAttribute('aria-pressed', String(mode === 'swipe'));
   $('start').hidden = !!s.active;
-  $('stop').hidden = !s.active;
-  $('start').disabled = !free;
-  $('task').disabled = !!s.active || s.busy;
+  $('chat-stop').hidden = !s.active;
+  $('stop').hidden = !s.active || s.active.mode === 'chat';
+  $('start').disabled = !free || s.loadingChat || !s.draft.trim();
+  $('open-recording').disabled = s.loadingChat || !!s.active;
+  $('new-chat').disabled = !selected || !free || s.loadingChat;
+  $('chats').disabled = !selected || !free || s.loadingChat;
+  $('prompt').disabled = !t?.available;
+  $('manual-record').disabled = !free;
+  if (workspaceMode === 'script') {
+    $('script-target').textContent = t?.available
+      ? '运行设备 · ' + label(t)
+      : '选择设备后可运行兼容的脚本。';
+    for (const button of $('script-list').querySelectorAll('[data-platforms]')) {
+      const compatible = !!t && button.dataset.platforms.split(',').includes(t.platform);
+      button.disabled = !free || !compatible;
+      button.title = t && !compatible ? '请选择与脚本兼容的设备' : '';
+    }
+  }
   $('stop').disabled = !s.active || s.stopping;
+  $('chat-stop').disabled = !s.active || s.stopping;
+  $('chat-stop').textContent = s.stopping
+    ? '正在停止…'
+    : s.active?.mode === 'script'
+      ? '停止脚本'
+      : '停止';
   $('stop').textContent = s.stopping ? '正在停止…' : '■　停止任务';
 }
 function render() {
@@ -263,11 +357,15 @@ function refresh(id = selected) {
       s.diagnostic = { controllable: false };
       throw e;
     }
-    s.diagnostic = { controllable: true };
     markFrame(id, result.frame);
     if (result.unconfirmed.length)
-      message(id, '本机有 ' + result.unconfirmed.length + ' 条未决操作，请对照当前画面和连接诊断核实。');
-    else if (result.frame.controlsChangedDuringCapture) message(id, describe('STALE_OBSERVATION'));
+      message(
+        id,
+        '本机有 ' + result.unconfirmed.length + ' 条未决操作，请对照当前画面和连接诊断核实。',
+        'warning',
+      );
+    else if (result.frame.controlsChangedDuringCapture)
+      message(id, '画面有动态内容，操作前会重新核对目标。', 'info');
   });
 }
 function fit() {
@@ -436,7 +534,20 @@ async function action(raw) {
   await busy(id, async (s) => {
     let r;
     try {
-      r = await api.action(id, raw, observation);
+      // Prefer a stable control selector for recorded manual taps.
+      const chatId = s.recordManual && workspaceMode === 'chat' && s.chat?.id;
+      if (raw.action === 'tap' && chatId && s.hit !== null) {
+        const loc = selector(s.frame.controls[s.hit]);
+        const hits = s.frame.controls.filter(
+          (n) => n.role === loc.role && (loc.id ? n.id === loc.id : n.labels.includes(loc.label)),
+        );
+        if (hits.length === 1) raw = { action: 'tap', ...loc };
+      }
+      r = await api.action(id, raw, observation, chatId || undefined);
+      if (chatId) {
+        await refreshLibrary(id, chatId);
+        if (workspaceMode === 'script') await refreshScripts();
+      }
     } catch (e) {
       if (['STALE_OBSERVATION', 'ACTION_OUTCOME_UNKNOWN'].includes(e.message)) markFrame(id, null);
       throw e;
@@ -448,6 +559,7 @@ async function action(raw) {
       r.captureError
         ? '操作已执行，刷新画面失败。' + describe(r.captureError)
         : nice(raw.action) + '已执行。',
+      r.captureError ? 'warning' : 'success',
     );
   });
 }
@@ -465,7 +577,7 @@ $('back').onclick = () => {
     );
     const target = c?.navigation ? c : choices.length === 1 ? choices[0] : null;
     if (!target) {
-      message(selected, '请先选择当前页面的返回或取消按钮。');
+      message(selected, '请先选择当前页面的返回或取消按钮。', 'warning');
       return;
     }
     loc = selector(target);
@@ -478,20 +590,309 @@ $('input').onclick = () => {
   action({ action: 'input', ...selector(c), text: $('text').value });
 };
 $('text').oninput = renderButtons;
-function composer() {
-  const value = $('task').value,
-    agent = value.includes('agent');
-  $('task-file').hidden = !value.startsWith('custom');
-  $('vision-label').hidden = value !== 'custom-agent';
-  $('model-line').textContent = agent
-    ? (model?.model || 'deepseek-flash') + ' · ' + (model?.endpoint || 'https://api.deepseek.com')
-    : '离线执行';
+async function refreshLibrary(id, requested) {
+  const s = state(id),
+    version = ++s.libraryVersion;
+  s.loadingChat = true;
+  if (id === selected) renderButtons();
+  try {
+    const chats = await api.library(id);
+    const chat =
+      requested && chats.some((c) => c.id === requested) ? await api.conversation(id, requested) : null;
+    if (version !== s.libraryVersion) return;
+    s.chats = chats;
+    s.chat = chat;
+    if (chat?.turns.some((turn) => s.lastChatRun && turn.runId === s.lastChatRun.id))
+      s.lastChatRun = null;
+    if (id === selected) {
+      drawChat();
+      renderButtons();
+    }
+  } catch (e) {
+    message(id, describe(e.message));
+  } finally {
+    if (version === s.libraryVersion) {
+      s.loadingChat = false;
+      if (id === selected) renderButtons();
+    }
+  }
 }
-$('task').onchange = () => {
-  $('task-file').value = '';
-  $('vision').checked = false;
-  composer();
+function drawChat() {
+  const s = state();
+  const chat = s.chat;
+  $('chats').replaceChildren(
+    new Option('新对话', ''),
+    ...s.chats.map((c) => new Option(c.title + ' · ' + c.stepCount + ' 步', c.id)),
+  );
+  $('chats').value = chat?.id || '';
+  if ($('prompt').value !== s.draft) $('prompt').value = s.draft;
+  const run = s.active?.mode === 'chat' ? s.active : s.lastChatRun;
+  const turns = [...(chat?.turns || [])];
+  if (run && (!chat || chat.id === run.chatId)) {
+    const overlay = {
+      runId: run.id,
+      user: run.user || run.title,
+      events: run.events,
+      started: run.started,
+      ended: run.ended,
+      activity: run.activity,
+      status: run.status,
+      reason: run.reason,
+      assistant: run.result?.answer,
+      replyRequested: run.result?.replyRequested,
+      historyError: run.historyError || run.cleanupError,
+    };
+    const index = turns.findIndex((t) => t.runId === run.id);
+    if (index < 0) turns.push(overlay);
+    else turns[index] = { ...turns[index], ...overlay };
+  }
+  const stream = $('chat-stream'),
+    transcript = $('transcript');
+  const chatKey = selected + '/' + (chat?.id || run?.chatId || '');
+  const changed = stream.dataset.chat !== chatKey;
+  const follow = changed || stream.scrollHeight - stream.clientHeight - stream.scrollTop < 40;
+  if (changed) transcript.replaceChildren();
+  stream.dataset.chat = chatKey;
+  for (const [i, saved] of turns.entries()) {
+    const turn =
+      saved.status === 'running' && (!s.active || saved.runId !== s.active.id)
+        ? { ...saved, status: 'interrupted' }
+        : saved;
+    const key = turn.runId || String(i);
+    let row = transcript.children[i];
+    if (!row || row.dataset.key !== key) {
+      const newRow = element('article', undefined, 'chat-turn');
+      newRow.dataset.key = key;
+      if (row) row.replaceWith(newRow);
+      else transcript.append(newRow);
+      row = newRow;
+    }
+    updateTurn(row, turn, i < turns.length - 1);
+  }
+  while (transcript.children.length > turns.length) transcript.lastChild.remove();
+  $('chat-empty').hidden = !!turns.length;
+  const last = turns.at(-1);
+  $('prompt').placeholder = s.active
+    ? '可以先写下下一条消息…'
+    : last?.replyRequested
+      ? '回复这个问题…'
+      : last
+        ? '继续对话…'
+        : '输入任务或补充说明…';
+  $('chat-empty-hint').textContent = selected
+    ? '在下方描述任务，或打开一段历史对话。'
+    : '选择设备后，在下方输入任务。';
+  if (follow) stream.scrollTop = stream.scrollHeight;
+  $('open-recording').hidden = !chat?.stepCount;
+  $('open-recording').textContent = chat?.recordingHidden
+    ? '恢复到脚本库'
+    : '查看录制 · ' + (chat?.stepCount || 0) + ' 步';
+  $('manual-record-label').hidden = !chat || workspaceMode !== 'chat';
+  $('manual-record').checked = !!s.recordManual;
+}
+$('chats').onchange = () => {
+  const s = state();
+  s.draft = '';
+  s.lastChatRun = null;
+  s.recordManual = false;
+  refreshLibrary(selected, $('chats').value);
 };
+$('new-chat').onclick = () => {
+  const s = state();
+  s.libraryVersion++;
+  s.chat = null;
+  s.lastChatRun = null;
+  s.draft = '';
+  s.recordManual = false;
+  drawChat();
+  renderButtons();
+  $('prompt').focus();
+};
+$('manual-record').onchange = () => {
+  state().recordManual = $('manual-record').checked;
+};
+$('prompt').oninput = () => {
+  state().draft = $('prompt').value;
+  renderButtons();
+};
+$('prompt').onkeydown = (e) => {
+  if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
+  if (!$('start').disabled && !$('start').hidden) {
+    e.preventDefault();
+    $('start').click();
+  }
+};
+function composer() {
+  if (workspaceMode === 'chat') drawChat();
+  $('model-line').textContent = model?.model || 'deepseek-flash';
+  $('model-line').title = model?.endpoint || '';
+}
+function switchMode(value) {
+  workspaceMode = value;
+  const chatting = value === 'chat';
+  $('workspace-title').textContent = chatting ? '对话' : '脚本库';
+  $('chat-panel').hidden = !chatting;
+  $('script-panel').hidden = chatting;
+  $('script-journal').hidden = chatting;
+  $('new-chat').hidden = !chatting;
+  $('import-script').hidden = chatting;
+  $(chatting ? 'chat-mode' : 'script-mode').setAttribute('aria-current', 'page');
+  $(chatting ? 'script-mode' : 'chat-mode').removeAttribute('aria-current');
+  $('manual-record-label').hidden = !chatting || !state().chat;
+  render();
+}
+$('chat-mode').onclick = () => switchMode('chat');
+$('script-mode').onclick = () => {
+  switchMode('script');
+  refreshScripts();
+};
+
+function drawScripts() {
+  const query = $('script-search').value.trim().toLocaleLowerCase();
+  const rows = scripts
+    .filter((entry) => entry.title.toLocaleLowerCase().includes(query))
+    .map((entry) => {
+      const row = element('article', undefined, 'script-row');
+      row.dataset.id = entry.id;
+      row.tabIndex = -1;
+      const body = element('div', undefined, 'script-info');
+      const platformText =
+        entry.platforms.length === 3 ? '全平台' : entry.platforms.map(nice).join(' / ');
+      const source = { builtin: '内置', import: '导入', record: '对话录制' }[entry.source];
+      const meta = [source, platformText, entry.stepCount + ' 步'];
+      if (entry.partial) meta.push('部分录制');
+      body.append(element('h3', entry.title), element('p', meta.join(' · '), 'muted'));
+      const run = element('button', '运行', 'outline run-script');
+      run.dataset.platforms = entry.platforms.join(',');
+      run.setAttribute('aria-label', '运行 ' + entry.title);
+      run.onclick = () => {
+        const id = selected;
+        if (!id) return;
+        busy(id, async () => {
+          await api.start(id, 'script', entry.id);
+          if (id === selected) setJournal(true);
+        });
+      };
+      const manage = element('button', '管理', 'outline');
+      manage.setAttribute('aria-label', '管理 ' + entry.title);
+      manage.onclick = () => {
+        managedScript = entry;
+        $('script-name').value = entry.title;
+        $('script-name').readOnly = entry.source === 'builtin';
+        $('save-name').hidden = $('remove-script').hidden = entry.source === 'builtin';
+        $('remove-confirm').hidden = true;
+        $('manage-feedback').textContent = '';
+        $('script-dialog').showModal();
+      };
+      const icon = element('span', undefined, 'script-glyph');
+      icon.setAttribute('aria-hidden', 'true');
+      row.append(icon, body, run, manage);
+      return row;
+    });
+  $('script-list').replaceChildren(
+    ...(rows.length ? rows : [element('p', '没有找到匹配的脚本。', 'muted')]),
+  );
+  renderButtons();
+}
+async function refreshScripts(focusId) {
+  const version = ++scriptsVersion;
+  try {
+    const rows = await api.scripts();
+    if (version !== scriptsVersion) return;
+    scripts = rows;
+    drawScripts();
+    if (focusId && workspaceMode === 'script')
+      Array.from($('script-list').children)
+        .find((r) => r.dataset.id === focusId)
+        ?.focus();
+  } catch (e) {
+    feedback('script-feedback', describe(e.message), 'error');
+  }
+}
+$('script-search').oninput = drawScripts;
+$('import-script').onclick = () => $('script-file').click();
+$('script-file').onchange = async () => {
+  const file = $('script-file').files[0];
+  $('script-file').value = '';
+  if (!file) return;
+  $('import-script').disabled = true;
+  try {
+    if (file.size > 8 * 1024 * 1024) throw Error('INVALID_FILE');
+    const name = file.name.replace(/\.json$/i, '').slice(0, 100) || '导入脚本';
+    const id = await api.importScript(name, await file.text());
+    $('script-search').value = '';
+    feedback('script-feedback', '已导入「' + name + '」。', 'success');
+    await refreshScripts(id);
+  } catch (e) {
+    feedback('script-feedback', describe(e.message), 'error');
+  } finally {
+    $('import-script').disabled = false;
+  }
+};
+$('open-recording').onclick = async () => {
+  const chat = state().chat;
+  if (!chat?.recordingId) return;
+  try {
+    if (chat.recordingHidden) {
+      await api.restoreRecording(chat.recordingId);
+      chat.recordingHidden = false;
+    }
+    $('script-search').value = '';
+    switchMode('script');
+    await refreshScripts(chat.recordingId);
+  } catch (e) {
+    message(selected, describe(e.message));
+  }
+};
+async function manageScript(action) {
+  const entry = managedScript;
+  if (!entry || $('script-dialog').dataset.busy) return;
+  $('script-dialog').dataset.busy = 'true';
+  try {
+    if (action === 'rename') await api.renameScript(entry.id, $('script-name').value);
+    if (action === 'remove') {
+      await api.removeScript(entry.id);
+      for (const s of states.values())
+        if (s.chat?.recordingId === entry.id) s.chat.recordingHidden = true;
+    }
+    if (action === 'export' && !(await api.exportScript(entry.id))) return;
+    $('script-dialog').close();
+    feedback(
+      'script-feedback',
+      {
+        rename: '脚本名称已保存。',
+        remove: '已从脚本库移除。',
+        export: '脚本已导出。',
+      }[action],
+      'success',
+    );
+    await refreshScripts(action === 'remove' ? undefined : entry.id);
+  } catch (e) {
+    feedback('manage-feedback', describe(e.message), 'error');
+  } finally {
+    delete $('script-dialog').dataset.busy;
+  }
+}
+$('save-name').onclick = () => manageScript('rename');
+$('export-script').onclick = () => manageScript('export');
+$('remove-script').onclick = () => {
+  $('remove-question').textContent =
+    '从脚本库移除「' +
+    managedScript.title +
+    '」？' +
+    (managedScript.source === 'record' ? '原对话仍可查看，也可从对话中恢复录制。' : '');
+  $('remove-confirm').hidden = false;
+  $('cancel-remove').focus();
+};
+$('cancel-remove').onclick = () => {
+  $('remove-confirm').hidden = true;
+};
+$('confirm-remove').onclick = () => manageScript('remove');
+function setJournal(expanded) {
+  $('journal-content').hidden = !expanded;
+  $('journal-toggle').setAttribute('aria-expanded', String(expanded));
+}
+$('journal-toggle').onclick = () => setJournal($('journal-content').hidden);
 function displayRun(s, r) {
   if (!r) return;
   const records = new Map(s.history.map((x) => [x.id, x]));
@@ -502,7 +903,7 @@ function renderJournal() {
   const s = state(),
     r = s.current;
   const options = s.history.filter((x) => x.id !== s.active?.id);
-  if (s.active) options.unshift(s.active);
+  if (s.active && s.active.mode !== 'chat') options.unshift(s.active);
   $('history').hidden = !options.length;
   $('history').replaceChildren(
     ...options.map((x) => new Option(clock(x.started) + ' · ' + x.title, x.id)),
@@ -564,24 +965,19 @@ $('history').onchange = () => {
   renderJournal();
 };
 $('start').onclick = async () => {
-  const id = selected,
-    choice = $('task').value;
-  if (!id) return;
-  if (choice.includes('agent') && model?.needsKey) {
+  const id = selected;
+  if (!id || !state().draft.trim()) return;
+  if (model?.needsKey) {
     showModel();
     return;
   }
   await busy(id, async (s) => {
-    let imported;
-    if (choice.startsWith('custom')) {
-      const file = $('task-file').files[0];
-      if (!file || file.size > 262144) throw Error('INVALID_FILE');
-      imported = await file.text();
-    }
-    await api.start(id, choice, imported, choice === 'custom-agent' && $('vision').checked);
+    const submitted = s.draft;
+    await api.start(id, 'chat', { message: submitted.trim(), chatId: s.chat?.id });
+    if (s.draft === submitted) s.draft = '';
   });
 };
-$('stop').onclick = async () => {
+$('stop').onclick = $('chat-stop').onclick = async () => {
   const id = selected,
     s = state();
   if (!s.active) return;
@@ -596,15 +992,25 @@ $('stop').onclick = async () => {
   }
 };
 api.onEvent((event) => {
+  if (event.type === 'setup') {
+    $('scan-status').textContent = event.message;
+    feedback('settings-status', event.message, 'info');
+    return;
+  }
   const s = state(event.device);
   if (event.type === 'run') {
     const r = event.record;
     s.active = r.status === 'running' ? r : null;
-    s.current = r;
+    if (r.mode !== 'chat') s.current = r;
     if (!s.active) {
-      displayRun(s, r);
+      if (r.mode !== 'chat') displayRun(s, r);
+      else s.lastChatRun = r;
+      if (r.mode === 'chat') {
+        refreshLibrary(event.device, r.chatId);
+        if (workspaceMode === 'script') refreshScripts();
+      }
       s.stopping = false;
-      if (r.reason === 'ACTION_OUTCOME_UNKNOWN') s.notice = describe(r.reason);
+      if (r.reason === 'ACTION_OUTCOME_UNKNOWN') message(event.device, describe(r.reason), 'warning');
     }
     if (selected === event.device) render();
   } else if (s.active?.id === event.runId) {
@@ -622,20 +1028,67 @@ function dialog(title, settings = false) {
   if (!$('dialog').open) $('dialog').showModal();
 }
 function showModel() {
-  dialog('模型设置', true);
-  $('endpoint').textContent = model.model + ' · ' + model.endpoint;
+  if (!model) return;
+  dialog('工作台设置', true);
+  $('endpoint').value = model.endpoint;
+  $('model-id').value = model.model;
+  $('team').value = model.team;
+  $('wda-bundle').value = model.bundle;
+  $('settings-status').textContent = '';
+  $('key').placeholder = model.hasKey ? '已配置，留空沿用当前端点的密钥' : '输入此端点的密钥';
+  api
+    .environment()
+    .then((env) => {
+      $('teams').replaceChildren(...env.teams.map((t) => new Option(t, t)));
+      $('platforms').replaceChildren(
+        ...['ios', 'android', 'harmony'].map((k) => {
+          const row = element('p', nice(k) + (env[k] ? ' · 已找到工具链' : ' · 缺少平台工具'));
+          if (!env[k]) {
+            const link = element('button', k === 'android' ? '自动安装' : '获取平台工具', 'text-button');
+            link.onclick = async () => {
+              link.disabled = true;
+              try {
+                await api.platformSetup(k);
+                if (k === 'android') {
+                  row.textContent = 'Android · 环境已就绪';
+                  await scan();
+                }
+              } catch (e) {
+                feedback('settings-status', describe(e.message), 'error');
+              } finally {
+                link.disabled = false;
+              }
+            };
+            row.append(link);
+          }
+          return row;
+        }),
+      );
+    })
+    .catch((e) => {
+      feedback('settings-status', describe(e.message), 'error');
+    });
   $('key').value = '';
   $('key').focus();
 }
 $('model-settings').onclick = showModel;
 $('save-key').onclick = async () => {
   try {
-    model = await api.setKey($('key').value);
+    $('save-key').disabled = true;
+    model = await api.saveSettings({
+      endpoint: $('endpoint').value,
+      model: $('model-id').value,
+      key: $('key').value,
+      team: $('team').value.trim(),
+      bundle: $('wda-bundle').value.trim(),
+    });
     $('key').value = '';
     $('dialog').close();
     composer();
   } catch (e) {
-    $('endpoint').textContent = describe(e.message);
+    feedback('settings-status', describe(e.message), 'error');
+  } finally {
+    $('save-key').disabled = false;
   }
 };
 $('dialog').onclose = () => {
@@ -661,6 +1114,19 @@ $('diagnose').onclick = () => {
     ];
     $('diagnostic-content').replaceChildren(...rows.map((v) => element('p', v)));
   });
+};
+$('emulator').onclick = async () => {
+  $('emulator').disabled = true;
+  $('emulator').textContent = '正在准备 Android 模拟器…';
+  try {
+    await api.startEmulator();
+    await scan();
+  } catch (e) {
+    $('scan-status').textContent = describe(e.message);
+  } finally {
+    $('emulator').disabled = false;
+    $('emulator').textContent = '启动 Android 模拟器';
+  }
 };
 $('scan').onclick = scan;
 $('refresh').onclick = () => refresh();

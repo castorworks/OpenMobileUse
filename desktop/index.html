@@ -5,44 +5,122 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
     />
     <title>Open Mobile Use · 设备工作台</title>
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="style.css" />
+    <script src="timeline.js" defer></script>
     <script src="renderer.js" defer></script>
   </head>
   <body>
     <div class="shell">
       <aside class="rail">
         <div class="brand">
-          <span class="brand-mark" aria-hidden="true"></span>
-          <div>Open Mobile Use<small>设备工作台</small></div>
+          <img class="brand-mark" src="brand.png" width="38" height="38" alt="" />
+          <div class="brand-name">Open Mobile Use<small>设备工作台</small></div>
         </div>
+        <nav class="mode-nav" aria-label="运行方式">
+          <button id="chat-mode" aria-current="page">
+            <span class="nav-icon chat-icon" aria-hidden="true"></span>对话
+          </button>
+          <button id="script-mode">
+            <span class="nav-icon scripts-icon" aria-hidden="true"></span>脚本
+          </button>
+        </nav>
         <div class="rail-heading">
           <h2>设备</h2>
           <button class="icon-button" id="scan" title="重新扫描设备" aria-label="重新扫描设备">↻</button>
         </div>
         <nav id="devices" aria-label="目标设备"></nav>
         <p id="scan-status" class="rail-note" role="status"></p>
+        <button
+          id="emulator"
+          class="rail-emulator"
+          title="首次使用时会下载缺少的 Android SDK 组件和系统镜像"
+        >
+          启动 Android 模拟器
+        </button>
         <div class="rail-bottom">
           <span class="host-dot"></span>本机工作台<button id="model-settings" class="rail-link">
-            模型设置
+            工作台设置
           </button>
         </div>
       </aside>
       <main class="workspace">
         <header class="workspace-head">
+          <h1 id="workspace-title">对话</h1>
+          <button id="new-chat" class="outline">＋ 新对话</button>
+          <button id="import-script" class="outline" hidden>＋ 导入脚本</button>
+          <input id="script-file" type="file" accept=".json,application/json" hidden />
+        </header>
+        <section id="chat-panel" aria-label="任务对话">
+          <div class="chat-history">
+            <label for="chats">历史对话</label>
+            <select id="chats" aria-label="历史对话"></select>
+            <button class="text-button" id="open-recording" hidden>查看录制</button>
+          </div>
+          <div class="chat-stream" id="chat-stream">
+            <div class="chat-empty" id="chat-empty">
+              <span class="empty-chat-icon" aria-hidden="true"></span>
+              <h2>想让手机做什么？</h2>
+              <p class="muted" id="chat-empty-hint">选择设备后，在下方输入任务。</p>
+            </div>
+            <div id="transcript" role="log" aria-live="polite"></div>
+          </div>
+          <div class="compose-box">
+            <label for="prompt" class="sr-only">发送任务或补充说明</label>
+            <textarea id="prompt" rows="2" maxlength="2000" placeholder="输入任务或补充说明…"></textarea>
+            <div class="compose-foot">
+              <span class="model-line" id="model-line"></span>
+              <button class="primary" id="start" title="Enter 发送，Shift + Enter 换行">发送 ↑</button>
+              <button class="stop" id="chat-stop" hidden>停止</button>
+            </div>
+          </div>
+          <p class="hint recording-note">AI 读取可见控件，操作和输入内容自动保存到脚本库。</p>
+        </section>
+        <section id="script-panel" aria-label="脚本库" hidden>
+          <label for="script-search" class="sr-only">搜索脚本名称</label>
+          <input type="search" id="script-search" placeholder="搜索脚本名称" />
+          <p class="hint" id="script-target"></p>
+          <div id="script-list"></div>
+          <p class="muted" role="status" id="script-feedback"></p>
+        </section>
+        <section class="journal" id="script-journal" hidden>
+          <div class="section-head">
+            <button id="journal-toggle" aria-controls="journal-content" aria-expanded="false">
+              脚本运行记录
+            </button>
+            <span id="run-status" class="badge">待运行</span>
+            <button class="stop" id="stop" hidden>停止任务</button>
+          </div>
+          <div id="journal-content" hidden>
+            <label for="history" class="sr-only">历史运行</label
+            ><select id="history" hidden></select>
+            <p id="result-message" class="result" role="status"></p>
+            <div id="readings" hidden>
+              <div><small>初值</small><b>—</b></div>
+              <div><small>到达</small><b>—</b></div>
+              <div><small>复查</small><b>—</b></div>
+            </div>
+            <ol id="events"></ol>
+            <p id="journal-empty" class="muted">运行后可查看每一步和验证结果。</p>
+          </div>
+        </section>
+      </main>
+      <aside class="phone-panel" aria-label="手机画面与手动操作">
+        <header class="workspace-head">
           <div>
-            <div class="eyeline"><span class="short-line"></span>设备观察</div>
-            <h1 id="device-name">选择设备</h1>
+            <h2>手机画面</h2>
+            <p id="device-name" class="muted">选择设备</p>
           </div>
           <button id="diagnose" class="outline">连接诊断</button>
         </header>
         <div id="notice" role="status" hidden></div>
         <section class="viewer">
           <div class="viewbar">
-            <b>手机画面</b><span id="frame-time">尚未采集</span
-            ><button id="refresh" class="text-button">↻ 刷新画面</button>
+            <span id="frame-time">尚未采集</span>
+            <button id="refresh" class="text-button">↻ 刷新画面</button>
           </div>
           <div class="canvas" id="canvas">
             <div class="no-frame" id="no-frame">
@@ -56,7 +134,8 @@
             </div>
           </div>
           <div class="viewfoot">
-            <span class="mini-dot"></span><span id="foreground">等待连接</span><span id="geometry"></span>
+            <span class="mini-dot"></span><span id="foreground">等待连接</span
+            ><span id="geometry"></span>
           </div>
         </section>
         <section class="manual">
@@ -83,63 +162,49 @@
               /><button id="input">输入</button>
             </div>
           </div>
-          <p id="manual-hint" class="hint"></p>
-        </section>
-      </main>
-      <aside class="inspector">
-        <header>
-          <h2>运行控制</h2>
-        </header>
-        <section class="composer">
-          <label for="task">选择任务</label
-          ><select id="task">
-            <option value="agent-bluetooth">Agent · 蓝牙导航</option>
-            <option value="script-bluetooth">脚本 · 蓝牙导航</option>
-            <option value="script-search">脚本 · 设置搜索</option>
-            <option value="custom-agent">导入 Agent 任务…</option>
-            <option value="custom-script">导入离线脚本…</option>
-          </select>
-          <input
-            type="file"
-            id="task-file"
-            accept=".json,application/json"
-            aria-label="任务 JSON 文件"
-            hidden
-          />
-          <label id="vision-label" class="checkbox" hidden
-            ><input type="checkbox" id="vision" />允许发送任务指定的控件裁剪图</label
+          <label id="manual-record-label" class="checkbox" hidden
+            ><input id="manual-record" type="checkbox" />将手动操作加入当前对话的录制</label
           >
-          <p class="model-line" id="model-line"></p>
-          <button class="primary" id="start">▶　开始运行</button
-          ><button class="stop" id="stop" hidden>■　停止任务</button>
-        </section>
-        <section class="journal">
-          <div class="section-head">
-            <h2>运行记录</h2>
-            <span id="run-status" class="badge">待运行</span>
-          </div>
-          <label for="history" class="sr-only">历史运行</label
-          ><select id="history" hidden></select>
-          <p id="result-message" class="result" role="status"></p>
-          <div id="readings" hidden>
-            <div><small>初值</small><b>—</b></div>
-            <div><small>到达</small><b>—</b></div>
-            <div><small>复查</small><b>—</b></div>
-          </div>
-          <ol id="events"></ol>
-          <p id="journal-empty" class="muted">运行后可查看每一步和验证结果。</p>
+          <p id="manual-hint" class="hint"></p>
         </section>
       </aside>
     </div>
-    <dialog id="dialog">
+    <dialog id="script-dialog" aria-labelledby="manage-title">
+      <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
+      <h2 id="manage-title">管理脚本</h2>
+      <label for="script-name">脚本名称</label><input id="script-name" maxlength="100" />
+      <div class="manage-actions">
+        <button id="save-name" class="primary">保存名称</button>
+        <button id="export-script" class="outline">导出 JSON</button>
+        <button id="remove-script" class="text-button danger">移除</button>
+      </div>
+      <div id="remove-confirm" hidden>
+        <p id="remove-question"></p>
+        <button id="cancel-remove" class="outline">取消</button>
+        <button id="confirm-remove" class="outline danger">确认移除</button>
+      </div>
+      <p class="hint" id="manage-feedback" role="status"></p>
+    </dialog>
+    <dialog id="dialog" aria-labelledby="dialog-title">
       <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
       <h2 id="dialog-title"></h2>
       <div id="diagnostic-content"></div>
       <div id="model-content" hidden>
-        <p id="endpoint"></p>
-        <label for="key">本次会话的 API Key</label><input id="key" type="password" autocomplete="off" />
-        <p class="hint">密钥只保存在本次工作台进程内。</p>
-        <button class="primary" id="save-key">应用</button>
+        <label for="endpoint">模型接口地址</label><input id="endpoint" type="url" />
+        <label for="model-id">模型名称</label><input id="model-id" /> <label for="key">API Key</label
+        ><input id="key" type="password" autocomplete="off" />
+        <p class="hint">密钥使用 macOS 钥匙串加密。免鉴权的本机模型可留空。</p>
+        <details id="host-setup">
+          <summary>设备环境与 iPhone 签名</summary>
+          <div id="platforms"></div>
+          <label for="team">Apple Team ID</label
+          ><input id="team" list="teams" maxlength="10" placeholder="自动检测" /><datalist
+            id="teams"
+          ></datalist>
+          <label for="wda-bundle">WDA Bundle ID</label><input id="wda-bundle" />
+        </details>
+        <p class="hint" id="settings-status" role="status"></p>
+        <button class="primary" id="save-key">保存设置</button>
       </div>
     </dialog>
   </body>

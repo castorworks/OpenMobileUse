@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { mkdir, readFile, symlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { appiumEndpoint } from '../dist/webdriver.js';
@@ -26,7 +28,7 @@ async function status(base) {
   return value.ready ? 'ready' : 'waiting';
 }
 
-function launch(base) {
+async function launch(base) {
   const entry = join(project, 'node_modules', 'appium', 'index.js');
   if (!existsSync(entry)) throw Error('APPIUM_NOT_INSTALLED');
   const env = { ...process.env };
@@ -34,11 +36,43 @@ function launch(base) {
   const jdk = '/Applications/Android Studio.app/Contents/jbr/Contents/Home';
   if (!env.ANDROID_HOME && existsSync(sdk)) env.ANDROID_HOME = sdk;
   if (!env.JAVA_HOME && existsSync(jdk)) env.JAVA_HOME = jdk;
-  const node = env.npm_node_execpath || (process.versions.electron ? 'node' : process.execPath);
+  // Keep Appium's writable driver manifest outside a packaged application.
+  const node = process.execPath;
+  if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
+  if (process.resourcesPath && project.startsWith(process.resourcesPath + '/')) {
+    const lock = await readFile(join(project, 'package-lock.json'));
+    const key = createHash('sha256').update(project).update(lock).digest('hex').slice(0, 16);
+    const home = join(env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), 'drivers', key);
+    const modules = join(home, 'node_modules');
+    await mkdir(modules, { recursive: true });
+    for (const name of ['appium-xcuitest-driver', 'appium-uiautomator2-driver']) {
+      await symlink(join(project, 'node_modules', name), join(modules, name)).catch((e) => {
+        if (e.code !== 'EEXIST') throw e;
+      });
+    }
+    env.APPIUM_HOME = home;
+    env.OMU_NODE_BINARY = node;
+    env.PATH = join(project, 'bin') + ':' + env.PATH;
+  }
+  env.PATH = [
+    env.JAVA_HOME && join(env.JAVA_HOME, 'bin'),
+    env.ANDROID_HOME && join(env.ANDROID_HOME, 'platform-tools'),
+    dirname(node),
+    env.PATH,
+  ]
+    .filter(Boolean)
+    .join(':');
   const host = base.hostname === '[::1]' ? '::1' : base.hostname;
   const args = [
-    entry, '--address', host, '--port', base.port || '80',
-    '--base-path', base.pathname, '--log-level', 'warn',
+    entry,
+    '--address',
+    host,
+    '--port',
+    base.port || '80',
+    '--base-path',
+    base.pathname,
+    '--log-level',
+    'warn',
   ];
   const child = spawn(node, args, { cwd: project, env, stdio: ['ignore', 'inherit', 'inherit'] });
   // 'close' also follows a spawn error (e.g. a Node binary removed since installation).
@@ -82,7 +116,7 @@ export class LocalAppium {
         if (spawned && this.owned !== spawned) throw Error('APPIUM_START_FAILED');
         if (state === 'absent' && !this.owned) {
           if (base.protocol === 'https:') throw Error('APPIUM_HTTPS_UNAVAILABLE');
-          spawned = this.owned = launch(base);
+          spawned = this.owned = await launch(base);
           spawned.closed.then(() => {
             if (this.owned === spawned) this.owned = undefined;
           });

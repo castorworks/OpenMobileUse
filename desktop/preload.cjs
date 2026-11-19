@@ -9,7 +9,18 @@ for (const method of [
   'stop',
   'history',
   'config',
-  'setKey',
+  'saveSettings',
+  'library',
+  'conversation',
+  'scripts',
+  'importScript',
+  'renameScript',
+  'removeScript',
+  'restoreRecording',
+  'exportScript',
+  'startEmulator',
+  'environment',
+  'platformSetup',
 ]) {
   bridge[method] = async (...args) => {
     const r = await ipcRenderer.invoke('omu:request', method, ...args);

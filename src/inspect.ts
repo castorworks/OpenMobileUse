@@ -58,7 +58,7 @@ export async function captureView(device: StepDevice, identity: string) {
         },
       };
     });
-    return { metadata, controls, image, layout: view.layout };
+    return { metadata, controls, image, layout: view.layout, before, view };
   }
   throw new Error('STALE_OBSERVATION');
 }

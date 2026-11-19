@@ -1,25 +1,46 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
 import { setTimeout as wait } from 'node:timers/promises';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
 import { compileStep, readScript, reason } from '../dist/script.js';
-import { executeStep } from '../dist/steps.js';
+import { executeStep, guardObservation, resolveControl, uniqueSelector } from '../dist/steps.js';
 import { executeRound } from '../dist/run.js';
-import { parseTask } from '../dist/task.js';
-import { chatClient, modelConfig } from '../dist/chat.js';
+import {
+  listScripts,
+  importScript,
+  removeScript,
+  renameScript,
+  recordOptions,
+  restoreRecording,
+  scriptEntry,
+} from './script-library.mjs';
+import { chatClient } from '../dist/chat.js';
 import { LocalAppium } from './appium.mjs';
 
+import { runConversation } from '../dist/conversation.js';
+import {
+  compileRecording,
+  maxRecordingSteps,
+  recordStep,
+  replayRecording,
+  screenAvailable,
+} from '../dist/recording.js';
+import {
+  conversations,
+  deviceDir,
+  loadConversation,
+  overview,
+  saveConversation,
+  writeJSON,
+} from './library.mjs';
+import { DesktopEmulator } from './emulator.mjs';
+import { Preferences } from './preferences.mjs';
+
 const platforms = ['harmony', 'ios', 'android'];
-const builtins = {
-  'agent-bluetooth': { mode: 'agent', title: '蓝牙导航' },
-  'script-bluetooth': { mode: 'script', title: '蓝牙导航', file: 'settings-bluetooth.json' },
-  'script-search': { mode: 'script', title: '设置搜索', file: 'settings-search.json' },
-};
 export function errorCode(error) {
   if (error instanceof SyntaxError) return 'INVALID_JSON';
   const code = reason(error);
@@ -28,22 +49,11 @@ export function errorCode(error) {
 function imageUrl(png) {
   return 'data:image/png;base64,' + png.toString('base64');
 }
-function reportDir(identity) {
-  const device = createHash('sha256').update(identity).digest('hex');
-  return join(process.env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), 'workbench', device);
-}
-async function saveRun(identity, record) {
-  const dir = reportDir(identity);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const file = join(dir, record.id + '.json');
-  await writeFile(file + '.tmp', JSON.stringify(record), { mode: 0o600 });
-  await rename(file + '.tmp', file);
-}
-async function readRuns(identity) {
-  const dir = reportDir(identity);
+async function readRuns(identity, ids) {
+  const dir = deviceDir(identity, 'workbench');
   let files;
   try {
-    files = await readdir(dir);
+    files = ids ? ids.map((id) => id + '.json') : await readdir(dir);
   } catch (error) {
     if (error.code === 'ENOENT') return [];
     throw error;
@@ -51,13 +61,57 @@ async function readRuns(identity) {
   const rows = await Promise.all(
     files
       .filter((f) => /^[a-f0-9-]{36}\.json$/.test(f))
-      .map(async (f) => JSON.parse(await readFile(join(dir, f), 'utf8'))),
+      .map(async (f) => {
+        try {
+          return JSON.parse(await readFile(join(dir, f), 'utf8'));
+        } catch (e) {
+          if (e.code === 'ENOENT') return null; // An active turn has no completed run file yet.
+          throw e;
+        }
+      }),
   );
-  return rows.sort((a, b) => b.started.localeCompare(a.started)).slice(0, 30);
+  return rows.filter(Boolean).sort((a, b) => b.started.localeCompare(a.started));
+}
+
+// Older turns predate runId. Only pair matching outcomes within this chat, in execution order.
+function turnsWithRuns(turns, runs) {
+  const byId = new Map(runs.map((r) => [r.id, r]));
+  const linked = new Set(turns.map((t) => t.runId));
+  const key = (title, status, reason, answer) => JSON.stringify([title, status, reason, answer]);
+  const legacy = new Map(),
+    counts = new Map();
+  const turnKey = (t) => key(t.user.slice(0, 64), t.status, t.reason, t.assistant);
+  for (const t of turns) if (!t.runId) counts.set(turnKey(t), (counts.get(turnKey(t)) || 0) + 1);
+  for (const r of runs.slice().reverse()) {
+    if (linked.has(r.id)) continue;
+    const k = key(r.title, r.status, r.reason, r.result?.answer);
+    if (!legacy.has(k)) legacy.set(k, []);
+    legacy.get(k).push(r);
+  }
+  for (const [k, rows] of legacy) if (rows.length !== counts.get(k)) legacy.delete(k);
+  return turns.map((t) => {
+    const r = t.runId ? byId.get(t.runId) : legacy.get(turnKey(t))?.shift();
+    if (!r) return t;
+    const events = t.runId
+      ? r.events
+      : r.events.map((e) =>
+          e.name?.startsWith('输入「') ? { ...e, name: '在' + e.name.slice(2) + '中输入' } : e,
+        );
+    return {
+      ...t,
+      runId: r.id,
+      events,
+      started: r.started,
+      ended: r.ended,
+      replyRequested: r.result?.replyRequested,
+      historyError: r.historyError || r.cleanupError,
+    };
+  });
 }
 
 export class Workbench {
   targets = new Map();
+  frames = new Map();
   operations = new Map();
   runs = new Map();
   closing = false;
@@ -65,37 +119,61 @@ export class Workbench {
     this.emit = emit;
     this.bridge = options.bridge || { list, openDevice, doctor };
     this.appium = options.appium || new LocalAppium();
-    this.modelOptions = {
-      baseURL: process.env.OMU_MODEL_BASE_URL,
-      model: process.env.OMU_MODEL,
-      apiKeyEnv: process.env.OMU_MODEL_KEY_ENV,
-    };
-    this.keyEnv =
-      this.modelOptions.apiKeyEnv ||
-      (!this.modelOptions.baseURL ||
-      new URL(this.modelOptions.baseURL).href === 'https://api.deepseek.com/'
-        ? 'DEEPSEEK_API_KEY'
-        : undefined);
-    this.credential = this.keyEnv ? process.env[this.keyEnv] : undefined;
-    if (this.keyEnv) delete process.env[this.keyEnv];
+    this.emulator = new DesktopEmulator(options.confirmSetup, (message) =>
+      this.emit({ type: 'setup', message }),
+    );
+    this.preferences = options.preferences || new Preferences(options.secure);
+  }
+  startEmulator() {
+    return this.emulator.start();
   }
   config() {
+    return this.preferences.config();
+  }
+  saveSettings(options) {
+    return this.preferences.save(options);
+  }
+  async library(id) {
+    this.target(id);
+    return conversations(id);
+  }
+  async conversation(id, chatId) {
+    this.target(id);
+    const chat = await loadConversation(id, chatId);
+    const group = basename(deviceDir(id, 'conversations'));
+    const options = await recordOptions(group, chat.id);
+    const runIds = chat.turns.every((t) => t.runId) ? chat.turns.map((t) => t.runId) : undefined;
+    const runs = await readRuns(id, runIds);
     return {
-      model: this.modelOptions.model || 'deepseek-flash',
-      endpoint: this.modelOptions.baseURL || 'https://api.deepseek.com',
-      needsKey: Boolean(this.keyEnv && !this.credential),
+      ...overview(chat),
+      turns: turnsWithRuns(
+        chat.turns,
+        runs.filter((r) => r.chatId === chat.id),
+      ),
+      recordingId: 'record:' + group + ':' + chat.id,
+      recordingHidden: !!options.hidden,
     };
   }
-  setKey(key) {
-    if (typeof key !== 'string' || !key.trim() || key.length > 2048 || !this.keyEnv)
-      throw Error('INVALID_MODEL_KEY');
-    this.credential = key.trim();
-    return this.config();
+  scripts() {
+    return listScripts();
+  }
+  importScript(title, text) {
+    return importScript(title, text);
+  }
+  renameScript(id, title) {
+    return renameScript(id, title);
+  }
+  removeScript(id) {
+    return removeScript(id);
+  }
+  restoreRecording(id) {
+    return restoreRecording(id);
   }
   async devices() {
     const results = await Promise.allSettled(platforms.map((p) => this.bridge.list(p)));
     const rows = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
     this.targets = new Map(rows.map((t) => [t.platform + ':' + t.id, t]));
+    for (const id of this.frames.keys()) if (!this.targets.has(id)) this.frames.delete(id);
     return {
       devices: [...this.targets].map(([id, t]) => ({ ...t, id })),
       unavailable: platforms.filter((_, i) => results[i].status === 'rejected'),
@@ -145,8 +223,7 @@ export class Workbench {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         capture = await captureView(device, identity);
-        if (!capture.metadata.controlsChangedDuringCapture) break;
-        if (attempt === 2) throw Error('STALE_OBSERVATION');
+        break;
       } catch (error) {
         if (
           attempt === 2 ||
@@ -158,7 +235,12 @@ export class Workbench {
       }
       await wait(200);
     }
-    const { metadata, controls, image } = capture;
+    const { metadata, controls, image, before, view } = capture;
+    this.frames.set(identity, {
+      token: metadata.observationId,
+      view: { ...view, layout: undefined },
+      before: metadata.controlsChangedDuringCapture ? { ...before, layout: undefined } : undefined,
+    });
     return {
       ...metadata,
       image: imageUrl(image),
@@ -187,13 +269,42 @@ export class Workbench {
       this.bridge.doctor(t, randomUUID(), () => this.appium.ensureReady()),
     );
   }
-  action(id, raw, observation) {
+  action(id, raw, observation, chatId) {
     return this.exclusive(id, async (t) => {
-      if (!/^[a-f0-9]{64}$/.test(observation) || !['tap', 'swipe', 'input', 'back'].includes(raw?.action))
+      if (
+        !/^[a-f0-9]{64}$/.test(observation) ||
+        !['tap', 'swipe', 'input', 'back'].includes(raw?.action)
+      )
         throw Error('INVALID_ACTION');
       const { step } = await compileStep(raw, t.platform);
       return this.session(t, randomUUID(), null, 'foreground', async (device) => {
-        const result = await executeStep(device, id, step, observation);
+        const frame = this.frames.get(id);
+        if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
+        const view = frame.view;
+        const chat = chatId ? await loadConversation(id, chatId) : null;
+        const validate = guardObservation(id, view, step, chat ? screenAvailable : undefined);
+        // A screenshot falls between two layout reads. Check the actual gesture region on both sides.
+        if (frame.before && (step.kind === 'swipe' || 'point' in step)) validate(frame.before);
+        let item;
+        if (chat) {
+          if (chat.script.steps.length >= maxRecordingSteps) throw Error('RECORDING_FULL');
+          screenAvailable(view);
+          const node = step.selector && resolveControl(view, step.selector, step.kind === 'input');
+          if (node && !raw.id && !raw.label) {
+            const selector = uniqueSelector(view, node);
+            if (!selector) throw Error('RECORDING_TARGET_UNAVAILABLE');
+            raw = { ...raw, ...selector };
+          }
+          item = recordStep(view, raw, node);
+        }
+        const result = await executeStep(device, id, step, validate);
+        if (chat) {
+          chat.script.steps.push(item);
+          chat.updated = new Date().toISOString();
+          await saveConversation(id, chat).catch(() => {
+            throw Error('RECORDING_WRITE_FAILED');
+          });
+        }
         // Keep a confirmed write distinct from a subsequent capture failure.
         try {
           return { result, frame: await this.frame(device, id) };
@@ -203,40 +314,39 @@ export class Workbench {
       });
     });
   }
-  async history(id) {
+  async history(id, scriptsOnly = false) {
     this.target(id);
-    return { history: await readRuns(id), current: this.runs.get(id)?.record };
+    const rows = await readRuns(id);
+    return {
+      history: (scriptsOnly ? rows.filter((r) => !r.chatId) : rows).slice(0, 30),
+      current: this.runs.get(id)?.record,
+    };
   }
-  async start(id, choice, imported, vision = false) {
+  async start(id, choice, imported) {
     const t = this.target(id);
     if (!t.available) throw Error(connectionError(t));
-    const custom = choice === 'custom-agent' || choice === 'custom-script';
-    const preset = custom
-      ? {
-          title: choice === 'custom-agent' ? '自定义 Agent' : '自定义脚本',
-          mode: choice === 'custom-agent' ? 'agent' : 'script',
-        }
-      : Object.hasOwn(builtins, choice) && builtins[choice];
-    if (!preset) throw Error('UNKNOWN_TASK');
-    if (custom && (typeof imported !== 'string' || Buffer.byteLength(imported) > 262144))
-      throw Error('INVALID_FILE');
-    const data = custom
-      ? JSON.parse(imported)
-      : preset.file
-        ? JSON.parse(await readFile(new URL('../examples/' + preset.file, import.meta.url), 'utf8'))
-        : undefined;
-    const script = preset.mode === 'script' ? await readScript(data, t.platform) : undefined;
-    const task = custom && preset.mode === 'agent' ? await parseTask(data, t.platform) : undefined;
-    if (vision && !task?.actions.some((a) => a.visual)) throw Error('TASK_HAS_NO_VISUAL_ACTIONS');
+    const conversational = choice === 'chat';
+    if (!conversational && choice !== 'script') throw Error('UNKNOWN_TASK');
+    if (
+      conversational &&
+      (typeof imported?.message !== 'string' ||
+        !imported.message.trim() ||
+        imported.message.length > 2000)
+    )
+      throw Error('INVALID_MESSAGE');
+    const entry = conversational ? undefined : await scriptEntry(imported);
+    if (entry && !entry.platforms.includes(t.platform)) throw Error('SCRIPT_PLATFORM_MISMATCH');
+    const playback =
+      entry?.script.schemaVersion === 2 ? await compileRecording(entry.script, t.platform) : null;
+    const script = entry && !playback ? await readScript(entry.script, t.platform) : undefined;
     const controller = new AbortController();
-    const config =
-      preset.mode === 'agent'
-        ? modelConfig(this.modelOptions, this.keyEnv ? { [this.keyEnv]: this.credential } : {})
-        : undefined;
+    const config = conversational ? this.preferences.clientConfig() : undefined;
     const record = {
       id: randomUUID(),
-      title: task?.id || preset.title,
-      mode: preset.mode,
+      title: conversational ? imported.message.trim().slice(0, 64) : entry.title,
+      user: conversational ? imported.message.trim() : undefined,
+      chatId: conversational ? imported.chatId || randomUUID() : undefined,
+      mode: choice,
       model: config?.model,
       endpoint: config?.baseURL,
       started: new Date().toISOString(),
@@ -253,15 +363,39 @@ export class Workbench {
           record.servedModel = m;
         },
         controller.signal,
+        conversational,
       );
     const done = this.exclusive(id, async (target) => {
-      try {
+      let chat, turn;
+      const progress = (event) => {
+        delete record.activity;
+        record.events.push({ ...event, at: new Date().toISOString() });
         notify();
+      };
+      const persist = async () => {
+        chat.updated = new Date().toISOString();
+        await saveConversation(id, chat).catch(() => {
+          throw Error('RECORDING_WRITE_FAILED');
+        });
+      };
+      try {
+        if (conversational) {
+          chat = imported.chatId
+            ? await loadConversation(id, imported.chatId)
+            : {
+                id: record.chatId,
+                turns: [],
+                script: { schemaVersion: 2, platform: t.platform, steps: [] },
+              };
+          turn = { runId: record.id, started: record.started, user: record.user, status: 'running' };
+          chat.turns.push(turn);
+          await persist();
+        }
         await this.session(
           target,
           record.id,
           controller.signal,
-          task || script?.kind === 'general' ? 'foreground' : 'settings',
+          conversational || playback || script?.kind === 'general' ? 'foreground' : 'settings',
           async (device) => {
             const showFrame = async () => {
               if (controller.signal.aborted) return;
@@ -292,16 +426,36 @@ export class Workbench {
                 return value;
               };
             }
-            const result = await executeRound(
-              watched,
-              id,
-              { task, script, decide, vision },
-              controller.signal,
-              (event) => {
-                record.events.push({ ...event, at: new Date().toISOString() });
-                notify();
-              },
-            );
+            let result;
+            if (conversational) {
+              const dialogue = chat.turns
+                .slice(-8)
+                .map(({ user, assistant, reason }) => ({ user, assistant: assistant || reason }));
+              const capture = async (item) => {
+                chat.script.steps.push(item);
+                await persist();
+                record.stepCount = chat.script.steps.length;
+              };
+              result = await runConversation(
+                watched,
+                id,
+                t.platform,
+                dialogue,
+                decide,
+                controller.signal,
+                capture,
+                (name, status) => progress({ kind: 'action', name, status }),
+                () => chat.script.steps.length < maxRecordingSteps,
+                (activity) => {
+                  record.activity = activity;
+                  notify();
+                },
+              );
+            } else if (playback) {
+              result = await replayRecording(watched, id, playback, controller.signal, progress);
+            } else {
+              result = await executeRound(watched, id, { script }, controller.signal, progress);
+            }
             record.result = result;
             record.status = result.status;
             record.reason = result.reason;
@@ -330,7 +484,14 @@ export class Workbench {
         if (record.reason === 'CANCELLED') record.status = 'cancelled';
         record.ended = new Date().toISOString();
         try {
-          await saveRun(id, record);
+          if (turn) {
+            turn.assistant = record.result?.answer;
+            turn.status = record.status;
+            turn.reason = record.reason;
+            chat.updated = record.ended;
+            await saveConversation(id, chat);
+          }
+          await writeJSON(deviceDir(id, 'workbench'), record.id + '.json', record);
         } catch {
           record.historyError = 'HISTORY_WRITE_FAILED';
         }
@@ -339,6 +500,7 @@ export class Workbench {
       }
     });
     this.runs.set(id, { controller, record });
+    notify();
     // Observe unexpected infrastructure failures even if the window has already closed.
     done.catch(() => {});
     return record.id;
@@ -353,6 +515,7 @@ export class Workbench {
     for (const { controller } of this.runs.values()) controller.abort(Error('CANCELLED'));
     await Promise.allSettled(this.operations.values());
     await this.appium.close();
-    this.credential = undefined;
+    this.emulator.close();
+    this.preferences.key = undefined;
   }
 }

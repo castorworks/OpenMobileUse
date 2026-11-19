@@ -15,6 +15,7 @@ export interface Control {
   editable: boolean;
   secret: boolean;
   navigation?: boolean;
+  checked?: boolean;
   value?: string;
 }
 export interface View {
@@ -172,7 +173,40 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
   } else throw new Error(stepHelp);
   return { step, device, observation };
 }
-export function observationId(device: string, view: View) {
+type ObservationScope = CommandStep | { kind: 'check'; selector?: Selector };
+
+function relevantControls(view: View, scope?: ObservationScope) {
+  if (!scope) return view.controls;
+  if (scope.kind === 'launch' || (scope.kind === 'check' && !scope.selector)) return [];
+  if (scope.kind === 'back' && !scope.selector)
+    return view.controls.map(({ bounds, ...state }) => state);
+  if ('selector' in scope && scope.selector && (scope.selector.id || scope.selector.label)) {
+    // Resolve the same unique control in the new tree. The driver uses its current bounds.
+    const hits = matchingControls(view, scope.selector);
+    const states = hits.map(({ bounds, ...state }) => state);
+    if (hits.length !== 1 || scope.kind === 'check' || scope.kind === 'waitFor') return states;
+    const center = visibleCenter(view, hits[0].bounds);
+    const atTarget = view.controls.filter(
+      ({ bounds: r }) =>
+        r.x <= center.x && center.x < r.x + r.width && r.y <= center.y && center.y < r.y + r.height,
+    );
+    return [states, atTarget.map((c) => [c.role, c.id])];
+  }
+  if (scope.kind === 'swipe' || (scope.kind === 'tap' && 'point' in scope)) {
+    const a = pointInView(view, scope.kind === 'swipe' ? scope.from : scope.point);
+    const b = scope.kind === 'swipe' ? pointInView(view, scope.to) : a;
+    return view.controls.filter(
+      ({ bounds: r }) =>
+        r.x <= Math.max(a.x, b.x) &&
+        r.x + r.width > Math.min(a.x, b.x) &&
+        r.y <= Math.max(a.y, b.y) &&
+        r.y + r.height > Math.min(a.y, b.y),
+    );
+  }
+  return view.controls;
+}
+
+export function observationId(device: string, view: View, scope?: ObservationScope) {
   return createHash('sha256')
     .update(
       JSON.stringify([
@@ -182,10 +216,23 @@ export function observationId(device: string, view: View) {
         view.width,
         view.height,
         view.rotation,
-        view.controls,
+        relevantControls(view, scope),
       ]),
     )
     .digest('hex');
+}
+
+export function guardObservation(
+  identity: string,
+  before: View,
+  scope: ObservationScope,
+  check?: (view: View) => void,
+) {
+  const expected = observationId(identity, before, scope);
+  return (current: View) => {
+    check?.(current);
+    if (observationId(identity, current, scope) !== expected) throw Error('STALE_OBSERVATION');
+  };
 }
 export function matchingControls(view: View, selector: Selector) {
   return view.controls.filter(
@@ -195,6 +242,13 @@ export function matchingControls(view: View, selector: Selector) {
       (!selector.role || n.role === selector.role),
   );
 }
+export function uniqueSelector(view: View, node: Control) {
+  const candidates: Selector[] = [];
+  if (node.id) candidates.push({ id: node.id, role: node.role });
+  for (const label of node.labels) candidates.push({ label, role: node.role });
+  return candidates.find((s) => matchingControls(view, s).length === 1);
+}
+
 export function resolveControl(view: View, selector: Selector, input: boolean) {
   const focusedOnly = input && !selector.id && !selector.label;
   const hits = matchingControls(view, selector).filter(
@@ -245,13 +299,19 @@ export async function executeStep(
   device: StepDevice,
   identity: string,
   step: CommandStep,
-  expected?: string,
+  expected?: string | ((view: View) => void),
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
+  function validate(view: View) {
+    const id = observationId(identity, view);
+    if (typeof expected === 'function') expected(view);
+    else if (expected && expected !== id) throw new Error('STALE_OBSERVATION');
+    return id;
+  }
   if (step.kind === 'launch') {
-    if (expected && observationId(identity, await device.snapshot()) !== expected)
-      throw new Error('STALE_OBSERVATION');
+    const id = expected ? validate(await device.snapshot()) : undefined;
+    signal?.throwIfAborted();
     const targetApp = await device.launch(step);
     const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp);
     return {
@@ -261,7 +321,7 @@ export async function executeStep(
       targetApp,
       foregroundApp,
       foregroundVerified: true,
-      observationId: expected,
+      observationId: id,
     };
   }
   if (step.kind === 'waitFor') {
@@ -271,8 +331,7 @@ export async function executeStep(
       signal?.throwIfAborted();
       try {
         const current = await device.snapshot();
-        const token = observationId(identity, current);
-        if (first && expected && expected !== token) throw new Error('STALE_OBSERVATION');
+        const token = first ? validate(current) : observationId(identity, current);
         first = false;
         const hits = matchingControls(current, step.selector);
         if (hits.length > 1) throw new Error('AMBIGUOUS_ELEMENT');
@@ -290,8 +349,7 @@ export async function executeStep(
     }
   }
   const view = await device.snapshot();
-  const id = observationId(identity, view);
-  if (expected && expected !== id) throw new Error('STALE_OBSERVATION');
+  const id = validate(view);
   signal?.throwIfAborted();
   if (step.kind === 'back') {
     if (step.selector) {

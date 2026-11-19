@@ -48,7 +48,8 @@ export interface Tool {
       type: 'object';
       properties: Record<
         string,
-        { type: 'string'; enum: string[] } | { type: 'number'; minimum: 0; maximum: 1 }
+        | { type: 'string'; enum?: string[]; maxLength?: number }
+        | { type: 'number'; minimum: 0; maximum: 1 }
       >;
       required: string[];
       additionalProperties: false;
@@ -93,10 +94,20 @@ export function remember(history: History, observation: object, reply: Reply, re
 }
 function parseReply(
   data: { choices?: { finish_reason?: string; message?: Partial<Reply> }[] } | null,
+  allowText: boolean,
 ): Reply {
   const choice = data?.choices?.[0];
   if (choice?.finish_reason === 'length') throw new Error('MODEL_REPLY_TRUNCATED');
   const msg = choice?.message;
+  if (
+    allowText &&
+    choice?.finish_reason === 'stop' &&
+    msg?.role === 'assistant' &&
+    !msg.tool_calls?.length &&
+    typeof msg.content === 'string' &&
+    msg.content.trim()
+  )
+    return { role: 'assistant', content: msg.content.trim().slice(0, 2000), tool_calls: [] };
   if (
     !msg ||
     msg.role !== 'assistant' ||
@@ -130,6 +141,7 @@ export function chatClient(
   transport: typeof fetch = fetch,
   onServedModel?: (model: string) => void,
   cancellation?: AbortSignal,
+  allowText = false,
 ): Decide {
   return async (messages, tools, deadline, count) => {
     const body = JSON.stringify({
@@ -173,7 +185,7 @@ export function chatClient(
         } catch {
           throw new Error('MODEL_INVALID_JSON');
         }
-        const reply = parseReply(parsed);
+        const reply = parseReply(parsed, allowText);
         if (typeof parsed.model === 'string' && /^[a-zA-Z0-9._:/-]{1,160}$/.test(parsed.model))
           onServedModel?.(parsed.model);
         return reply;
