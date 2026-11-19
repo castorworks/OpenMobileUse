@@ -12,7 +12,7 @@ function sameWindow(a: View, b: View) {
   );
 }
 
-export async function saveCapture(dir: string, device: StepDevice, identity: string) {
+export async function captureView(device: StepDevice, identity: string) {
   for (let attempt = 0; attempt < 2; attempt++) {
     let before: View, view: View, image: Buffer;
     try {
@@ -58,25 +58,30 @@ export async function saveCapture(dir: string, device: StepDevice, identity: str
         },
       };
     });
-    const staging = await mkdtemp(dir + '.');
-    try {
-      await writeFile(join(staging, 'screen.png'), image, { mode: 0o600 });
-      const xml = typeof view.layout === 'string';
-      await writeFile(
-        join(staging, xml ? 'layout.xml' : 'layout.json'),
-        xml ? (view.layout as string) : JSON.stringify(view.layout),
-        { mode: 0o600 },
-      );
-      await writeFile(
-        join(staging, 'controls.json'),
-        JSON.stringify({ ...metadata, controls }, null, 2) + '\n',
-        { mode: 0o600 },
-      );
-      await rename(staging, dir);
-    } finally {
-      await rm(staging, { recursive: true, force: true });
-    }
-    return { directory: dir, ...metadata };
+    return { metadata, controls, image, layout: view.layout };
   }
   throw new Error('STALE_OBSERVATION');
+}
+
+export async function saveCapture(dir: string, device: StepDevice, identity: string) {
+  const { metadata, controls, image, layout } = await captureView(device, identity);
+  const staging = await mkdtemp(dir + '.');
+  try {
+    await writeFile(join(staging, 'screen.png'), image, { mode: 0o600 });
+    const xml = typeof layout === 'string';
+    await writeFile(
+      join(staging, xml ? 'layout.xml' : 'layout.json'),
+      xml ? (layout as string) : JSON.stringify(layout),
+      { mode: 0o600 },
+    );
+    await writeFile(
+      join(staging, 'controls.json'),
+      JSON.stringify({ ...metadata, controls }, null, 2) + '\n',
+      { mode: 0o600 },
+    );
+    await rename(staging, dir);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+  }
+  return { directory: dir, ...metadata };
 }

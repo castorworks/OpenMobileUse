@@ -1,3 +1,4 @@
+import type { Progress } from './run.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export type Page = 'home' | 'connected' | 'preferences' | 'bluetooth' | 'other';
@@ -97,7 +98,12 @@ export async function prepareBluetooth(device: Device) {
   return baseline;
 }
 
-export async function roundTrip(source: Device, script: Step[], signal?: AbortSignal) {
+export async function roundTrip(
+  source: Device,
+  script: Step[],
+  signal?: AbortSignal,
+  progress?: Progress,
+) {
   const device: Device = {
     observe: () => {
       signal?.throwIfAborted();
@@ -112,6 +118,7 @@ export async function roundTrip(source: Device, script: Step[], signal?: AbortSi
   const evidence: { seq: number; phase: string; page: Page; marker: string; bluetooth?: boolean }[] = [];
   const record = (phase: string, s: Screen) => {
     if (!s.marker) throw new Error('Page marker missing');
+    progress?.({ kind: 'evidence', name: s.page, phase, bluetooth: s.bluetooth });
     evidence.push({
       seq: evidence.length + 1,
       phase,
@@ -144,6 +151,7 @@ export async function roundTrip(source: Device, script: Step[], signal?: AbortSi
       }
     } catch (error) {
       const code = (error as Error).message.split(':')[0];
+      progress?.({ kind: 'step', name: step.action, status: code });
       steps.push({
         ...item,
         status: 'failed',
@@ -152,6 +160,7 @@ export async function roundTrip(source: Device, script: Step[], signal?: AbortSi
       });
       return { status: 'failed', reason: code, failedStep: index + 1, steps, evidence };
     }
+    progress?.({ kind: 'step', name: step.action, status: 'succeeded' });
     steps.push({ ...item, durationMs: Math.round(performance.now() - started) });
   }
   if (reached !== milestones.length || (await device.observe()).page !== 'home')

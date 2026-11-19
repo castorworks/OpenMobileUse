@@ -1,3 +1,4 @@
+import type { Progress } from './run.js';
 import { executeStep, parseStep, type CommandStep, type StepDevice } from './steps.js';
 import { parseScript } from './navigation.js';
 import type { Platform } from './host.js';
@@ -99,6 +100,7 @@ export async function runScript(
   identity: string,
   commands: Compiled[],
   signal: AbortSignal,
+  progress?: Progress,
 ) {
   const steps: { index: number; action: string; status: string; durationMs: number; error?: string }[] =
     [];
@@ -119,6 +121,7 @@ export async function runScript(
           : signal.aborted
             ? 'CANCELLED'
             : reason(e);
+      progress?.({ kind: 'step', name: item.action, status: error });
       steps.push({
         ...item,
         durationMs: Math.round(performance.now() - started),
@@ -127,6 +130,7 @@ export async function runScript(
       });
       return { status: 'failed', reason: error, failedStep: item.index, steps };
     }
+    progress?.({ kind: 'step', name: item.action, status: 'succeeded' });
     steps.push({ ...item, durationMs: Math.round(performance.now() - started) });
   }
   return { status: 'succeeded', steps };

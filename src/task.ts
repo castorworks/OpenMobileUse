@@ -1,3 +1,4 @@
+import type { Progress } from './run.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { tool, decode } from './agent-tools.js';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
@@ -184,6 +185,7 @@ export async function runTask(
   decide: Decide,
   vision: boolean,
   signal: AbortSignal,
+  progress?: Progress,
 ) {
   const started = Date.now(),
     deadline = started + task.limits.ms;
@@ -228,6 +230,7 @@ export async function runTask(
       if (lastAction === check.afterAction && reached(check, v)) {
         const fresh = await read();
         if (reached(check, fresh)) {
+          progress?.({ kind: 'evidence', name: check.name });
           evidence.push({ name: check.name, observationId: observationId(identity, fresh) });
           if (evidence.length === task.checks.length) return result('succeeded');
           continue;
@@ -343,6 +346,7 @@ export async function runTask(
       }
       const status = outcome || 'observed';
       entry.outcome = status;
+      progress?.({ kind: 'action', name: a?.name || name, status });
       remember(
         history,
         obs,

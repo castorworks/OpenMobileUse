@@ -1,0 +1,130 @@
+{
+  "date": "2026-11-19",
+  "entry": "Electron renderer start button",
+  "device": "iPhone 13",
+  "model": "deepseek-flash",
+  "runId": "4c20ef65-9f5e-48b1-867f-00b856080223",
+  "started": "2026-11-19T08:11:06.101Z",
+  "ended": "2026-11-19T08:11:59.250Z",
+  "ui": {
+    "status": "succeeded",
+    "result": "已回到设置首页 · 模型调用 2 次",
+    "readings": [
+      "开启",
+      "开启",
+      "开启"
+    ],
+    "frames": 8,
+    "events": 8
+  },
+  "modelCalls": 2,
+  "checks": {
+    "baseline": "o1",
+    "arrived": "o3",
+    "returned": "o4",
+    "finalHome": "o6",
+    "statePreserved": "o5"
+  },
+  "devices": [
+    {
+      "platform": "ios",
+      "connection": "usb",
+      "before": {
+        "app": "com.apple.Preferences",
+        "page": "home"
+      },
+      "after": {
+        "app": "com.apple.Preferences",
+        "page": "home"
+      },
+      "model": "iPhone 13",
+      "system": "iOS 18.7.7",
+      "type": "physical"
+    },
+    {
+      "platform": "harmony",
+      "connection": "USB",
+      "before": {
+        "app": "com.huawei.hmos.settings",
+        "page": "home"
+      },
+      "after": {
+        "app": "com.huawei.hmos.settings",
+        "page": "home"
+      },
+      "model": "BRA-AL00",
+      "system": "HarmonyOS 7.0.0.111",
+      "type": "physical"
+    },
+    {
+      "platform": "android",
+      "connection": "emulator",
+      "before": {
+        "app": "com.android.settings",
+        "page": "home"
+      },
+      "after": {
+        "app": "com.android.settings",
+        "page": "home"
+      },
+      "system": "Android 15 (API 35)",
+      "type": "emulator"
+    }
+  ],
+  "repeatRuns": [
+    {
+      "runId": "1372c790-8a95-4c8e-99e7-075fff6df10b",
+      "started": "2026-11-19T07:59:44.576Z",
+      "ended": "2026-11-19T08:00:37.137Z",
+      "status": "succeeded",
+      "modelCalls": 2,
+      "initial": true,
+      "final": true
+    },
+    {
+      "runId": "4c20ef65-9f5e-48b1-867f-00b856080223",
+      "started": "2026-11-19T08:11:06.101Z",
+      "ended": "2026-11-19T08:11:59.250Z",
+      "status": "succeeded",
+      "modelCalls": 2,
+      "initial": true,
+      "final": true
+    }
+  ],
+  "checksDescription": "主机在导航前采集初值，确认到达蓝牙页并返回，再独立重访蓝牙页读取开关，最后确认设置首页。",
+  "deviceVerification": "分别在任务开始前和结束后，用独立的设备会话读取前台应用和页面。",
+  "additionalWindowChecks": {
+    "android": {
+      "device": "Android 15 API 35 emulator",
+      "selectorTap": true,
+      "chineseInputReadback": true,
+      "backToSettings": true,
+      "swipe": true,
+      "bluetoothScript": true
+    },
+    "harmony": {
+      "device": "BRA-AL00 USB",
+      "portableSettingsSearch": "succeeded",
+      "steps": 9
+    }
+  },
+  "appium": {
+    "version": "3.9.1",
+    "coldStartOnDeviceSelection": {
+      "device": "iPhone 13",
+      "connection": "USB",
+      "serviceBeforeSelection": "offline",
+      "serviceAfterSelection": "ready",
+      "capturedScreenshotWidthPx": 1170,
+      "serviceAfterClosingWindow": "offline"
+    },
+    "automatedLifecycleChecks": {
+      "testFile": "desktop/test/appium.test.mjs",
+      "concurrentConnectionsShareStartup": true,
+      "existingServiceSurvivesBorrowerExit": true,
+      "nextConnectionRestartsTerminatedService": true,
+      "occupiedPortPreservesOtherService": true
+    }
+  },
+  "electronVersion": "45.2.2"
+}

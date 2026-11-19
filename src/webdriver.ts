@@ -212,6 +212,25 @@ async function request<T>(url: string, method: string, data?: unknown, timeout =
     );
   return value;
 }
+export function appiumEndpoint(value = process.env.OMU_APPIUM_URL || 'http://127.0.0.1:4723') {
+  let base: URL;
+  try {
+    base = new URL(value);
+  } catch {
+    throw new Error('APPIUM_INVALID_URL');
+  }
+  if (
+    !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) ||
+    !['http:', 'https:'].includes(base.protocol) ||
+    base.username ||
+    base.password ||
+    base.search ||
+    base.hash ||
+    base.port === '0'
+  )
+    throw new Error('APPIUM_INVALID_URL');
+  return base;
+}
 export class WebDriver implements Device {
   private constructor(
     readonly platform: Family,
@@ -225,14 +244,7 @@ export class WebDriver implements Device {
     dispatch: Dispatch,
     mode: 'settings' | 'foreground' = 'settings',
   ) {
-    const base = new URL(process.env.OMU_APPIUM_URL || 'http://127.0.0.1:4723');
-    if (
-      !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) ||
-      !['http:', 'https:'].includes(base.protocol) ||
-      base.username ||
-      base.password
-    )
-      throw new Error('Use a loopback Appium endpoint');
+    const base = appiumEndpoint();
     const caps: Record<string, unknown> = {
       platformName: platform === 'ios' ? 'iOS' : 'Android',
       'appium:automationName': platform === 'ios' ? 'XCUITest' : 'UiAutomator2',

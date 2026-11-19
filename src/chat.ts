@@ -1,7 +1,10 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const deepseek = 'https://api.deepseek.com';
-export function modelConfig(options: { baseURL?: string; model?: string; apiKeyEnv?: string }) {
+export function modelConfig(
+  options: { baseURL?: string; model?: string; apiKeyEnv?: string },
+  env = process.env,
+) {
   const base = new URL(options.baseURL ?? deepseek);
   if (
     base.username ||
@@ -14,11 +17,11 @@ export function modelConfig(options: { baseURL?: string; model?: string; apiKeyE
     throw new Error('Model endpoint requires HTTPS or loopback HTTP');
   const baseURL = base.href.replace(/\/$/, '');
   const keyEnv = options.apiKeyEnv ?? (baseURL === deepseek ? 'DEEPSEEK_API_KEY' : undefined);
-  if (keyEnv && (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv) || !process.env[keyEnv]))
+  if (keyEnv && (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(keyEnv) || !env[keyEnv]))
     throw new Error('Missing model credential environment variable: ' + keyEnv);
   const model = options.model ?? 'deepseek-flash';
   if (!model.trim()) throw new Error('Empty model ID');
-  return { model, baseURL, keyEnv, key: keyEnv ? process.env[keyEnv] : undefined };
+  return { model, baseURL, keyEnv, key: keyEnv ? env[keyEnv] : undefined };
 }
 
 type Call = { id: string; type: 'function'; function: { name: string; arguments: string } };

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src data:; font-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Open Mobile Use · 设备工作台</title>
+    <link rel="stylesheet" href="style.css" />
+    <script src="renderer.js" defer></script>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="rail">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>Open Mobile Use<small>设备工作台</small></div>
+        </div>
+        <div class="rail-heading">
+          <h2>设备</h2>
+          <button class="icon-button" id="scan" title="重新扫描设备" aria-label="重新扫描设备">↻</button>
+        </div>
+        <nav id="devices" aria-label="目标设备"></nav>
+        <p id="scan-status" class="rail-note" role="status"></p>
+        <div class="rail-bottom">
+          <span class="host-dot"></span>本机工作台<button id="model-settings" class="rail-link">
+            模型设置
+          </button>
+        </div>
+      </aside>
+      <main class="workspace">
+        <header class="workspace-head">
+          <div>
+            <div class="eyeline"><span class="short-line"></span>设备观察</div>
+            <h1 id="device-name">选择设备</h1>
+          </div>
+          <button id="diagnose" class="outline">连接诊断</button>
+        </header>
+        <div id="notice" role="status" hidden></div>
+        <section class="viewer">
+          <div class="viewbar">
+            <b>手机画面</b><span id="frame-time">尚未采集</span
+            ><button id="refresh" class="text-button">↻ 刷新画面</button>
+          </div>
+          <div class="canvas" id="canvas">
+            <div class="no-frame" id="no-frame">
+              <div class="empty-phone" aria-hidden="true"><i></i></div>
+              <strong id="empty-label">选择左侧设备查看画面</strong>
+            </div>
+            <div class="screen" id="screen" hidden>
+              <img id="shot" alt="当前设备截图" draggable="false" />
+              <div id="outline" hidden></div>
+              <span id="point" hidden></span>
+            </div>
+          </div>
+          <div class="viewfoot">
+            <span class="mini-dot"></span><span id="foreground">等待连接</span><span id="geometry"></span>
+          </div>
+        </section>
+        <section class="manual">
+          <div class="section-head">
+            <h2>单步操作</h2>
+            <div class="seg" aria-label="截图操作模式">
+              <button id="select-mode" aria-pressed="true">定位</button
+              ><button id="swipe-mode" aria-pressed="false">滑动</button>
+            </div>
+          </div>
+          <label class="sr-only" for="control">屏幕控件</label
+          ><select id="control">
+            <option>选择屏幕控件或在画面上定位</option>
+          </select>
+          <div class="actions">
+            <button id="tap" class="outline">点击选区</button
+            ><button id="back" class="outline">返回</button>
+            <div class="text-entry">
+              <input
+                id="text"
+                aria-label="要输入的文字"
+                placeholder="输入文字"
+                autocomplete="off"
+              /><button id="input">输入</button>
+            </div>
+          </div>
+          <p id="manual-hint" class="hint"></p>
+        </section>
+      </main>
+      <aside class="inspector">
+        <header>
+          <h2>运行控制</h2>
+        </header>
+        <section class="composer">
+          <label for="task">选择任务</label
+          ><select id="task">
+            <option value="agent-bluetooth">Agent · 蓝牙导航</option>
+            <option value="script-bluetooth">脚本 · 蓝牙导航</option>
+            <option value="script-search">脚本 · 设置搜索</option>
+            <option value="custom-agent">导入 Agent 任务…</option>
+            <option value="custom-script">导入离线脚本…</option>
+          </select>
+          <input
+            type="file"
+            id="task-file"
+            accept=".json,application/json"
+            aria-label="任务 JSON 文件"
+            hidden
+          />
+          <label id="vision-label" class="checkbox" hidden
+            ><input type="checkbox" id="vision" />允许发送任务指定的控件裁剪图</label
+          >
+          <p class="model-line" id="model-line"></p>
+          <button class="primary" id="start">▶　开始运行</button
+          ><button class="stop" id="stop" hidden>■　停止任务</button>
+        </section>
+        <section class="journal">
+          <div class="section-head">
+            <h2>运行记录</h2>
+            <span id="run-status" class="badge">待运行</span>
+          </div>
+          <label for="history" class="sr-only">历史运行</label
+          ><select id="history" hidden></select>
+          <p id="result-message" class="result" role="status"></p>
+          <div id="readings" hidden>
+            <div><small>初值</small><b>—</b></div>
+            <div><small>到达</small><b>—</b></div>
+            <div><small>复查</small><b>—</b></div>
+          </div>
+          <ol id="events"></ol>
+          <p id="journal-empty" class="muted">运行后可查看每一步和验证结果。</p>
+        </section>
+      </aside>
+    </div>
+    <dialog id="dialog">
+      <form method="dialog"><button class="dialog-close" aria-label="关闭">×</button></form>
+      <h2 id="dialog-title"></h2>
+      <div id="diagnostic-content"></div>
+      <div id="model-content" hidden>
+        <p id="endpoint"></p>
+        <label for="key">本次会话的 API Key</label><input id="key" type="password" autocomplete="off" />
+        <p class="hint">密钥只保存在本次工作台进程内。</p>
+        <button class="primary" id="save-key">应用</button>
+      </div>
+    </dialog>
+  </body>
+</html>

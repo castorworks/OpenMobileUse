@@ -15,6 +15,7 @@ export function openDevice(
 }
 export function diagnose(error: unknown) {
   const msg = String((error as Error)?.message || '');
+  if (/^APPIUM_[A-Z_]+$/.test(msg)) return msg;
   if (/DEVICE_BUSY/.test(msg)) return 'DEVICE_BUSY';
   if (/port #?\d+ is occupied|EADDRINUSE|address already in use/i.test(msg)) return 'PORT_IN_USE';
   if (/unknown device or simulator UDID|device not found|device is not connected/i.test(msg))
@@ -46,7 +47,7 @@ export function connectionError(target?: Target) {
   if (target?.state === 'offline') return 'DEVICE_OFFLINE';
   return target?.issue ? diagnose(new Error(target.issue)) : 'DEVICE_UNAVAILABLE';
 }
-export async function doctor(target: Target, runId: string) {
+export async function doctor(target: Target, runId: string, prepareAppium?: () => Promise<void>) {
   const report = {
     platform: target.platform,
     model: target.model,
@@ -92,6 +93,12 @@ export async function doctor(target: Target, runId: string) {
     record(true);
     stage = 'session';
     await withDevice(target, runId, async (dispatch) => {
+      if (target.platform !== 'harmony' && prepareAppium) {
+        stage = 'appium';
+        await prepareAppium();
+        record(true);
+        stage = 'session';
+      }
       const device = await openDevice(target, dispatch);
       record(true);
       try {

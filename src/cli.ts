@@ -5,14 +5,14 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentToolchain, list, type Platform } from './host.js';
 import { openDevice, doctor, diagnose, connectionError } from './doctor.js';
-import { parseTask, runTask } from './task.js';
-import { readScript, runScript } from './script.js';
-import { roundTrip } from './navigation.js';
+import { parseTask } from './task.js';
+import { readScript } from './script.js';
+import { executeRound } from './run.js';
 import { pending, withDevice } from './session.js';
 import { saveCapture } from './inspect.js';
 import { executeStep, parseStep, stepHelp } from './steps.js';
 import { text as streamText } from 'node:stream/consumers';
-import { bluetoothTask, runAgent } from './agent.js';
+import { bluetoothTask } from './agent.js';
 import { chatClient, modelConfig } from './chat.js';
 
 const platforms: Platform[] = ['harmony', 'ios', 'android'];
@@ -178,9 +178,7 @@ async function main() {
     cleanupError: undefined as string | undefined,
     started: new Date().toISOString(),
     status: 'failed',
-    rounds: [] as Awaited<
-      ReturnType<typeof roundTrip | typeof runAgent | typeof runTask | typeof runScript>
-    >[],
+    rounds: [] as Awaited<ReturnType<typeof executeRound>>[],
     error: undefined as string | undefined,
   };
   if (config)
@@ -207,18 +205,13 @@ async function main() {
         script?.kind === 'general' || task ? 'foreground' : 'settings',
       );
       try {
-        const runRound = () => {
-          const signal = cancellation.signal;
-          signal.throwIfAborted();
-          if (decide && task)
-            return runTask(device, values.device!, task, decide, !!values.vision, signal);
-          if (decide) return runAgent(device, decide, undefined, signal);
-          if (script?.kind === 'bluetooth') return roundTrip(device, script.steps, signal);
-          if (script?.kind === 'general') return runScript(device, values.device!, script.steps, signal);
-          throw new Error('MISSING_TASK_OR_SCRIPT');
-        };
         for (let i = 0; i < count; i++) {
-          const round = await runRound();
+          const round = await executeRound(
+            device,
+            values.device!,
+            { script, task, decide, vision: !!values.vision },
+            cancellation.signal,
+          );
           report.rounds.push(round);
           if ('reason' in round && round.status !== 'succeeded') {
             report.status = round.status;

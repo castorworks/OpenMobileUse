@@ -38,11 +38,30 @@ avdmanager create avd -n OMU_API35 -k 'system-images;android-35;google_apis;arm6
 emulator -avd OMU_API35
 ```
 
-运行 iPhone 或 Android 前，在单独的终端从仓库根目录启动 Appium。使用 Android 时，在该终端也设置好上面的 `ANDROID_HOME` 和 `JAVA_HOME`。默认服务地址为 `http://127.0.0.1:4723`。
+用 CLI 操作 iPhone 或 Android 时，在单独的终端从仓库根目录启动 Appium。使用 Android 时，在该终端也设置好上面的 `ANDROID_HOME` 和 `JAVA_HOME`。默认服务地址为 `http://127.0.0.1:4723`。桌面工作台会自动管理本机连接。
 
 ```sh
 npm run appium
 ```
+
+## Mac 桌面工作台（预览）
+
+工作台可以选择设备、查看手机当前画面、手动操作和运行任务。先按上节准备设备与驱动。在仓库根目录执行以下命令，首次启动 Electron 时会准备桌面运行时。
+
+```sh
+npm ci
+npm ci --prefix desktop
+npm run desktop
+```
+
+[工作台截图](docs/validation/2026-11-19/workbench/preview.png) · [iPhone 13、鸿蒙真机和 Android 模拟器的实测记录](docs/validation/2026-11-19/workbench/acceptance.json)
+
+- 在左侧选择 iPhone 或 Android 时，工作台会复用已就绪的 Appium 服务；本机 HTTP 地址没有服务监听时，会自动启动项目内的 Appium，等待就绪并继续读取手机画面。服务中途退出后，下次连接会自动恢复。退出工作台时会关闭本窗口启动的服务。可用 `OMU_APPIUM_URL` 指定回环地址、端口和服务路径，使用 HTTPS 时需自行配置 TLS 服务。鸿蒙通过 HDC 直连。
+- 连接诊断可查看失败阶段、处理提示和未决动作。接入或拔出设备后点左栏的刷新按钮重新扫描。
+- 在画面上点选位置，然后点「点击选区」按坐标操作。也可以在控件列表里选择目标再点击或输入。在「滑动」模式中直接拖动画面。iOS 的「返回」使用可定位的导航按钮，有多个候选时需先选中。页面变化后点「刷新画面」重新定位。
+- 在右侧运行内置蓝牙 Agent、离线蓝牙脚本或中文设置搜索脚本，也可导入本地任务 JSON。蓝牙导航从设置首页开始，中文搜索脚本需要简体中文设置。Agent 默认使用 `deepseek-flash`，可在「模型设置」输入仅供本次会话使用的 Key，或启动时提供 `DEEPSEEK_API_KEY`。自定义 OpenAI 兼容端点可设置 `OMU_MODEL_BASE_URL`、`OMU_MODEL` 和端点专用的 `OMU_MODEL_KEY_ENV`。
+- 任务使用自己的设备会话更新画面。右侧展示执行步骤、主机读到的蓝牙初值、到达读数和独立复查值。点击「停止任务」会停止后续动作。退出工作台会停止运行中的任务并关闭设备会话。已结束的运行按设备保存在 `~/.openmobileuse/workbench/` 或 `OMU_STATE_DIR` 下，截图仅留在窗口内存中。自定义视觉任务须显式勾选发送控件裁剪图。
+- 从仓库根目录运行 `npm run test:desktop` 可执行 Electron 窗口回归测试。桌面依赖单独安装，CLI 沿用原有安装步骤。
 
 ## 运行蓝牙导航
 

@@ -1,3 +1,4 @@
+import type { Progress } from './run.js';
 import { tool, decode } from './agent-tools.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
@@ -59,6 +60,7 @@ export async function runAgent(
   decide: Decide,
   limits = bluetoothDefinition.limits,
   signal?: AbortSignal,
+  progress?: Progress,
 ) {
   const started = Date.now(),
     deadline = started + limits.ms;
@@ -88,6 +90,7 @@ export async function runAgent(
   function record(phase: Phase, s: Screen) {
     if (s.page === 'other' || !s.marker) throw new Error('UNRECOGNIZED_SETTINGS_PAGE');
     const id = 'o' + ++seq;
+    progress?.({ kind: 'evidence', name: s.page, phase, bluetooth: s.bluetooth });
     evidence.push({
       observationId: id,
       phase,
@@ -179,6 +182,7 @@ export async function runAgent(
           next = await afterMove(bounded, fresh, deadline);
         } else next = await bounded.observe();
       }
+      progress?.({ kind: 'action', name, status: action.outcome });
       const nextId = record('execution', next);
       action.after = nextId;
       if (next.page === 'bluetooth' && readBluetooth(next) !== initial)

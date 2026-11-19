@@ -69,7 +69,7 @@ export async function list(platform: Platform): Promise<Target[]> {
   }
   if (platform === 'harmony') {
     const lines = (await run(hdc, ['list', 'targets', '-v'])).split('\n');
-    return lines
+    const targets = lines
       .map((l) => l.trim().split(/\s+/))
       .filter((parts) => parts.length >= 3 && ['USB', 'TCP'].includes(parts[1]))
       .map(([id, connection, state]) => ({
@@ -80,6 +80,22 @@ export async function list(platform: Platform): Promise<Target[]> {
         model: 'HarmonyOS',
         available: state === 'Connected',
       }));
+    return Promise.all(
+      targets.map(async (t) => {
+        if (!t.available) return t;
+        try {
+          const model = await run(
+            hdc,
+            ['-t', t.id, 'shell', 'param', 'get', 'const.product.model'],
+            2000,
+          );
+          if (/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$/u.test(model)) return { ...t, model };
+        } catch {
+          /* Discovery is still useful when model metadata is unavailable. */
+        }
+        return t;
+      }),
+    );
   }
   return (await run(adb, ['devices', '-l']))
     .split('\n')
