@@ -159,7 +159,7 @@ button:is(.icon-button, .text-button):disabled {
 }
 select,
 input:is([type='search'], [type='url'], [type='password']),
-dialog input,
+dialog input:not([type='checkbox']),
 .text-entry {
   width: 100%;
   min-width: 0;
@@ -171,7 +171,7 @@ dialog input,
   font-size: var(--type-control);
 }
 select:enabled:hover,
-dialog input:hover,
+dialog input:not([type='checkbox']):hover,
 #script-search:hover {
   border-color: var(--primary);
 }
@@ -1162,10 +1162,13 @@ select:disabled,
 .checkbox {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .checkbox input {
-  accent-color: var(--primary);
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
 }
 #notice {
   padding: 8px 11px;
@@ -1227,7 +1230,7 @@ dialog label {
   font-size: var(--type-caption);
   font-weight: 600;
 }
-dialog input {
+dialog input:not([type='checkbox']) {
   display: block;
   margin: 5px 0 var(--space-3);
 }
