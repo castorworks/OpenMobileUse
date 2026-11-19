@@ -9,24 +9,22 @@ import { parseScript, roundTrip } from './navigation.js';
 import { pending, withDevice } from './session.js';
 import { WebDriver } from './webdriver.js';
 import { saveCapture } from './inspect.js';
+import { executeStep, parseStep, stepHelp } from './steps.js';
+import { text as streamText } from 'node:stream/consumers';
 import { bluetoothTask, runAgent } from './agent.js';
 import { chatClient, modelConfig } from './chat.js';
 
 const platforms: Platform[] = ['harmony', 'ios', 'android'];
 const json = (v: unknown) => console.log(JSON.stringify(v, null, 2));
-const help = `omu devices --json
+const help = `${stepHelp}
+omu devices --json
 omu doctor --device <platform:id> --json
 omu inspect --device <platform:id> --output <dir>
 omu run --device <platform:id> --script examples/settings-bluetooth.json [--repeat 5] [--output <dir>] --json
 omu agent --device <platform:id> --task settings.bluetoothRoundTrip [--model <id>] [--base-url <url>] [--api-key-env <name>] [--repeat 5] [--output <dir>] --json`;
-async function main() {
-  const command = process.argv[2];
-  if (!command || command === '--help') {
-    console.log(help);
-    return;
-  }
-  const { values } = parseArgs({
-    args: process.argv.slice(3),
+function commonArgs(args: string[]) {
+  return parseArgs({
+    args,
     options: {
       device: { type: 'string' },
       script: { type: 'string' },
@@ -38,7 +36,19 @@ async function main() {
       output: { type: 'string' },
       json: { type: 'boolean' },
     },
-  });
+  }).values;
+}
+async function main() {
+  const command = process.argv[2];
+  if (!command || command === '--help') {
+    console.log(help);
+    return;
+  }
+  const args = process.argv.slice(3);
+  const single = ['tap', 'swipe', 'input'].includes(command)
+    ? await parseStep(command, args, () => streamText(process.stdin))
+    : undefined;
+  const values: ReturnType<typeof commonArgs> = single ? { device: single.device } : commonArgs(args);
   if (command === 'devices') {
     const result = await Promise.allSettled(platforms.map(list));
     json({
@@ -54,7 +64,7 @@ async function main() {
   if (
     !platforms.includes(platform as Platform) ||
     !id ||
-    !['doctor', 'inspect', 'run', 'agent'].includes(command)
+    (!single && !['doctor', 'inspect', 'run', 'agent'].includes(command))
   )
     throw new Error(help);
   if (command === 'inspect' && !values.output) throw new Error('--output is required for inspect');
@@ -89,21 +99,43 @@ async function main() {
   }
   if (!target?.available) throw new Error('DEVICE_UNAVAILABLE');
   const runId = randomUUID();
-  if (command === 'inspect') {
-    await mkdir(values.output!, { recursive: true, mode: 0o700 });
-    const capture = await withDevice(target, runId, async (dispatch) => {
-      const device =
-        target.platform === 'harmony'
-          ? new Harmony(id, dispatch)
-          : await WebDriver.open(target.platform, id, dispatch);
-      try {
-        return await saveCapture(join(values.output!, runId), await device.capture());
-      } finally {
-        await device.close();
-      }
-    });
-    json(capture);
-    process.exitCode = 0;
+  if (single || command === 'inspect') {
+    const started = Date.now();
+    if (!single) await mkdir(values.output!, { recursive: true, mode: 0o700 });
+    try {
+      let cleanupError: string | undefined;
+      const result = await withDevice(target, runId, async (dispatch) => {
+        const driver =
+          target.platform === 'harmony'
+            ? new Harmony(id, dispatch)
+            : await WebDriver.open(target.platform, id, dispatch, 'foreground');
+        try {
+          return single
+            ? await executeStep(driver, values.device!, single.step, single.observation)
+            : await saveCapture(join(values.output!, runId), driver, values.device!);
+        } finally {
+          try {
+            await driver.close();
+          } catch {
+            cleanupError = 'DEVICE_SESSION_CLOSE_FAILED';
+          }
+        }
+      });
+      json({ ...result, runId, platform, durationMs: Date.now() - started, cleanupError });
+      process.exitCode = 0;
+    } catch (e) {
+      if (!single) throw e;
+      const msg = (e as Error).message;
+      json({
+        runId,
+        platform,
+        action: single.step.kind,
+        status: 'failed',
+        error: /^[A-Z][A-Z_0-9]*(?=:|$)/.exec(msg)?.[0] || 'DEVICE_ERROR',
+        detail: msg.startsWith('AMBIGUOUS_ELEMENT:') ? msg : undefined,
+        durationMs: Date.now() - started,
+      });
+    }
     return;
   }
   const report = {

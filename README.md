@@ -1,6 +1,6 @@
 # Open Mobile Use
 
-从 Mac 操作已授权的手机。当前 CLI 支持在系统设置中进入蓝牙页、读取蓝牙开关，再返回设置首页。三端都可以运行同一份[离线脚本](examples/settings-bluetooth.json)，也可以让 Agent 根据实时控件树逐步选择动作。两种模式均由主机检查实际页面和蓝牙读数。
+从 Mac 操作已授权的鸿蒙、iPhone 和 Android 设备。CLI 可以查看当前界面、按控件或坐标点击、滑动，并在普通输入框中输入中英文。系统设置中的蓝牙导航还支持运行同一份离线脚本，或让 Agent 按实时控件树选择下一步。两种导航模式均由主机检查实际页面和蓝牙读数。[蓝牙脚本](examples/settings-bluetooth.json)
 
 ## 已验证的设备
 
@@ -12,7 +12,7 @@
 | iPhone 15 真机，iOS 26.6.1 | USB · Xcode 27.2 / XCUITest 12.22.8 / 已签名 WDA | 蓝牙 | [5/5 通过](docs/validation/2026-11-19/ios.json) |
 | Android 15 模拟器，API 35，Google APIs ARM64 | ADB / UiAutomator2 8.7.3 | 已连接的设备 → 连接偏好设置 → 蓝牙 | [5/5 通过](docs/validation/2026-11-19/android.json) |
 
-三端均已通过 CLI 采集并回读设置首页的 PNG 和原生控件树。蓝牙关闭初值已有离线测试覆盖。Android 厂商真机和通用单步操作仍在 [1.0 方案](docs/v1.0-design.md) 的后续验收范围内。下文单独列出 Agent 的设备和运行记录。
+三端均已通过 CLI 采集并回读设置首页的 PNG 和原生控件树。蓝牙关闭初值已有离线测试覆盖。Android 厂商真机仍待验收。[1.0 方案](docs/v1.0-design.md)
 
 ## 安装
 
@@ -56,12 +56,36 @@ node dist/cli.js run --device "$DEVICE" --script examples/settings-bluetooth.jso
 
 `doctor` 报告设备连接状态和执行结果未知的历史动作。`run` 每轮先记录蓝牙初值，再执行脚本并按顺序核对首页、蓝牙页和首页，最后独立重访蓝牙页复查开关并退回首页。成功时退出码为 0，输出目录内每次运行有一份 JSON 报告。未识别的页面或无法唯一定位的控件会使任务失败。
 
-在已支持的设置页面，可用 `inspect` 将截图与控件树保存到指定的本机目录。文件可能包含账户名或附近设备名。
+## 通用单步操作
+
+将目标 App 停在要操作的页面，使用前面得到的 `DEVICE`。单步命令直接操作前台界面，无需配置模型。先运行 `inspect`，在返回的 `directory` 里查看 `screen.png`、原生布局和 `controls.json`。后者列出可见控件的标识、名称、类型、边界和归一化中心。截图与控件树依次采集。如果此间控件发生变化，结果中的 `controlsChangedDuringCapture` 为 `true`。采集文件保存在本机，可能包含输入框内容和其他页面信息。
 
 ```sh
 node dist/cli.js inspect --device "$DEVICE" --output "$HOME/omu-captures"
-npm test
 ```
+
+下面是独立调用示例。将控件标识、名称或坐标换成当前页面的实际值。按名称定位时可加 `--role` 区分同名控件。坐标以当前方向的整张截图为准，左上角为 `(0, 0)`，右下角为 `(1, 1)`。根据截图操作时，传入该次采集返回的 `observationId`，设备、前台页面、控件或方向发生变化时，命令会返回 `STALE_OBSERVATION`，此时重新采集即可。
+
+```sh
+node dist/cli.js tap --device "$DEVICE" --id "$CONTROL_ID"
+node dist/cli.js tap --device "$DEVICE" --label '蓝牙'
+node dist/cli.js tap --device "$DEVICE" --x 0.50 --y 0.35 --observation "$OBSERVATION_ID"
+node dist/cli.js swipe --device "$DEVICE" --from-x 0.5 --from-y 0.8 --to-x 0.5 --to-y 0.25 --duration-ms 400
+node dist/cli.js input --device "$DEVICE" --id "$FIELD_ID" --replace --text '手机 Open Mobile'
+printf '%s' ' 中文 "OK" ' | node dist/cli.js input --device "$DEVICE" --stdin
+```
+
+`input` 默认追加到原值末尾。省略标识和名称时使用当前聚焦的普通输入框。`--replace` 替换全文，配合 `--text ''` 可清空。命令逐字回读最终值，通过时返回 `inputVerified: true`。上例使用 `printf '%s'`，会保留首尾空格，也便于通过标准输入传入文件或含引号的文本。
+
+### 单步验证记录
+
+2026-11-19，每端均通过 10 项实测，覆盖按控件点击、竖屏和横屏坐标点击、滑动、拒绝旋转前的观察、英文、中文、带引号及尾随空格的混合文本、焦点框追加和清空。每次输入后用单独的 `inspect` 再次核对完整内容。
+
+| 设备 | 验证界面及可观察结果 | 记录 |
+| --- | --- | --- |
+| 鸿蒙 BRA-AL00 真机，7.0.0.111 | 在系统设置搜索框输入，滚动设置列表，按坐标进入蓝牙页。在浏览器全屏播放器按坐标返回竖屏 | [10/10](docs/validation/2026-11-19/steps/harmony.json) |
+| iPhone 13 真机，iOS 18.7.7 | 在临时 UIKit 测试 App 中回读输入和点击计数，滚动后检查按钮移出屏幕。竖屏截图为 1170×2532 像素，触控空间为 390×844 点 | [10/10](docs/validation/2026-11-19/steps/ios.json) |
+| Android 15 模拟器，API 35 | 在系统设置及其搜索页回读输入，滚动设置列表，竖屏进入“已连接的设备”，横屏按坐标打开搜索框 | [10/10](docs/validation/2026-11-19/steps/android.json) |
 
 ## 用 Agent 自主导航
 

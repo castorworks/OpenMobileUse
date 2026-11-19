@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-19",
+  "platform": "android",
+  "model": "Google APIs ARM64",
+  "deviceType": "emulator",
+  "system": "Android 15 (API 35)",
+  "driver": "Appium 3.9.1 / UiAutomator2 8.7.3",
+  "testSurfaces": [
+    "System Settings and its Settings Intelligence search field"
+  ],
+  "status": "succeeded",
+  "checks": [
+    {
+      "check": "selector-tap",
+      "status": "passed",
+      "editableSearchOpened": true
+    },
+    {
+      "check": "portrait-coordinate-tap",
+      "status": "passed",
+      "destination": "connected",
+      "screenshot": [
+        1080,
+        2400
+      ],
+      "actionSpace": [
+        1080,
+        2400
+      ],
+      "rotation": 0
+    },
+    {
+      "check": "landscape-coordinate-tap",
+      "status": "passed",
+      "editableSearchOpened": true,
+      "screenshot": [
+        2400,
+        1080
+      ],
+      "actionSpace": [
+        2400,
+        1080
+      ],
+      "rotation": 90
+    },
+    {
+      "check": "stale-rotation",
+      "status": "passed",
+      "error": "STALE_OBSERVATION"
+    },
+    {
+      "check": "swipe",
+      "status": "passed",
+      "settingsListMoved": true
+    },
+    {
+      "check": "english",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 11
+    },
+    {
+      "check": "chinese",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 4
+    },
+    {
+      "check": "mixed-quotes",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 14
+    },
+    {
+      "check": "focused-append",
+      "status": "passed",
+      "originalPreserved": true,
+      "independentReadbackMatched": true
+    },
+    {
+      "check": "clear",
+      "status": "passed",
+      "emptyReadback": true
+    }
+  ]
+}

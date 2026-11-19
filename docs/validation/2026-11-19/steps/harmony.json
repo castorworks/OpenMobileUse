@@ -1,0 +1,90 @@
+{
+  "date": "2026-11-19",
+  "platform": "harmony",
+  "model": "BRA-AL00",
+  "deviceType": "physical",
+  "system": "7.0.0.111 (API 26)",
+  "driver": "HDC 3.2.0d / UITest 7.0.0.1",
+  "testSurfaces": [
+    "System Settings list and search field",
+    "Local test video in the browser fullscreen player"
+  ],
+  "status": "succeeded",
+  "checks": [
+    {
+      "check": "selector-tap",
+      "status": "passed",
+      "editableSearchOpened": true
+    },
+    {
+      "check": "portrait-coordinate-tap",
+      "status": "passed",
+      "destination": "bluetooth",
+      "screenshot": [
+        1216,
+        2688
+      ],
+      "actionSpace": [
+        1216,
+        2688
+      ],
+      "rotation": 0
+    },
+    {
+      "check": "landscape-coordinate-tap",
+      "status": "passed",
+      "destination": "portrait test page",
+      "screenshot": [
+        2688,
+        1216
+      ],
+      "actionSpace": [
+        2688,
+        1216
+      ],
+      "rotation": 270
+    },
+    {
+      "check": "stale-rotation",
+      "status": "passed",
+      "error": "STALE_OBSERVATION"
+    },
+    {
+      "check": "swipe",
+      "status": "passed",
+      "settingsListMoved": true
+    },
+    {
+      "check": "english",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 11
+    },
+    {
+      "check": "chinese",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 4
+    },
+    {
+      "check": "mixed-quotes",
+      "status": "passed",
+      "driverVerified": true,
+      "independentReadbackMatched": true,
+      "characters": 14
+    },
+    {
+      "check": "focused-append",
+      "status": "passed",
+      "originalPreserved": true,
+      "independentReadbackMatched": true
+    },
+    {
+      "check": "clear",
+      "status": "passed",
+      "emptyReadback": true
+    }
+  ]
+}

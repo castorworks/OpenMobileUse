@@ -6,7 +6,10 @@ import { join } from 'node:path';
 import type { Target } from './host.js';
 import type { Move } from './navigation.js';
 
-export type Dispatch = (kind: Move, perform: () => Promise<unknown>) => Promise<void>;
+export type Dispatch = (
+  kind: Move | 'swipe' | 'input',
+  perform: () => Promise<unknown>,
+) => Promise<void>;
 function directory(t: Target) {
   const key = createHash('sha256')
     .update(t.platform + ':' + t.id)

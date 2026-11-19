@@ -3,6 +3,9 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hdc, run } from './host.js';
+import { harmonyView } from './native-layout.js';
+import { inputValue, pointInView, visibleCenter, type Control, type Step, type View } from './steps.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
 import type { Dispatch } from './session.js';
 const bundle = 'com.huawei.hmos.settings';
@@ -61,9 +64,12 @@ export class Harmony implements Device {
   private async layout(): Promise<Node> {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.json';
     try {
-      const out = await this.shell('uitest', 'dumpLayout', '-p', path);
-      if (!out.includes(path)) throw new Error('HDC layout capture failed');
-      return JSON.parse(await this.shell('cat', path));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const out = await this.shell('uitest', 'dumpLayout', '-p', path);
+        if (out.includes(path)) return JSON.parse(await this.shell('cat', path));
+        if (attempt === 0) await sleep(120);
+      }
+      throw new Error('HDC_LAYOUT_UNAVAILABLE');
     } finally {
       await this.shell('rm', '-f', path);
     }
@@ -74,10 +80,17 @@ export class Harmony implements Device {
   async observe() {
     return classifyHarmony(await this.nodes());
   }
-  async capture() {
+  async snapshot() {
     const layout = await this.layout();
-    const screen = classifyHarmony(settingsNodes(layout));
-    if (screen.page === 'other') throw new Error('Inspect requires a recognized Settings page');
+    const display = await this.shell('hidumper', '-s', 'DisplayManagerService', '-a', '-a');
+    const match = /^\s*ScreenRotation:\s*(0|1|2|3|90|180|270)\s*$/m.exec(display);
+    if (!match) throw new Error('DISPLAY_ROTATION_UNAVAILABLE');
+    const raw = Number(match[1]);
+    const view = harmonyView(layout, raw <= 3 ? raw * 90 : raw);
+    view.screen = classifyHarmony(settingsNodes(layout));
+    return view;
+  }
+  async screenshot() {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.png';
     const dir = await mkdtemp(join(tmpdir(), 'omu-capture-'));
     try {
@@ -85,9 +98,7 @@ export class Harmony implements Device {
       if (!out.includes(path)) throw new Error('HDC screen capture failed');
       const local = join(dir, 'screen.png');
       await run(hdc, ['-t', this.id, 'file', 'recv', path, local]);
-      const image = await readFile(local);
-      if ((await this.observe()).page !== screen.page) throw new Error('STALE_OBSERVATION');
-      return { image, layout, screen };
+      return await readFile(local);
     } finally {
       try {
         await this.shell('rm', '-f', path);
@@ -95,6 +106,66 @@ export class Harmony implements Device {
         await rm(dir, { recursive: true, force: true });
       }
     }
+  }
+  private async inject(...args: string[]) {
+    if (!(await this.shell('uitest', 'uiInput', ...args)).includes('No Error'))
+      throw new Error('HDC_INPUT_FAILED');
+  }
+  async perform(step: Step, view: View, node?: Control) {
+    if (step.kind === 'swipe') {
+      const a = pointInView(view, step.from),
+        b = pointInView(view, step.to);
+      const speed = Math.min(
+        40000,
+        Math.max(200, Math.round((1000 * Math.hypot(b.x - a.x, b.y - a.y)) / step.duration)),
+      );
+      await this.dispatch('swipe', () =>
+        this.inject('swipe', String(a.x), String(a.y), String(b.x), String(b.y), String(speed)),
+      );
+      return;
+    }
+    const at = 'point' in step ? pointInView(view, step.point) : visibleCenter(view, node!.bounds);
+    const tap = () => this.inject('click', String(at.x), String(at.y));
+    if (step.kind === 'tap') {
+      await this.dispatch('tap', tap);
+      return;
+    }
+    const field = node!;
+    const readField = async () => {
+      const current = await this.snapshot();
+      if (current.app !== view.app) throw new Error('INPUT_TARGET_CHANGED');
+      const hits = current.controls.filter(
+        (n) =>
+          n.editable && !n.secret && n.role === field.role && (field.id ? n.id === field.id : n.focused),
+      );
+      if (hits.length !== 1 || !hits[0].focused) throw new Error('INPUT_FOCUS_UNCONFIRMED');
+      return hits[0];
+    };
+    await this.dispatch('input', async () => {
+      if (!field.focused) await tap();
+      if ((await readField()).value !== field.value) throw new Error('INPUT_TARGET_CHANGED');
+      if (!step.replace && field.value) await this.inject('keyEvent', '2072', '2082'); // Ctrl+End
+      if (step.replace && field.value) {
+        await this.inject('keyEvent', '2072', '2017'); // Ctrl+A
+        await this.inject('keyEvent', '2055'); // Backspace
+        if ((await readField()).value !== '') throw new Error('FIELD_NOT_CLEARED');
+      }
+      if (step.text) {
+        try {
+          // hdc re-quotes separate argv items. Pass ONE remote command with one POSIX-quoted literal.
+          const literal = "'" + step.text.replaceAll("'", "'\\''") + "'";
+          const out = await this.shell('uitest uiInput text ' + literal);
+          if (!out.includes('No Error')) throw new Error();
+        } catch {
+          throw new Error('TEXT_DRIVER_ERROR');
+        }
+      }
+    });
+    for (let i = 0; i < 3; i++) {
+      if ((await readField()).value === inputValue(field.value ?? '', step)) return;
+      if (i < 2) await sleep(120);
+    }
+    throw new Error('INPUT_NOT_VERIFIED');
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {

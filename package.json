@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc",
     "omu": "node dist/cli.js",
-    "appium": "appium --address 127.0.0.1",
+    "appium": "appium --address 127.0.0.1 --log-level warn",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "engines": {

@@ -1,5 +1,8 @@
 import { DOMParser } from '@xmldom/xmldom';
 import { adb, run } from './host.js';
+import { nodeXPath, xmlControls } from './native-layout.js';
+import { inputValue, pointInView, type Control, type Step, type View as StepView } from './steps.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
 import type { Dispatch } from './session.js';
 
@@ -208,7 +211,12 @@ export class WebDriver implements Device {
     private url: string,
     private dispatch: Dispatch,
   ) {}
-  static async open(platform: Family, id: string, dispatch: Dispatch) {
+  static async open(
+    platform: Family,
+    id: string,
+    dispatch: Dispatch,
+    mode: 'settings' | 'foreground' = 'settings',
+  ) {
     const base = new URL(process.env.OMU_APPIUM_URL || 'http://127.0.0.1:4723');
     if (
       !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) ||
@@ -224,8 +232,9 @@ export class WebDriver implements Device {
       'appium:noReset': true,
       'appium:newCommandTimeout': 90,
     };
+    if (mode === 'foreground') caps['appium:autoLaunch'] = false;
     if (platform === 'ios') {
-      caps['appium:bundleId'] = iosSettings;
+      if (mode === 'settings') caps['appium:bundleId'] = iosSettings;
       caps['appium:shouldTerminateApp'] = false;
       if (process.env.OMU_IOS_XCCONFIG) caps['appium:xcodeConfigFile'] = process.env.OMU_IOS_XCCONFIG;
       else if (process.env.OMU_IOS_TEAM_ID) {
@@ -248,25 +257,158 @@ export class WebDriver implements Device {
   private mobile<T>(name: string, args: object = {}) {
     return request<T>(this.url + '/execute/sync', 'POST', { script: 'mobile: ' + name, args: [args] });
   }
+  private async activeApp() {
+    return this.platform === 'ios'
+      ? (await this.mobile<{ bundleId: string }>('activeAppInfo')).bundleId
+      : await this.mobile<string>('getCurrentPackage');
+  }
   private async settingsActive() {
-    const active =
-      this.platform === 'ios'
-        ? (await this.mobile<{ bundleId: string }>('activeAppInfo')).bundleId
-        : await this.mobile<string>('getCurrentPackage');
-    return active === (this.platform === 'ios' ? iosSettings : androidSettings);
+    return (await this.activeApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
   }
   async observe(): Promise<View> {
     if (!(await this.settingsActive())) return other;
     return classifyXml(this.platform, await request<string>(this.url + '/source', 'GET'));
   }
-  async capture() {
-    if (!(await this.settingsActive())) throw new Error('Settings is not in the foreground');
+  async snapshot(): Promise<StepView> {
+    const app = await this.activeApp();
+    if (!app) throw new Error('FOREGROUND_APP_UNAVAILABLE');
+    const rotation = async () => (await request<{ z: number }>(this.url + '/rotation', 'GET')).z;
+    const angle = await rotation();
+    const { width, height } = await request<{ width: number; height: number }>(
+      this.url + '/window/rect',
+      'GET',
+    );
+    if (
+      !Number.isInteger(width) ||
+      width <= 0 ||
+      !Number.isInteger(height) ||
+      height <= 0 ||
+      !Number.isFinite(angle)
+    )
+      throw new Error('DISPLAY_GEOMETRY_UNAVAILABLE');
     const layout = await request<string>(this.url + '/source', 'GET');
-    const screen = classifyXml(this.platform, layout);
-    if (screen.page === 'other') throw new Error('Inspect requires a recognized Settings page');
-    const image = Buffer.from(await request<string>(this.url + '/screenshot', 'GET'), 'base64');
-    if ((await this.observe()).page !== screen.page) throw new Error('STALE_OBSERVATION');
-    return { image, layout, screen };
+    if (app !== (await this.activeApp()) || angle !== (await rotation()))
+      throw new Error('STALE_OBSERVATION');
+    const controls = xmlControls(this.platform, layout, app, width, height);
+    if (
+      this.platform === 'ios' &&
+      controls.some((n) => n.editable) &&
+      !controls.some((n) => n.editable && n.focused)
+    ) {
+      // WDA omits keyboard focus from iOS XML. Resolve its active element against the same tree.
+      let active: Record<string, string> | null = null;
+      try {
+        active = await request(this.url + '/element/active', 'GET');
+      } catch (e) {
+        if (!/no such element|could not be located|unable to find/i.test((e as Error).message)) throw e;
+      }
+      if (active?.[elementKey]) {
+        const base = this.url + '/element/' + encodeURIComponent(active[elementKey]);
+        const rect = await request<Control['bounds']>(base + '/rect', 'GET');
+        const hits = controls.filter(
+          (n) =>
+            n.editable &&
+            n.bounds.x === rect.x &&
+            n.bounds.y === rect.y &&
+            n.bounds.width === rect.width &&
+            n.bounds.height === rect.height,
+        );
+        if (hits.length === 1) hits[0].focused = true;
+      }
+    }
+    const window = this.platform === 'android' ? await this.mobile<string>('getCurrentActivity') : app;
+    return {
+      app,
+      window,
+      width,
+      height,
+      rotation: angle,
+      controls,
+      layout,
+      screen:
+        app === (this.platform === 'ios' ? iosSettings : androidSettings)
+          ? classifyXml(this.platform, layout)
+          : other,
+    };
+  }
+  async screenshot() {
+    return Buffer.from(await request<string>(this.url + '/screenshot', 'GET'), 'base64');
+  }
+  private async touch(step: Extract<Step, { kind: 'swipe' } | { point: unknown }>, view: StepView) {
+    const swipe = step.kind === 'swipe';
+    const a = pointInView(view, swipe ? step.from : step.point);
+    const actions: object[] = [
+      { type: 'pointerMove', duration: 0, origin: 'viewport', ...a },
+      { type: 'pointerDown', button: 0 },
+    ];
+    if (swipe)
+      actions.push({
+        type: 'pointerMove',
+        duration: step.duration,
+        origin: 'viewport',
+        ...pointInView(view, step.to),
+      });
+    else actions.push({ type: 'pause', duration: 70 });
+    actions.push({ type: 'pointerUp', button: 0 });
+    await this.dispatch(step.kind, () =>
+      request(this.url + '/actions', 'POST', {
+        actions: [{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions }],
+      }),
+    );
+  }
+  private async elementURL(locator: Locator) {
+    const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
+    if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    return this.url + '/element/' + encodeURIComponent(hits[0][elementKey]);
+  }
+  async perform(step: Step, view: StepView, node?: Control) {
+    if (step.kind === 'swipe' || 'point' in step) {
+      await this.touch(step, view);
+      return;
+    }
+    const field = node!;
+    const url = await this.elementURL({
+      using: 'xpath',
+      value: nodeXPath(this.platform, view.app, field, step.selector.label),
+    });
+    if (step.kind === 'tap') {
+      await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
+      return;
+    }
+    const expected = inputValue(field.value ?? '', step);
+    const readValue = async () => {
+      const raw =
+        (await request<string | null>(
+          url + '/attribute/' + (this.platform === 'ios' ? 'value' : 'text'),
+          'GET',
+        )) ?? '';
+      if (this.platform === 'ios')
+        return raw === (await request(url + '/attribute/placeholderValue', 'GET')) ? '' : raw;
+      return raw && (await request(url + '/attribute/showing-hint', 'GET')) === 'true' ? '' : raw;
+    };
+    if ((await readValue()) !== field.value) throw new Error('STALE_OBSERVATION');
+    await this.dispatch('input', async () => {
+      try {
+        if (this.platform === 'android') {
+          if (!field.focused) await request(url + '/click', 'POST', {});
+          await this.mobile('replaceElementValue', {
+            elementId: url.slice(url.lastIndexOf('/') + 1),
+            text: expected,
+          });
+        } else {
+          if (field.value || step.replace) await request(url + '/clear', 'POST', {});
+          if (expected)
+            await request(url + '/value', 'POST', { text: expected, value: Array.from(expected) });
+        }
+      } catch {
+        throw new Error('TEXT_DRIVER_ERROR');
+      }
+    });
+    for (let i = 0; i < 3; i++) {
+      if ((await readValue()) === expected) return;
+      if (i < 2) await sleep(120);
+    }
+    throw new Error('INPUT_NOT_VERIFIED');
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {
@@ -307,11 +449,8 @@ export class WebDriver implements Device {
           : androidTitle(entry.key);
     }
     if (!locator) throw new Error('Unsupported Settings navigation target');
-    const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
-    if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
-    await this.dispatch(action, () =>
-      request(this.url + '/element/' + encodeURIComponent(hits[0][elementKey]) + '/click', 'POST', {}),
-    );
+    const url = await this.elementURL(locator);
+    await this.dispatch(action, () => request(url + '/click', 'POST', {}));
   }
   async close() {
     await request(this.url, 'DELETE');
