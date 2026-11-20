@@ -328,7 +328,7 @@ export class WebDriver implements Device {
         '--user',
         'current',
         ...intent,
-        ...(settings ? ['-p', app] : []),
+        ...(settings ? ['-p', app] : ['-n', component]),
       );
       rejected = /^Error:/m.test(response);
       if (!rejected && !/^Status:\s*ok\s*$/m.test(response)) throw new Error('LAUNCH_REPLY_UNAVAILABLE');
