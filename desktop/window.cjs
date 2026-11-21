@@ -12,6 +12,7 @@ function startWorkbench(options) {
   return app.whenReady().then(async () => {
     if (!app.isPackaged && app.dock) app.dock.setIcon(join(__dirname, 'brand.png'));
     const { configureHost } = await import('./setup.mjs');
+    const { chooseAndroidSdk } = await import('./android-sdk.mjs');
     await configureHost();
     const { scriptEntry } = await import('./script-library.mjs');
     const { Workbench, errorCode } = await import('./workbench.mjs');
@@ -65,6 +66,7 @@ function startWorkbench(options) {
       'startEmulator',
       'environment',
       'platformSetup',
+      'chooseAndroidSdk',
     ];
     ipcMain.handle('omu:request', async (event, name, ...args) => {
       if (
@@ -81,9 +83,17 @@ function startWorkbench(options) {
         }
         if (name === 'platformSetup') {
           if (!Object.hasOwn(resources, args[0])) throw Error('INVALID_PLATFORM');
-          if (args[0] === 'android' && process.platform === 'darwin') await workbench.emulator.ensure();
+          if (args[0] === 'android' && ['win32', 'darwin'].includes(process.platform))
+            await workbench.emulator.ensure();
           else await shell.openExternal(resources[args[0]]);
           return { ok: true };
+        }
+        if (name === 'chooseAndroidSdk') {
+          const folder = await dialog.showOpenDialog(window, {
+            title: '选择已安装的 Android SDK',
+            properties: ['openDirectory'],
+          });
+          return { ok: true, value: folder.canceled ? null : await chooseAndroidSdk(folder.filePaths[0]) };
         }
         if (name === 'exportScript') {
           const { script, title } = await scriptEntry(args[0]);

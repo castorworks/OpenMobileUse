@@ -21,6 +21,7 @@ for (const method of [
   'startEmulator',
   'environment',
   'platformSetup',
+  'chooseAndroidSdk',
 ]) {
   bridge[method] = async (...args) => {
     const r = await ipcRenderer.invoke('omu:request', method, ...args);

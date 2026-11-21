@@ -28,10 +28,10 @@ async function status(base) {
   return value.ready ? 'ready' : 'waiting';
 }
 
-async function launch(base) {
+async function launch(base, environment) {
   const entry = join(project, 'node_modules', 'appium', 'index.js');
   if (!existsSync(entry)) throw Error('APPIUM_NOT_INSTALLED');
-  const env = { ...process.env };
+  const env = { ...environment };
   const pathKey =
     Object.keys(env).find((k) => process.platform === 'win32' && k.toUpperCase() === 'PATH') || 'PATH';
   const sdk = env.ANDROID_SDK_ROOT || join(homedir(), 'Library', 'Android', 'sdk');
@@ -76,7 +76,9 @@ async function launch(base) {
     '--log-level',
     'warn',
   ];
-  const child = spawn(node, args, { cwd: project, env, stdio: ['ignore', 'inherit', 'inherit'] });
+  const child = spawn(node, args, {
+    cwd: project, env, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'],
+  });
   // 'close' also follows a spawn error (e.g. a Node binary removed since installation).
   child.on('error', (error) => console.error('Appium launch:', error.message));
   const closed = new Promise((resolve) => child.once('close', resolve));
@@ -94,9 +96,32 @@ async function stop(owned) {
   }
 }
 
+function appiumEnvironment() {
+  const env = { ...process.env };
+  return { env, key: JSON.stringify([env.ANDROID_HOME, env.ANDROID_SDK_ROOT, env.JAVA_HOME]) };
+}
+
 export class LocalAppium {
+  clients = new Set();
   constructor(endpoint) {
     this.endpoint = endpoint;
+  }
+  async withEnvironment(work) {
+    let environment = appiumEnvironment();
+    while (this.clients.size && environment.key !== this.environment.key) {
+      await Promise.race(this.clients);
+      environment = appiumEnvironment();
+    }
+    if (this.closing) throw Error('CANCELLED');
+    if (!this.clients.size) this.environment = environment;
+    const { promise, resolve } = Promise.withResolvers();
+    this.clients.add(promise);
+    try {
+      return await work();
+    } finally {
+      this.clients.delete(promise);
+      resolve();
+    }
   }
   ensureReady() {
     if (this.closing) return Promise.reject(Error('CANCELLED'));
@@ -108,6 +133,10 @@ export class LocalAppium {
   }
   async connect() {
     const base = appiumEndpoint(this.endpoint);
+    const { env, key } = this.environment || appiumEnvironment();
+    // A running service only sees the environment it inherited. Wait for other
+    // workbench sessions before replacing an owned service with new SDK paths.
+    if (this.owned && this.owned.key !== key) await stop(this.owned);
     const deadline = Date.now() + 15000;
     let spawned;
     try {
@@ -118,7 +147,7 @@ export class LocalAppium {
         if (spawned && this.owned !== spawned) throw Error('APPIUM_START_FAILED');
         if (state === 'absent' && !this.owned) {
           if (base.protocol === 'https:') throw Error('APPIUM_HTTPS_UNAVAILABLE');
-          spawned = this.owned = await launch(base);
+          spawned = this.owned = { ...(await launch(base, env)), key };
           spawned.closed.then(() => {
             if (this.owned === spawned) this.owned = undefined;
           });

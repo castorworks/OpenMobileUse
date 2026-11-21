@@ -4,7 +4,7 @@
   "private": true,
   "main": "main.cjs",
   "scripts": {
-    "start": "electron ."
+    "start": "node --env-file=electron.env node_modules/electron/cli.js ."
   },
   "devDependencies": {
     "electron": "45.2.2"

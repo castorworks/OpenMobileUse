@@ -92,5 +92,6 @@ export class DesktopEmulator {
     this.closed = true;
     this.controller.abort();
     this.child?.kill('SIGTERM');
+    return Promise.allSettled([this.installing, this.starting]);
   }
 }

@@ -7,7 +7,10 @@ let devices = [],
   gesture = null,
   model,
   mode = 'select',
-  scanPending = false;
+  scanPending,
+  androidSetup,
+  androidPreparing = false,
+  androidScanTimer;
 let workspaceMode = 'chat',
   scripts = [],
   scriptsVersion = 0,
@@ -56,8 +59,11 @@ const names = {
 };
 const issues = {
   SETUP_CANCELLED: '已取消环境配置。',
+  ANDROID_DOWNLOAD_FAILED: '下载 Android 工具失败，请检查网络连接后重试。',
   ANDROID_DOWNLOAD_CHECKSUM: '下载文件校验失败，请重试。',
+  ANDROID_JAVA_INCOMPATIBLE: '当前 Java 版本无法运行 Android SDK 安装工具，请检查 Java 后重试。',
   ANDROID_SDK_INSTALL_FAILED: 'Android 工具安装失败，请检查网络、磁盘空间和 SDK 许可后重试。',
+  ANDROID_SDK_FOLDER_INVALID: '请选择包含 platform-tools、build-tools 或 cmdline-tools 的 SDK 根目录。',
   ANDROID_STUDIO_REQUIRED: '请使用 Android Studio 的设备管理器准备并启动模拟器。',
   AVD_CREATE_FAILED: '无法创建工作台模拟器，请检查 SDK 镜像与可用磁盘空间。',
   EMULATOR_START_FAILED: '模拟器启动失败，请检查虚拟化支持和可用磁盘空间。',
@@ -189,7 +195,7 @@ function renderDevices() {
             ' · ' +
             {
               running: '运行中',
-              offline: '不可用',
+              offline: t.state === 'unauthorized' ? '待授权' : t.state === 'offline' ? '离线' : '不可用',
               warning: '诊断失败',
               ready: '可控制',
               discovered: '已发现',
@@ -202,29 +208,90 @@ function renderDevices() {
     }),
   );
 }
-async function scan() {
-  if (scanPending) return;
-  scanPending = true;
+function updateAndroidSetupButton() {
+  const button = $('prepare-android');
+  button.hidden = !androidSetup?.supported || (!androidSetup.missing.length && !androidPreparing);
+  button.disabled = androidPreparing;
+  button.textContent = androidPreparing ? '正在准备 Android 环境…' : '准备 Android 环境';
+}
+function scan() {
+  scanPending ??= scanDevices().finally(() => {
+    scanPending = undefined;
+    $('scan').disabled = androidPreparing;
+  });
+  return scanPending;
+}
+async function scanDevices() {
   $('scan').disabled = true;
   try {
     const r = await api.devices();
     devices = r.devices;
+    androidSetup = r.androidSetup;
     if (selected && !devices.some((t) => t.id === selected) && !state().active) selected = '';
-    $('scan-status').textContent = [
-      devices.length ? '' : '尚未发现设备',
-      ...r.unavailable.map((f) => nice(f) + ' 发现失败'),
-    ]
-      .filter(Boolean)
-      .join(' · ');
+    const androidDevices = devices.filter((t) => t.platform === 'android');
+    if (!androidPreparing) {
+      if (androidSetup?.supported && androidSetup.missing.length) {
+        $('scan-status').textContent = '缺少 ' + androidSetup.missing.join('、') + '，可在这里准备 Android 环境。';
+      } else if (androidDevices.some((t) => t.state === 'unauthorized')) {
+        $('scan-status').textContent = '请解锁 Android 手机，并在手机上允许 USB 调试。';
+      } else if (androidDevices.some((t) => t.state === 'offline')) {
+        $('scan-status').textContent = 'Android 设备离线，请重新连接后扫描。';
+      } else {
+        $('scan-status').textContent = [
+          devices.length ? '' : '尚未发现设备。请连接手机并完成调试授权。',
+          ...r.unavailable.filter((f) => !devices.length).map((f) => nice(f) + ' 发现失败'),
+        ].filter(Boolean).join(' · ');
+      }
+    }
+    updateAndroidSetupButton();
     render();
     const online = devices.filter((t) => t.available);
-    if (!selected && online.length === 1) await selectDevice(online[0]);
+    if (!selected && online.length === 1 &&
+        (online[0].platform !== 'android' || !androidSetup?.missing.length))
+      await selectDevice(online[0]);
   } catch (e) {
-    $('scan-status').textContent = e.message;
-  } finally {
-    scanPending = false;
-    $('scan').disabled = false;
+    if (!androidPreparing) $('scan-status').textContent = describe(e.message);
   }
+}
+async function rescanAndroid() {
+  clearTimeout(androidScanTimer);
+  const deadline = Date.now() + 60000;
+  const check = async () => {
+    if (androidPreparing) return;
+    const previous = selected;
+    await scanPending;
+    await scan();
+    if (devices.some((t) => t.platform === 'android' && t.available)) {
+      if (previous && previous === selected && selected.startsWith('android:') && !state().frame)
+        await refresh();
+    } else if (Date.now() < deadline && androidSetup?.missing.length === 0) {
+      androidScanTimer = setTimeout(check, 1500);
+    }
+  };
+  await check();
+}
+async function prepareAndroid() {
+  if (androidPreparing) return;
+  androidPreparing = true;
+  clearTimeout(androidScanTimer);
+  updateAndroidSetupButton();
+  $('scan').disabled = true;
+  $('scan-status').textContent = '正在检查已安装的 Android 工具…';
+  try {
+    await api.platformSetup('android');
+  } catch (e) {
+    const detail = describe(e.message);
+    $('scan-status').textContent = detail;
+    feedback('settings-status', detail, 'error');
+    return;
+  } finally {
+    androidPreparing = false;
+    updateAndroidSetupButton();
+    $('scan').disabled = !!scanPending;
+  }
+  await rescanAndroid();
+  feedback('settings-status', 'Android 环境已就绪。', 'info');
+  if ($('dialog').open && !$('model-content').hidden) await showPlatformTools();
 }
 function markFrame(id, frame) {
   const s = state(id);
@@ -1038,34 +1105,42 @@ function dialog(title, settings = false) {
   $('model-content').hidden = !settings;
   if (!$('dialog').open) $('dialog').showModal();
 }
-function showModel() {
-  if (!model) return;
-  dialog('工作台设置', true);
-  $('endpoint').value = model.endpoint;
-  $('model-id').value = model.model;
-  $('use-images').checked = model.useImages === true;
-  $('team').value = model.team;
-  $('wda-bundle').value = model.bundle;
-  $('settings-status').textContent = '';
-  $('key').placeholder = model.hasKey ? '已配置，留空沿用当前端点的密钥' : '输入此端点的密钥';
-  api
+function showPlatformTools() {
+  return api
     .environment()
     .then((env) => {
       $('teams').replaceChildren(...env.teams.map((t) => new Option(t, t)));
       $('platforms').replaceChildren(
         ...(model.macHost ? ['ios', 'android', 'harmony'] : ['android', 'harmony']).map((k) => {
           const row = element('p', nice(k) + (env[k] ? ' · 已找到工具链' : ' · 缺少平台工具'));
-          if (!env[k]) {
-            const canInstall = k === 'android' && model.macHost;
-            const link = element('button', canInstall ? '自动安装' : '获取平台工具', 'text-button');
+          if (k === 'android' && env.androidSetup.supported) {
+            if (!env.android) {
+              const setup = element('button', '准备环境', 'text-button');
+              setup.onclick = prepareAndroid;
+              row.append(setup);
+            }
+            const choose = element('button', '选择已安装的 SDK…', 'text-button');
+            choose.onclick = async () => {
+              if (androidPreparing) return;
+              choose.disabled = true;
+              try {
+                if (await api.chooseAndroidSdk()) {
+                  await rescanAndroid();
+                  await showPlatformTools();
+                }
+              } catch (e) {
+                feedback('settings-status', describe(e.message), 'error');
+              } finally {
+                choose.disabled = false;
+              }
+            };
+            row.append(choose);
+          } else if (!env[k]) {
+            const link = element('button', '获取平台工具', 'text-button');
             link.onclick = async () => {
               link.disabled = true;
               try {
                 await api.platformSetup(k);
-                if (canInstall) {
-                  row.textContent = 'Android · 环境已就绪';
-                  await scan();
-                }
               } catch (e) {
                 feedback('settings-status', describe(e.message), 'error');
               } finally {
@@ -1081,6 +1156,18 @@ function showModel() {
     .catch((e) => {
       feedback('settings-status', describe(e.message), 'error');
     });
+}
+function showModel() {
+  if (!model) return;
+  dialog('工作台设置', true);
+  $('endpoint').value = model.endpoint;
+  $('model-id').value = model.model;
+  $('use-images').checked = model.useImages === true;
+  $('team').value = model.team;
+  $('wda-bundle').value = model.bundle;
+  $('settings-status').textContent = '';
+  $('key').placeholder = model.hasKey ? '已配置，留空沿用当前端点的密钥' : '输入此端点的密钥';
+  showPlatformTools();
   $('key').value = '';
   $('key').focus();
 }
@@ -1143,6 +1230,7 @@ $('emulator').onclick = async () => {
   }
 };
 $('scan').onclick = scan;
+$('prepare-android').onclick = prepareAndroid;
 $('refresh').onclick = () => refresh();
 render();
 api.config().then((v) => {

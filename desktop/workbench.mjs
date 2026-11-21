@@ -26,6 +26,7 @@ import {
 } from './script-library.mjs';
 import { chatClient } from '../dist/chat.js';
 import { LocalAppium } from './appium.mjs';
+import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 
 import { runConversation } from '../dist/conversation.js';
 import {
@@ -176,6 +177,8 @@ export class Workbench {
     return restoreRecording(id);
   }
   async devices() {
+    const tools = androidToolchain();
+    applyAndroidToolchain(tools);
     const results = await Promise.allSettled(platforms.map((p) => this.bridge.list(p)));
     const rows = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
     this.targets = new Map(rows.map((t) => [t.platform + ':' + t.id, t]));
@@ -183,6 +186,7 @@ export class Workbench {
     return {
       devices: [...this.targets].map(([id, t]) => ({ ...t, id })),
       unavailable: platforms.filter((_, i) => results[i].status === 'rejected'),
+      androidSetup: androidSetupStatus(tools),
     };
   }
   target(identity) {
@@ -200,9 +204,14 @@ export class Workbench {
     this.operations.set(identity, done);
     return done;
   }
+  withAppium(target, work) {
+    if (target.platform === 'harmony' || !this.appium.withEnvironment) return work();
+    return this.appium.withEnvironment(work);
+  }
   async session(t, id, signal, mode, work, onCleanupError) {
     if (!t.available) throw Error(connectionError(t));
-    return withDevice(t, id, async (dispatch) => {
+    return withDevice(t, id, (dispatch) => this.withAppium(t, async () => {
+      signal?.throwIfAborted();
       if (t.platform !== 'harmony') await this.appium.ensureReady();
       signal?.throwIfAborted();
       const device = await this.bridge.openDevice(
@@ -222,7 +231,7 @@ export class Workbench {
           onCleanupError?.('DEVICE_SESSION_CLOSE_FAILED');
         }
       }
-    });
+    }));
   }
   async frame(device, identity) {
     let capture;
@@ -274,7 +283,7 @@ export class Workbench {
   }
   probe(id) {
     return this.exclusive(id, (t) =>
-      this.bridge.doctor(t, randomUUID(), () => this.appium.ensureReady()),
+      this.withAppium(t, () => this.bridge.doctor(t, randomUUID(), () => this.appium.ensureReady())),
     );
   }
   action(id, raw, observation, chatId) {
@@ -523,9 +532,10 @@ export class Workbench {
   async shutdown() {
     this.closing = true;
     for (const { controller } of this.runs.values()) controller.abort(Error('CANCELLED'));
+    const installation = this.emulator.close();
     await Promise.allSettled(this.operations.values());
     await this.appium.close();
-    this.emulator.close();
+    await installation;
     this.preferences.key = undefined;
   }
 }

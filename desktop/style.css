@@ -407,6 +407,9 @@ select:disabled,
   font-size: var(--type-caption);
   color: var(--text-muted);
 }
+.rail-android {
+  margin: var(--space-2) 2px var(--space-3);
+}
 .rail-emulator {
   align-self: stretch;
   margin: var(--space-2) 2px var(--space-4);

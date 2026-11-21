@@ -1,6 +1,6 @@
 import { bluetoothDefinition } from './bluetooth-task.js';
 import { DOMParser } from '@xmldom/xmldom';
-import { adb, run } from './host.js';
+import { adbPath, run } from './host.js';
 import { nodeXPath, xmlControls } from './native-layout.js';
 import {
   isAppIdentifier,
@@ -232,6 +232,8 @@ export function appiumEndpoint(value = process.env.OMU_APPIUM_URL || 'http://127
   return base;
 }
 export class WebDriver implements Device {
+  private readonly adb = adbPath();
+
   private constructor(
     readonly platform: Family,
     readonly id: string,
@@ -295,7 +297,7 @@ export class WebDriver implements Device {
       await this.dispatch('launch', () => this.mobile('launchApp', { bundleId: app }));
       return app;
     }
-    const shell = (...args: string[]) => run(adb, ['-s', this.id, 'shell', ...args]);
+    const shell = (...args: string[]) => run(this.adb, ['-s', this.id, 'shell', ...args]);
     const settings = step.app === 'settings';
     const intent = settings
       ? ['-a', 'android.settings.SETTINGS']
@@ -490,7 +492,7 @@ export class WebDriver implements Device {
       await this.dispatch(action, async () => {
         if (this.platform === 'ios') await this.mobile('activateApp', { bundleId: iosSettings });
         else
-          await run(adb, [
+          await run(this.adb, [
             '-s',
             this.id,
             'shell',

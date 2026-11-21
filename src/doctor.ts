@@ -1,4 +1,4 @@
-import { adb, hdc, agentToolchain, type Target } from './host.js';
+import { adbPath, hdc, agentToolchain, type Target } from './host.js';
 import { Harmony } from './harmony.js';
 import { WebDriver } from './webdriver.js';
 import { pending, withDevice, type Dispatch } from './session.js';
@@ -57,7 +57,7 @@ export async function doctor(target: Target, runId: string, prepareAppium?: () =
     connected: target.available,
     controllable: false,
     unconfirmed: pending(target),
-    bridge: target.platform === 'android' ? adb : target.platform === 'harmony' ? hdc : 'xcrun',
+    bridge: target.platform === 'android' ? adbPath() : target.platform === 'harmony' ? hdc : 'xcrun',
     probes: [] as {
       stage: string;
       ok: boolean;

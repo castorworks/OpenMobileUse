@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 const exec = promisify(execFile);
@@ -10,14 +10,31 @@ export const hdc =
   (process.platform === 'win32'
     ? 'hdc.exe'
     : '/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc');
-const sdkAdb = join(
-  process.env.ANDROID_HOME || join(homedir(), 'Library/Android/sdk'),
-  process.platform === 'win32' ? 'platform-tools/adb.exe' : 'platform-tools/adb',
-);
-export const adb = process.env.ADB_PATH || (existsSync(sdkAdb) ? sdkAdb : 'adb');
+export function adbPath() {
+  const env = process.env;
+  const windows = process.platform === 'win32';
+  const defaultSdk = windows
+    ? env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'Android', 'Sdk')
+    : join(homedir(), 'Library', 'Android', 'sdk');
+  const name = windows ? 'adb.exe' : 'adb';
+  const override = env.ADB_PATH;
+  if (override && (!isAbsolute(override) || existsSync(override))) return override;
+  const managedSdk = join(env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), 'android', 'sdk');
+  for (const sdk of [env.ANDROID_HOME, env.ANDROID_SDK_ROOT, defaultSdk, managedSdk]) {
+    if (!sdk) continue;
+    const adb = join(sdk, 'platform-tools', name);
+    if (existsSync(adb)) return adb;
+  }
+  return override || name;
+}
 export async function run(bin: string, args: string[], timeout = 12000): Promise<string> {
   // execFile avoids interpolation on the host; callers supply only fixed arguments to remote shells.
-  const { stdout } = await exec(bin, args, { timeout, maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' });
+  const { stdout } = await exec(bin, args, {
+    timeout,
+    maxBuffer: 16 * 1024 * 1024,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
   return stdout.trim();
 }
 export type Platform = 'harmony' | 'ios' | 'android';
@@ -100,7 +117,7 @@ export async function list(platform: Platform): Promise<Target[]> {
       }),
     );
   }
-  return (await run(adb, ['devices', '-l']))
+  return (await run(adbPath(), ['devices', '-l']))
     .split('\n')
     .map((l) => l.trim().split(/\s+/))
     .filter((parts) => ['device', 'offline', 'unauthorized'].includes(parts[1]))

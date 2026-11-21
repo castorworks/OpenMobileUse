@@ -29,7 +29,7 @@
 | --- | --- |
 | 鸿蒙 | 安装 DevEco Studio，开启手机的开发者模式和 USB 调试。工作台自动定位 HDC。 |
 | iPhone | 安装与设备系统兼容的 Xcode，在 Xcode 登录开发者账户并准备签名证书。解锁、信任 Mac 并启用开发者模式。检测到唯一可用团队时自动采用，多个团队时可在工作台选择并保存 Team ID 和 WDA Bundle ID。 |
-| Android | 真机开启 USB 调试。工作台优先使用本机 SDK 和 Java，缺少时可在设备环境中点「自动安装」，或直接点「启动 Android 模拟器」。按窗口提示确认 SDK 许可后，工作台会下载和校验所需工具、安装组件。模拟器使用 API 35 镜像。 |
+| Android | 在 Windows 或 macOS 上连接真机并开启 USB 调试。设备区提示缺少工具时，点「准备 Android 环境」，按提示确认 SDK 许可。工作台复用已有 SDK 和 Java，补齐缺项后自动扫描手机。在「设备环境与 iPhone 签名」可以选择非默认位置的 SDK。 |
 
 ### 从源码构建桌面应用
 
@@ -41,7 +41,9 @@ npm ci --prefix desktop
 npm run package:desktop
 ```
 
-Windows 可在源码目录运行 `npm ci`、`npm ci --prefix desktop`、`npm run desktop`。Android 真机需要 Android SDK、Java 和 USB 调试授权，鸿蒙真机需要 DevEco Studio 的 HDC，可用 `HDC_PATH` 指定其路径。Windows 上的 Android 模拟器通过 Android Studio 设备管理器启动。iPhone 真机连接与签名、旧版按文字录制的本机 OCR 步骤，以及 `.app` 打包目前依赖 macOS。
+Windows 可在源码目录运行 `npm ci`、`npm ci --prefix desktop`、`npm run desktop`。Android 真机的工具可以在设备区按需准备。鸿蒙真机需要 DevEco Studio 的 HDC，可用 `HDC_PATH` 指定其路径。Windows 上的 Android 模拟器通过 Android Studio 设备管理器启动。macOS 可在工作台中按需安装并启动 API 35 模拟器。iPhone 真机连接与签名、旧版按文字录制的本机 OCR 步骤，以及 `.app` 打包目前依赖 macOS。
+
+使用 `npm run desktop` 从源码启动时，Electron 运行时默认从 npmmirror 下载。可以通过 `ELECTRON_MIRROR` 环境变量指定其他下载地址。 [默认镜像配置](desktop/electron.env)
 
 ## CLI 安装与设备接入
 
