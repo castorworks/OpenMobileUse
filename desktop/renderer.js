@@ -8,6 +8,7 @@ let devices = [],
   model,
   mode = 'select',
   scanPending,
+  scanErrors = {},
   androidSetup,
   androidPreparing = false,
   androidScanTimer;
@@ -179,6 +180,7 @@ function renderDevices() {
       b.dataset.device = t.id;
       b.setAttribute('aria-current', String(t.id === selected));
       b.title = t.id;
+      const connection = t.platform === 'android' && t.connection === 'unknown' ? '' : t.connection;
       const wrap = element('span');
       wrap.append(
         element('strong', label(t)),
@@ -188,7 +190,7 @@ function renderDevices() {
             ? t.id.slice('android:'.length)
             : [
                 t.platform === 'harmony' ? '鸿蒙' : nice(t.platform),
-                t.connection === 'network' ? '网络' : (t.connection || '').toUpperCase(),
+                connection === 'network' ? '网络' : (connection || '').toUpperCase(),
               ]
                 .filter(Boolean)
                 .join(' · ')) +
@@ -225,22 +227,34 @@ async function scanDevices() {
   $('scan').disabled = true;
   try {
     const r = await api.devices();
+    const previous = devices.find((t) => t.id === selected);
     devices = r.devices;
+    scanErrors = r.scanErrors ?? {};
     androidSetup = r.androidSetup;
     if (selected && !devices.some((t) => t.id === selected) && !state().active) selected = '';
     const androidDevices = devices.filter((t) => t.platform === 'android');
     if (!androidPreparing) {
       if (androidSetup?.supported && androidSetup.missing.length) {
-        $('scan-status').textContent = '缺少 ' + androidSetup.missing.join('、') + '，可在这里准备 Android 环境。';
+        $('scan-status').textContent = '电脑缺少 Android 调试组件。请点「准备 Android 环境」并按提示完成。';
+      } else if (
+        r.unavailable.includes('android') && (previous ? previous.platform === 'android' : !devices.length)
+      ) {
+        $('scan-status').textContent = '暂时无法扫描 Android 手机。请点「重新扫描」。';
+      } else if (
+        previous?.platform === 'android' &&
+        previous.connection !== 'emulator' &&
+        !androidDevices.some((t) => t.id === previous.id)
+      ) {
+        $('scan-status').textContent =
+          '找不到刚才连接的手机。' +
+          (previous.connection === 'usb' ? '请重新插拔数据线' : '请检查手机连接') +
+          '，再点「重新扫描」。';
       } else if (androidDevices.some((t) => t.state === 'unauthorized')) {
         $('scan-status').textContent = '请解锁 Android 手机，并在手机上允许 USB 调试。';
       } else if (androidDevices.some((t) => t.state === 'offline')) {
-        $('scan-status').textContent = 'Android 设备离线，请重新连接后扫描。';
+        $('scan-status').textContent = 'Android 设备已离线。请重新连接后点「重新扫描」。';
       } else {
-        $('scan-status').textContent = [
-          devices.length ? '' : '尚未发现设备。请连接手机并完成调试授权。',
-          ...r.unavailable.filter((f) => !devices.length).map((f) => nice(f) + ' 发现失败'),
-        ].filter(Boolean).join(' · ');
+        $('scan-status').textContent = devices.length ? '' : '尚未发现设备。请连接手机后重新扫描。';
       }
     }
     updateAndroidSetupButton();
@@ -249,8 +263,8 @@ async function scanDevices() {
     if (!selected && online.length === 1 &&
         (online[0].platform !== 'android' || !androidSetup?.missing.length))
       await selectDevice(online[0]);
-  } catch (e) {
-    if (!androidPreparing) $('scan-status').textContent = describe(e.message);
+  } catch {
+    if (!androidPreparing) $('scan-status').textContent = '暂时无法扫描设备。请点「重新扫描」。';
   }
 }
 async function rescanAndroid() {
@@ -1113,6 +1127,7 @@ function showPlatformTools() {
       $('platforms').replaceChildren(
         ...(model.macHost ? ['ios', 'android', 'harmony'] : ['android', 'harmony']).map((k) => {
           const row = element('p', nice(k) + (env[k] ? ' · 已找到工具链' : ' · 缺少平台工具'));
+          if (scanErrors[k]) row.append(' · 上次扫描失败 · ' + scanErrors[k]);
           if (k === 'android' && env.androidSetup.supported) {
             if (!env.android) {
               const setup = element('button', '准备环境', 'text-button');

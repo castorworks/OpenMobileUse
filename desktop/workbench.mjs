@@ -181,11 +181,19 @@ export class Workbench {
     applyAndroidToolchain(tools);
     const results = await Promise.allSettled(platforms.map((p) => this.bridge.list(p)));
     const rows = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
+    const scanErrors = Object.fromEntries(
+      results.flatMap((r, i) =>
+        r.status === 'rejected'
+          ? [[platforms[i], r.reason?.stderr?.trim() || r.reason?.message || String(r.reason)]]
+          : [],
+      ),
+    );
     this.targets = new Map(rows.map((t) => [t.platform + ':' + t.id, t]));
     for (const id of this.frames.keys()) if (!this.targets.has(id)) this.frames.delete(id);
     return {
       devices: [...this.targets].map(([id, t]) => ({ ...t, id })),
-      unavailable: platforms.filter((_, i) => results[i].status === 'rejected'),
+      unavailable: Object.keys(scanErrors),
+      scanErrors,
       androidSetup: androidSetupStatus(tools),
     };
   }

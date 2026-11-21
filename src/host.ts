@@ -117,7 +117,8 @@ export async function list(platform: Platform): Promise<Target[]> {
       }),
     );
   }
-  return (await run(adbPath(), ['devices', '-l']))
+  const adb = adbPath();
+  const devices = (await run(adb, ['devices', '-l']))
     .split('\n')
     .map((l) => l.trim().split(/\s+/))
     .filter((parts) => ['device', 'offline', 'unauthorized'].includes(parts[1]))
@@ -135,4 +136,10 @@ export async function list(platform: Platform): Promise<Target[]> {
             : 'unknown',
       model: info.find((k) => k.startsWith('model:'))?.slice(6) || 'Android',
     }));
+  if (devices.some((t) => t.connection === 'unknown')) {
+    const serial = await run(adb, ['-d', 'get-serialno'], 1000).catch(() => '');
+    const device = devices.find((t) => t.id === serial && t.connection === 'unknown');
+    if (device) device.connection = 'usb';
+  }
+  return devices;
 }
