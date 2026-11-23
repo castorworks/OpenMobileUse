@@ -36,7 +36,9 @@ For games and custom-drawn views use the screenText refs for visible labels that
 When the native list lacks the target, use inspect_screen or read_screen_text if offered before asking for help.
 When an image is attached, inspect its actual pixels. Use tap_visual on a distinctive label or icon
 at its centre, with coordinates from 0 to 1 relative to the full screenshot, origin at top left.
-Use finish_visual with a distinctive visible detail on the new screen to verify an in-app result.
+For a feed swipe, verify the new item with finish using its native title, author or other identifying text.
+newLabelRefs are native labels that appeared after the swipe. Use one only if it demonstrates the requested result.
+If only the image proves the result, use finish_visual on a stable, distinctive detail.
 Prefer a matching native control, including an icon identified by its id. After a failed action use
 the fresh observation to try another route toward the same goal. Controls marked atVisualTarget
 overlap the previous visual point; choose one only if its identity fits. For a moving background
@@ -130,6 +132,7 @@ export async function runConversation(
   let lastSwipeView: ReturnType<typeof swipeObservation> | undefined;
   let blocker: BlockedAction | undefined;
   const missingDispatches = new Map<string, BlockedAction>();
+  let labelsBeforeSwipe: Set<string> | undefined;
   let imageRejected = false;
   while (context.length > 1 && Buffer.byteLength(JSON.stringify(context)) > 18000) context.shift();
   let modelCalls = 0,
@@ -192,6 +195,16 @@ export async function runConversation(
       }
       const refs = (fn: (n: Control) => boolean) =>
         [...targets].filter(([, x]) => fn(x.node)).map(([k]) => k);
+      const previousLabels = labelsBeforeSwipe;
+      labelsBeforeSwipe = undefined;
+      const newLabelRefs = previousLabels
+        ? refs((n) =>
+            !n.editable && !/SeekBar|Slider|Progress/i.test(n.role) &&
+            n.labels.some((label) => /\p{L}/u.test(label) && !previousLabels.has(label)),
+          )
+        : [];
+      // Give the new item's native evidence the first look. The model can still request an image.
+      if (newLabelRefs.length) inspectTextInApp = '';
       const tappable = refs((n) => n.enabled);
       const inspectScreen = !tappable.length || inspectTextInApp === view.app;
       const sendImage = useImages && !imageRejected;
@@ -305,6 +318,7 @@ export async function runConversation(
           .find((n) => n.role === 'XCUIElementTypeApplication')
           ?.labels[0]?.slice(0, 140),
         controls,
+        newLabelRefs: newLabelRefs.length ? newLabelRefs : undefined,
         observationId: token,
         textStatus,
         screenText: [...screenText].map(([ref, line]) => ({ ref, ...line })),
@@ -500,6 +514,9 @@ export async function runConversation(
             )
               outcome = 'NO_PROGRESS';
             else {
+              const priorLabels = name === 'swipe'
+                ? new Set(view.controls.flatMap((c) => c.labels))
+                : undefined;
               await executeStep(
                 device,
                 identity,
@@ -510,6 +527,7 @@ export async function runConversation(
               lastDispatch = signature;
               lastSwipeView = swipeView;
               lastSwipePreview = preview;
+              labelsBeforeSwipe = priorLabels;
               await record(recordStep(view, command, target?.node));
               outcome = 'dispatched';
             }

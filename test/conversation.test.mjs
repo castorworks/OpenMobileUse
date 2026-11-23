@@ -305,6 +305,30 @@ test('a helper tap does not complete a rejected swipe; a dispatched retry does',
   }
 });
 
+test('after a swipe, a newly observed native caption can verify the result without another screenshot', async () => {
+  const caption = { ...control('caption', 'Text'), labels: ['第一条'] };
+  const device = phone([caption]);
+  const picture = await frame('#202020');
+  let screenshots = 0, decisions = 0;
+  device.screenshot = async () => { screenshots++; return picture; };
+  device.perform = async (step) => {
+    assert.equal(step.kind, 'swipe');
+    device.view.controls = [{ ...caption, labels: ['第二条'] }];
+  };
+  const { result, records } = await run(device, (obs, tools) => {
+    if (++decisions === 1) return ['inspect_screen', {}];
+    if (decisions === 2) return ['swipe', { direction: 'up' }];
+    assert.ok(tools.includes('inspect_screen'));
+    assert.ok(!tools.includes('finish_visual'));
+    const title = obs.controls.find(n => n.label === '第二条');
+    return ['finish', { message: '已到第二条。', evidence: title.ref }];
+  }, true);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(screenshots, 1);
+  assert.deepEqual(records.map(s => s.command.action), ['swipe', 'check']);
+  assert.equal(records.at(-1).reading.label, '第二条');
+});
+
 test('layout jitter alone does not authorize a second identical swipe on an unchanged item', async () => {
   const device = phone([{ ...control('caption', 'Text'), labels: ['同一条'] }]);
   device.snapshot = async () => structuredClone(device.view);
@@ -327,4 +351,24 @@ test('real scrolling still permits another swipe when the visible labels are unc
       : ['swipe', { direction: 'down' }]);
   assert.equal(result.status, 'succeeded');
   assert.equal(moves, 2);
+});
+
+test('a new native caption still permits a requested visual inspection', async () => {
+  const caption = { ...control('caption', 'Text'), labels: ['第一条'] };
+  const device = phone([caption]);
+  const picture = await frame('#202020');
+  device.screenshot = async () => picture;
+  device.perform = async () => { device.view.controls = [{ ...caption, labels: ['第二条'] }]; };
+  let decisions = 0;
+  const { result } = await run(device, (obs, tools) => {
+    if (++decisions === 1) return ['swipe', { direction: 'up' }];
+    if (decisions === 2) {
+      assert.ok(obs.newLabelRefs.includes(obs.controls[0].ref));
+      return ['inspect_screen', {}];
+    }
+    assert.ok(tools.includes('finish_visual'));
+    return ['finish', { message: '已核对。', evidence: obs.controls[0].ref }];
+  }, true);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(decisions, 3);
 });
