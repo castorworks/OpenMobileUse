@@ -19,6 +19,8 @@ import {
   isScreenContainer,
   observationId,
   screenAvailable,
+  swipeObservation,
+  sameSwipeObservation,
   uniqueSelector,
   pointInView,
   type Point,
@@ -124,6 +126,7 @@ export async function runConversation(
   const notes = new Set<string>();
   let visualMiss: { page: string; point: Point } | undefined;
   let lastSwipePreview: Buffer | undefined;
+  let lastSwipeView: ReturnType<typeof swipeObservation> | undefined;
   let blocker: { action: string; outcome: string } | undefined;
   let imageRejected = false;
   while (context.length > 1 && Buffer.byteLength(JSON.stringify(context)) > 18000) context.shift();
@@ -475,14 +478,16 @@ export async function runConversation(
             const { step } = await compileStep(command, platform);
             // A feed may keep the same controls while only the rendered item or its caption changes.
             // Use frame changes for swipes only. They do not verify that a new item was read.
-            const landmarks =
-              name === 'swipe'
-                ? [observationId(identity, view), [...screenText.values()]]
-                : view.controls.map((c) => c.id || c.labels[0]);
-            const signature = JSON.stringify([observationId(identity, view, step), landmarks, command]);
+            const swipeView = step.kind === 'swipe' ? swipeObservation(identity, view) : undefined;
+            const signature = JSON.stringify([
+              swipeView ? page : observationId(identity, view, step),
+              swipeView ? [...screenText.values()] : view.controls.map((c) => c.id || c.labels[0]),
+              command,
+            ]);
             const preview = name === 'swipe' && frame ? await swipePreview(frame) : undefined;
             if (
               signature === lastDispatch &&
+              (!swipeView || (lastSwipeView && sameSwipeObservation(lastSwipeView, swipeView))) &&
               !(preview && swipePreviewChanged(lastSwipePreview, preview))
             )
               outcome = 'NO_PROGRESS';
@@ -495,6 +500,7 @@ export async function runConversation(
                 bounded,
               );
               lastDispatch = signature;
+              lastSwipeView = swipeView;
               lastSwipePreview = preview;
               await record(recordStep(view, command, target?.node));
               outcome = 'dispatched';

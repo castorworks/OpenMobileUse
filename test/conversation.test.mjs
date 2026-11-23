@@ -250,3 +250,27 @@ test('a sensitive screen or unconfirmed action stops dispatch immediately', asyn
   assert.equal(blocked.result.reason, 'SENSITIVE_OR_BLOCKED_SCREEN');
   assert.equal(blocked.result.modelCalls, 0);
 });
+
+test('layout jitter alone does not authorize a second identical swipe on an unchanged item', async () => {
+  const device = phone([{ ...control('caption', 'Text'), labels: ['同一条'] }]);
+  device.snapshot = async () => structuredClone(device.view);
+  let moves = 0;
+  device.perform = async () => { moves++; device.view.controls[0].bounds.y++; };
+  const { result } = await run(device, () => ['swipe', { direction: 'up' }]);
+  assert.equal(moves, 1);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'NO_PROGRESS');
+});
+
+test('real scrolling still permits another swipe when the visible labels are unchanged', async () => {
+  const device = phone([{ ...control('caption', 'Text'), labels: ['同一段长文'] }]);
+  device.snapshot = async () => structuredClone(device.view);
+  let moves = 0;
+  device.perform = async () => { moves++; device.view.controls[0].bounds.y += 40; };
+  const { result } = await run(device, obs =>
+    moves === 2 || obs.lastBlocker
+      ? ['finish', { message: '已读。', evidence: obs.controls[0].ref }]
+      : ['swipe', { direction: 'down' }]);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(moves, 2);
+});

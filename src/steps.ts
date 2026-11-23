@@ -189,6 +189,20 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
 }
 type ObservationScope = CommandStep | { kind: 'check'; selector?: Selector };
 
+function containsPoint(r: Bounds, p: Point) {
+  return r.x <= p.x && p.x < r.x + r.width && r.y <= p.y && p.y < r.y + r.height;
+}
+
+function controlsInGestureRegion(view: View, a: Point, b: Point) {
+  return view.controls.filter(
+    ({ bounds: r }) =>
+      r.x <= Math.max(a.x, b.x) &&
+      r.x + r.width > Math.min(a.x, b.x) &&
+      r.y <= Math.max(a.y, b.y) &&
+      r.y + r.height > Math.min(a.y, b.y),
+  );
+}
+
 function relevantControls(view: View, scope?: ObservationScope) {
   if (!scope) return view.controls;
   if (scope.kind === 'launch' || (scope.kind === 'check' && !scope.selector)) return [];
@@ -200,40 +214,49 @@ function relevantControls(view: View, scope?: ObservationScope) {
     const states = hits.map(({ bounds, ...state }) => state);
     if (hits.length !== 1 || scope.kind === 'check' || scope.kind === 'waitFor') return states;
     const center = visibleCenter(view, hits[0].bounds);
-    const atTarget = view.controls.filter(
-      ({ bounds: r }) =>
-        r.x <= center.x && center.x < r.x + r.width && r.y <= center.y && center.y < r.y + r.height,
-    );
+    const atTarget = view.controls.filter((n) => containsPoint(n.bounds, center));
     return [states, atTarget.map((c) => [c.role, c.id])];
   }
   if (scope.kind === 'swipe' || (scope.kind === 'tap' && 'point' in scope)) {
     const a = pointInView(view, scope.kind === 'swipe' ? scope.from : scope.point);
     const b = scope.kind === 'swipe' ? pointInView(view, scope.to) : a;
-    return view.controls.filter(
-      ({ bounds: r }) =>
-        r.x <= Math.max(a.x, b.x) &&
-        r.x + r.width > Math.min(a.x, b.x) &&
-        r.y <= Math.max(a.y, b.y) &&
-        r.y + r.height > Math.min(a.y, b.y),
-    );
+    return controlsInGestureRegion(view, a, b);
   }
   return view.controls;
 }
 
-export function observationId(device: string, view: View, scope?: ObservationScope) {
+function observationHash(device: string, view: View, controls: unknown) {
   return createHash('sha256')
-    .update(
-      JSON.stringify([
-        device,
-        view.app,
-        view.window,
-        view.width,
-        view.height,
-        view.rotation,
-        relevantControls(view, scope),
-      ]),
-    )
+    .update(JSON.stringify([
+      device, view.app, view.window, view.width, view.height, view.rotation, controls,
+    ]))
     .digest('hex');
+}
+
+export function observationId(device: string, view: View, scope?: ObservationScope) {
+  return observationHash(device, view, relevantControls(view, scope));
+}
+
+export function swipeObservation(identity: string, view: View, step?: Extract<Step, { kind: 'swipe' }>) {
+  const from = step && pointInView(view, step.from);
+  const to = step && pointInView(view, step.to);
+  const region = from && to ? controlsInGestureRegion(view, from, to) : view.controls;
+  const edges: number[] = [];
+  const controls = region.map(({ bounds, ...state }) => {
+    edges.push(bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height);
+    return from && to ? [state, containsPoint(bounds, from), containsPoint(bounds, to)] : state;
+  });
+  const tolerance = identity.startsWith('android:')
+    ? Math.max(2, Math.round(Math.min(view.width, view.height) * 0.005))
+    : 0;
+  return { state: observationHash(identity, view, controls), edges, tolerance };
+}
+
+export function sameSwipeObservation(
+  a: ReturnType<typeof swipeObservation>,
+  b: ReturnType<typeof swipeObservation>,
+) {
+  return a.state === b.state && a.edges.every((edge, i) => Math.abs(edge - b.edges[i]) <= a.tolerance);
 }
 
 export function guardObservation(
@@ -242,6 +265,15 @@ export function guardObservation(
   scope: ObservationScope,
   check?: (view: View) => void,
 ) {
+  if (scope.kind === 'swipe') {
+    const beforeSwipe = swipeObservation(identity, before, scope);
+    return (current: View) => {
+      check?.(current);
+      // Allow slight player animation only while both endpoints keep the same control stack.
+      if (!sameSwipeObservation(beforeSwipe, swipeObservation(identity, current, scope)))
+        throw Error('STALE_OBSERVATION');
+    };
+  }
   const expected = observationId(identity, before, scope);
   return (current: View) => {
     check?.(current);
