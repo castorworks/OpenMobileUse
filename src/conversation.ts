@@ -80,6 +80,7 @@ async function observe(device: StepDevice, signal: AbortSignal): Promise<View> {
 }
 
 type Dialogue = { user: string; assistant?: string };
+type BlockedAction = { action: string; outcome: string };
 const turnLimit = 1000;
 const observationItemLimit = 1000;
 export const conversationTimeLimitMs = 10 * 60_000;
@@ -127,23 +128,26 @@ export async function runConversation(
   let visualMiss: { page: string; point: Point } | undefined;
   let lastSwipePreview: Buffer | undefined;
   let lastSwipeView: ReturnType<typeof swipeObservation> | undefined;
-  let blocker: { action: string; outcome: string } | undefined;
+  let blocker: BlockedAction | undefined;
+  const missingDispatches = new Map<string, BlockedAction>();
   let imageRejected = false;
   while (context.length > 1 && Buffer.byteLength(JSON.stringify(context)) > 18000) context.shift();
   let modelCalls = 0,
     inspectTextInApp = '',
     lastDispatch = '',
     stalls = 0;
-  function partial(reason: string) {
+  function partial(reason: string, missing = missingDispatches.values().next().value) {
     const stop =
       reason === 'TIME_BUDGET'
         ? '本轮执行时间已用完。'
         : reason === 'DECISION_BUDGET'
           ? '本轮已到决策次数上限。'
           : '当前画面仍无法确认下一步。';
-    const detail = blocker
-      ? '上次尝试的操作是「' + blocker.action + '」。请把手机停在要继续的页面，然后回复“继续”。'
-      : '回复“继续”可接着执行。';
+    const detail = missing
+      ? '「' + missing.action + '」未下发到手机。请核对当前画面后回复“继续”。'
+      : blocker
+        ? '上次尝试的操作是「' + blocker.action + '」。请把手机停在要继续的页面，然后回复“继续”。'
+        : '回复“继续”可接着执行。';
     const findings = notes.size
       ? '目前从画面读到的内容：\n' + [...notes].map((n) => '- ' + n).join('\n') + '\n\n'
       : '';
@@ -353,9 +357,13 @@ export async function runConversation(
         reply.tool_calls.length === 1
           ? decode(tools, name, call.function.arguments)
           : 'ONE_ACTION_PER_OBSERVATION';
-      let description = name;
+      let description = name, dispatchKey = 'action';
       if (!outcome) {
         const a = JSON.parse(call.function.arguments);
+        if (name === 'swipe') dispatchKey = a.direction;
+        const missing = missingDispatches.values().next().value;
+        if ((name === 'finish' || name === 'finish_visual') && missing)
+          return partial(missing.outcome, missing);
         const target = targets.get(a.target || a.evidence);
         const visual = screenText.get(a.target || a.evidence);
         if (name === 'swipe' && a.note?.trim()) notes.add(a.note.trim());
@@ -541,11 +549,16 @@ export async function runConversation(
       if (wrappingUp) return partial(blocker?.outcome ?? 'DECISION_BUDGET');
       if (outcome === 'dispatched' && name !== 'wait') {
         stalls = 0;
-        blocker = undefined;
+        // A navigation action can prepare a retry. Only the matching gesture clears a missed swipe.
+        missingDispatches.delete('action');
+        if (name === 'swipe') missingDispatches.delete(dispatchKey);
+        blocker = missingDispatches.values().next().value;
         visualMiss = undefined;
       } else if (outcome !== 'observed' && outcome !== 'dispatched') {
         stalls++;
         blocker = { action: description, outcome: outcome! };
+        if (['swipe', 'tap', 'tap_visual', 'input_text', 'back', 'launch_app'].includes(name))
+          missingDispatches.set(dispatchKey, blocker);
         if (
           [
             'NO_PROGRESS',

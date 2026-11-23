@@ -251,6 +251,60 @@ test('a sensitive screen or unconfirmed action stops dispatch immediately', asyn
   assert.equal(blocked.result.modelCalls, 0);
 });
 
+test('a blocked swipe cannot be completed by checking the page or the screenshot', async () => {
+  for (const finish of ['finish', 'finish_visual']) {
+    const device = phone([control('caption', 'Text')]);
+    device.snapshot = async () => structuredClone(device.view);
+    const picture = await frame('#202020');
+    device.screenshot = async () => picture;
+    let decisions = 0;
+    const { result, records } = await run(device, (obs) => {
+      if (++decisions === 1) {
+        device.view.window = 'changed';
+        return ['swipe', { direction: 'down' }];
+      }
+      if (decisions === 2) return ['wait', {}];
+      return finish === 'finish'
+        ? [finish, { message: '已查看当前页。', evidence: obs.controls[0].ref }]
+        : [finish, { message: '已查看当前页。', x: 0.5, y: 0.5 }];
+    }, true);
+    assert.equal(result.status, 'needs_review');
+    assert.equal(result.reason, 'STALE_OBSERVATION');
+    assert.match(result.answer, /向下滑动/);
+    assert.deepEqual(records.map(s => s.command.action), ['pause']);
+    assert.equal(decisions, 3);
+  }
+});
+
+test('a read-only result can finish using a control without dispatching a gesture', async () => {
+  const { result, records } = await run(phone([control('caption', 'Text')]), obs =>
+    ['finish', { message: '已看到标题。', evidence: obs.controls[0].ref }]);
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(records.map(s => s.command.action), ['check']);
+});
+
+test('a helper tap does not complete a rejected swipe; a dispatched retry does', async () => {
+  for (const retry of [false, true]) {
+    const device = phone([control('open', 'Button')]);
+    device.snapshot = async () => structuredClone(device.view);
+    const sent = [];
+    device.perform = async (step) => { sent.push(step.kind); };
+    let decisions = 0;
+    const { result } = await run(device, (obs) => {
+      decisions++;
+      if (decisions === 1) {
+        device.view.window = 'new';
+        return ['swipe', { direction: 'down' }];
+      }
+      if (decisions === 2) return ['tap', { target: obs.controls[0].ref }];
+      if (decisions === 3 && retry) return ['swipe', { direction: 'down' }];
+      return ['finish', { message: '已核对。', evidence: obs.controls[0].ref }];
+    });
+    assert.deepEqual(sent, retry ? ['tap', 'swipe'] : ['tap']);
+    assert.equal(result.status, retry ? 'succeeded' : 'needs_review');
+  }
+});
+
 test('layout jitter alone does not authorize a second identical swipe on an unchanged item', async () => {
   const device = phone([{ ...control('caption', 'Text'), labels: ['同一条'] }]);
   device.snapshot = async () => structuredClone(device.view);
