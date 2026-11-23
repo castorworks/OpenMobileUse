@@ -26,11 +26,11 @@ export function screenshotSize(image: Buffer, view: View) {
   return { width, height };
 }
 
-export async function captureView(device: StepDevice, identity: string) {
+export async function captureView(device: StepDevice, identity: string, initialView?: View) {
   for (let attempt = 0; attempt < 2; attempt++) {
     let before: View, view: View, image: Buffer;
     try {
-      before = await device.snapshot();
+      before = attempt === 0 && initialView ? initialView : await device.snapshot();
       image = await device.screenshot();
       view = await device.snapshot();
     } catch (error) {

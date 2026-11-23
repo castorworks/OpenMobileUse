@@ -3,6 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
 import { compileRecording } from '../dist/recording.js';
+import { captureView } from '../dist/inspect.js';
 
 function control(id, role = 'Stack', bounds = { x: 0, y: 0, width: 10, height: 10 }) {
   return { id, role, bounds, labels: [], enabled: true, editable: false, focused: false, secret: false };
@@ -371,4 +372,24 @@ test('a new native caption still permits a requested visual inspection', async (
   }, true);
   assert.equal(result.status, 'succeeded');
   assert.equal(decisions, 3);
+});
+
+test('a verified preview rechecks the window after its screenshot and recaptures a changed window', async () => {
+  const device = phone([control('caption', 'Text')]);
+  device.view.screen = { page: 'other', marker: '' };
+  const before = structuredClone(device.view);
+  let snapshots = 0, images = 0;
+  const picture = await frame('#202020');
+  device.snapshot = async () => { snapshots++; return structuredClone(device.view); };
+  device.screenshot = async () => { images++; return picture; };
+  device.view.controls[0].labels = ['新标题'];
+  const current = await captureView(device, 'android:test', before);
+  assert.equal(snapshots, 1);
+  assert.equal(images, 1);
+  assert.equal(current.metadata.controlsChangedDuringCapture, true);
+  device.view.window = 'new window';
+  const moved = await captureView(device, 'android:test', before);
+  assert.equal(snapshots, 4);
+  assert.equal(images, 3);
+  assert.equal(moved.before.window, 'new window');
 });

@@ -243,11 +243,11 @@ export class Workbench {
       }
     }));
   }
-  async frame(device, identity) {
+  async frame(device, identity, initialView) {
     let capture;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        capture = await captureView(device, identity);
+        capture = await captureView(device, identity, attempt === 0 ? initialView : undefined);
         break;
       } catch (error) {
         if (
@@ -444,11 +444,17 @@ export class Workbench {
             };
             // The task's own session supplies previews, in order, after actual native operations.
             const watched = {};
-            for (const name of ['snapshot', 'foregroundApp', 'observe', 'screenshot', 'close']) {
+            let lastView;
+            watched.snapshot = async () => {
+              lastView = await device.snapshot();
+              return lastView;
+            };
+            for (const name of ['foregroundApp', 'observe', 'screenshot', 'close']) {
               watched[name] = device[name].bind(device);
             }
             for (const name of ['move', 'perform', 'launch', 'back']) {
               watched[name] = async (...args) => {
+                lastView = undefined;
                 const value = await device[name](...args);
                 await showFrame();
                 return value;
@@ -489,11 +495,13 @@ export class Workbench {
             record.status = result.status;
             record.reason = result.reason;
             try {
+              // A successful chat just checked this view. The preview still reads again after its screenshot.
+              const initialView = conversational && result.status === 'succeeded' ? lastView : undefined;
               this.emit({
                 type: 'frame',
                 device: id,
                 runId: record.id,
-                frame: await this.frame(device, id),
+                frame: await this.frame(device, id, initialView),
               });
             } catch (e) {
               this.emit({ type: 'frameError', device: id, runId: record.id, error: errorCode(e) });
