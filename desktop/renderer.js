@@ -94,6 +94,7 @@ const issues = {
   MODEL_HTTP_401: '模型服务拒绝了凭据，请在工作台设置中更新 API Key。',
   MODEL_HTTP_403: '此凭据无权调用当前模型，请检查工作台设置。',
   MODEL_HTTP_404: '模型或接口不存在，请检查模型名称和接口地址。',
+  MODEL_REQUEST_TIMEOUT: '模型请求超时，已达到重试上限。请稍后重试。',
   APPIUM_HTTPS_UNAVAILABLE:
     '配置的本机 HTTPS 服务尚未启动。请检查 TLS 服务，或使用 HTTP 回环地址以自动启动。',
   WDA_SIGNING_FAILED: '请检查 WDA 签名配置和开发者信任。',

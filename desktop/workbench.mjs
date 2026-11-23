@@ -385,7 +385,7 @@ export class Workbench {
     const decide =
       config &&
       chatClient(
-        config,
+        { ...config, requestTimeoutMs: 15_000, maxRetries: 5 },
         fetch,
         (m) => {
           record.servedModel = m;

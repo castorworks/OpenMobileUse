@@ -141,12 +141,13 @@ function parseReply(
   };
 }
 export function chatClient(
-  config: ReturnType<typeof modelConfig>,
+  config: ReturnType<typeof modelConfig> & { requestTimeoutMs?: number; maxRetries?: number },
   transport: typeof fetch = fetch,
   onServedModel?: (model: string) => void,
   cancellation?: AbortSignal,
   allowText = false,
 ): Decide {
+  const maxRetries = config.maxRetries ?? 2;
   return async (messages, tools, deadline, count) => {
     const body = JSON.stringify({
       model: config.model,
@@ -159,7 +160,8 @@ export function chatClient(
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error('TIME_BUDGET');
       if (cancellation?.aborted) throw new Error('CANCELLED');
-      const timeout = AbortSignal.timeout(remaining);
+      const timeoutMs = Math.min(remaining, config.requestTimeoutMs ?? remaining);
+      const timeout = AbortSignal.timeout(timeoutMs);
       const signal = cancellation ? AbortSignal.any([timeout, cancellation]) : timeout;
       let res: Response | undefined;
       let payload: string | undefined;
@@ -179,7 +181,8 @@ export function chatClient(
         else await res.body?.cancel();
       } catch {
         if (cancellation?.aborted) throw new Error('CANCELLED');
-        if (signal.aborted) throw new Error('TIME_BUDGET');
+        if (Date.now() >= deadline || (timeout.aborted && timeoutMs === remaining))
+          throw new Error('TIME_BUDGET');
         res = undefined;
       }
       if (payload !== undefined) {
@@ -195,8 +198,10 @@ export function chatClient(
         return reply;
       }
       const retry = !res || [429, 500, 502, 503, 504].includes(res.status);
-      if (!retry || attempt >= 2)
-        throw new Error(res ? 'MODEL_HTTP_' + res.status : 'MODEL_NETWORK_ERROR');
+      if (!retry || attempt >= maxRetries) {
+        if (res) throw new Error('MODEL_HTTP_' + res.status);
+        throw new Error(timeout.aborted ? 'MODEL_REQUEST_TIMEOUT' : 'MODEL_NETWORK_ERROR');
+      }
       const header = res?.headers.get('retry-after');
       let delay = 300 * 2 ** attempt;
       if (header) {
