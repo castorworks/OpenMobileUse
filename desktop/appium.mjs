@@ -137,7 +137,7 @@ export class LocalAppium {
     // A running service only sees the environment it inherited. Wait for other
     // workbench sessions before replacing an owned service with new SDK paths.
     if (this.owned && this.owned.key !== key) await stop(this.owned);
-    const deadline = Date.now() + 15000;
+    const deadline = Date.now() + 5 * 60_000;
     let spawned;
     try {
       do {

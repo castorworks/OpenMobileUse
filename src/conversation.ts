@@ -80,7 +80,7 @@ async function observe(device: StepDevice, signal: AbortSignal): Promise<View> {
 type Dialogue = { user: string; assistant?: string };
 const turnLimit = 1000;
 const observationItemLimit = 1000;
-const timeLimitMs = 10 * 60_000;
+export const conversationTimeLimitMs = 10 * 60_000;
 
 // Dense trees often list layout wrappers before the toolbar and its controls.
 function rankedControls(view: View, visualPoint?: Point) {
@@ -117,8 +117,8 @@ export async function runConversation(
   activity?: (description: string) => void,
   useImages = false,
 ) {
-  const deadline = Date.now() + timeLimitMs;
-  const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeLimitMs)]);
+  const deadline = Date.now() + conversationTimeLimitMs;
+  const bounded = AbortSignal.any([signal, AbortSignal.timeout(conversationTimeLimitMs)]);
   const history: History = [];
   const context = dialogue.slice();
   const notes = new Set<string>();

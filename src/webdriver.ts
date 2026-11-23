@@ -245,6 +245,8 @@ export class WebDriver implements Device {
     id: string,
     dispatch: Dispatch,
     mode: 'settings' | 'foreground' = 'settings',
+    newCommandTimeoutSeconds = 90,
+    waitForIdleTimeoutMs?: number,
   ) {
     const base = appiumEndpoint();
     const caps: Record<string, unknown> = {
@@ -252,8 +254,10 @@ export class WebDriver implements Device {
       'appium:automationName': platform === 'ios' ? 'XCUITest' : 'UiAutomator2',
       'appium:udid': id,
       'appium:noReset': true,
-      'appium:newCommandTimeout': 90,
+      'appium:newCommandTimeout': newCommandTimeoutSeconds,
     };
+    if (platform === 'android' && waitForIdleTimeoutMs !== undefined)
+      caps['appium:settings[waitForIdleTimeout]'] = waitForIdleTimeoutMs;
     if (mode === 'foreground') caps['appium:autoLaunch'] = false;
     if (platform === 'ios') {
       if (mode === 'settings') caps['appium:bundleId'] = iosSettings;

@@ -8,10 +8,12 @@ export function openDevice(
   target: Target,
   dispatch: Dispatch,
   mode: 'foreground' | 'settings' = 'foreground',
+  newCommandTimeoutSeconds?: number,
+  waitForIdleTimeoutMs?: number,
 ) {
   return target.platform === 'harmony'
     ? new Harmony(target.id, dispatch)
-    : WebDriver.open(target.platform, target.id, dispatch, mode);
+    : WebDriver.open(target.platform, target.id, dispatch, mode, newCommandTimeoutSeconds, waitForIdleTimeoutMs);
 }
 export function diagnose(error: unknown) {
   const msg = String((error as Error)?.message || '');

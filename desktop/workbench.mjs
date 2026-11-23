@@ -28,7 +28,7 @@ import { chatClient } from '../dist/chat.js';
 import { LocalAppium } from './appium.mjs';
 import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 
-import { runConversation } from '../dist/conversation.js';
+import { conversationTimeLimitMs, runConversation } from '../dist/conversation.js';
 import {
   compileRecording,
   maxRecordingSteps,
@@ -216,7 +216,7 @@ export class Workbench {
     if (target.platform === 'harmony' || !this.appium.withEnvironment) return work();
     return this.appium.withEnvironment(work);
   }
-  async session(t, id, signal, mode, work, onCleanupError) {
+  async session(t, id, signal, mode, work, onCleanupError, newCommandTimeoutSeconds) {
     if (!t.available) throw Error(connectionError(t));
     return withDevice(t, id, (dispatch) => this.withAppium(t, async () => {
       signal?.throwIfAborted();
@@ -229,6 +229,8 @@ export class Workbench {
           return dispatch(kind, perform);
         },
         mode,
+        newCommandTimeoutSeconds,
+        t.platform === 'android' ? 1000 : undefined,
       );
       try {
         return await work(device);
@@ -500,6 +502,7 @@ export class Workbench {
           (code) => {
             record.cleanupError = code;
           },
+          conversational ? conversationTimeLimitMs / 1000 + 30 : undefined,
         );
       } catch (e) {
         if (record.result) record.cleanupError = errorCode(e);
