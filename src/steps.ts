@@ -195,6 +195,11 @@ type ObservationScope =
   | { kind: 'check'; selector?: Selector }
   | { kind: 'visualTap'; point: Point };
 
+function isPassiveScreenText(view: View, node: Control) {
+  return node.role === 'Text' && node.clickable === false && !node.editable && !node.focused &&
+    node.bounds.width >= 0.9 * view.width && node.bounds.height >= 0.9 * view.height;
+}
+
 function visualTapControls(view: View, hits: Control[]) {
   const button = hits.at(-1);
   if (
@@ -203,19 +208,22 @@ function visualTapControls(view: View, hits: Control[]) {
   ) return hits;
   // A video can expose its changing playback time in a screen-sized accessibility label
   // behind the toolbar. Keep the entire hit stack, including its order and geometry.
-  return hits.map((node) =>
-    node.role === 'Text' && node.clickable === false && !node.editable && !node.focused &&
-    node.bounds.width >= 0.9 * view.width && node.bounds.height >= 0.9 * view.height
-      ? { ...node, labels: [] }
-      : node,
-  );
+  return hits.map((node) => isPassiveScreenText(view, node) ? { ...node, labels: [] } : node);
 }
 
 function relevantControls(view: View, scope?: ObservationScope) {
   if (!scope) return view.controls;
   if (scope.kind === 'launch' || (scope.kind === 'check' && !scope.selector)) return [];
   if (scope.kind === 'back' && !scope.selector)
-    return view.controls.map(({ bounds, ...state }) => state);
+    return view.controls.map((node) => {
+      const { bounds, ...state } = node;
+      if (!isPassiveScreenText(view, node)) return state;
+      // The elapsed time can tick while checking a system Back. Keep the total
+      // duration, captions and other controls as evidence of the current page.
+      const [label = '', ...rest] = state.labels;
+      const time = /^(?:\d{1,2}:)?\d{1,2}:[0-5]\d(\s*\/\s*(?:\d{1,2}:)?\d{1,2}:[0-5]\d)?$/.exec(label);
+      return time ? { ...state, labels: [{ duration: time[1] ?? '' }, ...rest] } : state;
+    });
   if ('selector' in scope && scope.selector && (scope.selector.id || scope.selector.label)) {
     // Resolve the same unique control in the new tree. The driver uses its current bounds.
     const hits = matchingControls(view, scope.selector);

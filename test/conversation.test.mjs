@@ -29,7 +29,7 @@ function frame(colour) {
     .toBuffer();
 }
 
-async function run(device, choose, useImages = false) {
+async function run(device, choose, useImages = false, preview) {
   const records = [],
     events = [];
   const decide = async (messages, tools, deadline, count) => {
@@ -65,6 +65,7 @@ async function run(device, choose, useImages = false) {
     () => true,
     undefined,
     useImages,
+    preview,
   );
   return { result, records, events };
 }
@@ -658,6 +659,62 @@ test('a truncated screenshot drops the previous visual point and uses fresh nati
     records.map((s) => s.command),
     [{ action: 'check', id: 'current_result', role: 'Button' }],
   );
+});
+
+test('a stale screenshot at the stall limit is discarded and a fresh observation can still act', async () => {
+  const device = phone([control('open', 'Button')]);
+  const stable = await frame('#eeeeee');
+  const stale = await frame('#222222');
+  let attempts = 0, capturesAtLimit = 0, transientWindow = false;
+  device.snapshot = async () => {
+    if (!transientWindow) return device.view;
+    transientWindow = false;
+    return { ...device.view, window: 'transition' };
+  };
+  device.screenshot = async () => {
+    if (attempts === 5 && ++capturesAtLimit === 1) {
+      transientWindow = true;
+      return stale;
+    }
+    return stable;
+  };
+  device.perform = async (_step, view) => {
+    if (++attempts <= 5) throw Error('ELEMENT_DISABLED');
+    view.controls = [control('result', 'Text')];
+  };
+  const published = [];
+  const { result, records, events } = await run(device, (obs, tools) => {
+    const current = obs.controls[0];
+    if (current.id === 'result') return ['finish', { evidence: current.ref, message: '已打开结果。' }];
+    assert.ok(tools.includes('tap'));
+    if (attempts === 5) assert.equal(capturesAtLimit, 2);
+    return ['tap', { target: current.ref }];
+  }, true, image => { if (image) published.push(image); });
+  assert.equal(result.status, 'succeeded');
+  assert.ok(!published.some(image => image.equals(stale)));
+  assert.equal(events.filter(e => e === 'STALE_OBSERVATION').length, 1);
+  assert.deepEqual(records.map(s => s.command.action), ['tap', 'check']);
+});
+
+test('persistent stale screenshots fall back to current native controls with bounded read attempts', async () => {
+  const device = phone([control('route', 'Button')]);
+  const picture = await frame('#222222');
+  let captures = 0, stale = false;
+  device.snapshot = async () => {
+    if (!stale) return device.view;
+    stale = false;
+    return { ...device.view, window: 'other' };
+  };
+  device.screenshot = async () => { captures++; stale = true; return picture; };
+  const { result, records } = await run(device, (obs, tools) => {
+    if (!obs.textStatus) return ['inspect_screen', {}];
+    assert.equal(obs.textStatus, 'STALE_OBSERVATION');
+    assert.ok(!tools.includes('tap_visual'));
+    return ['finish', { evidence: obs.controls[0].ref, message: '已看到原生入口。' }];
+  }, true);
+  assert.equal(captures, 2);
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(records.map(s => s.command.action), ['check']);
 });
 
 test('a disabled tap target replans to an enabled native control and records the successful action', async () => {

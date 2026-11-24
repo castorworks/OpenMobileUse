@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readScript, runScript } from '../dist/script.js';
-import { observationId } from '../dist/steps.js';
+import { executeStep, guardObservation, observationId, screenAvailable } from '../dist/steps.js';
 
 const identity = 'android:script-test';
 const app = 'example.editor';
@@ -25,6 +25,42 @@ async function script(device, steps) {
   const plan = await readScript({ schemaVersion: 1, steps }, 'android');
   return runScript(device, identity, plan.steps, new AbortController().signal);
 }
+
+test('system back on a video tolerates its ticking clock and checks the page before dispatch', async () => {
+  const back = { kind: 'back' };
+  const video = control('player', {
+    role: 'Text', labels: ['0:12 / 2:15', 'First video'], clickable: false,
+    bounds: { x: 0, y: 0, width: 200, height: 400 },
+  });
+  const search = control('search', { labels: ['Search'], clickable: true });
+  const original = view([video, search]);
+  let next = original, dispatches = 0;
+  const device = { snapshot: async () => next, back: async () => { dispatches++; } };
+  const execute = (before) => executeStep(
+    device, identity, back, guardObservation(identity, before, back, screenAvailable),
+  );
+  const tick = { ...video, labels: ['0:13 / 2:15', 'First video'] };
+  next = view([tick, search]);
+  await execute(original);
+  next = view([{ ...video, labels: ['1:00'] }, search]);
+  await execute(view([{ ...video, labels: ['0:59'] }, search]));
+  for (next of [
+    view([{ ...tick, labels: ['0:13 / 3:45', 'First video'] }, search]),
+    view([{ ...tick, labels: ['0:13 / 2:15', 'Other video'] }, search]),
+    view([tick, { ...search, enabled: false }]),
+    view([tick, { ...search, labels: ['Cancel'] }]),
+    { ...view([tick, search]), window: 'another' },
+    view([tick, search], 'example.other'),
+  ]) await assert.rejects(execute(original), /STALE_OBSERVATION/);
+  next = view([tick, search, control('confirm', { role: 'Dialog' })]);
+  await assert.rejects(execute(original), /SENSITIVE_OR_BLOCKED_SCREEN/);
+  // A timestamp on a button or a list entry can identify the user's selected item.
+  for (const attributes of [{ clickable: true }, { bounds: search.bounds }]) {
+    next = view([{ ...tick, ...attributes }, search]);
+    await assert.rejects(execute(view([{ ...video, ...attributes }, search])), /STALE_OBSERVATION/);
+  }
+  assert.equal(dispatches, 2);
+});
 
 test('a script waits for a named button to enable before executing it and the next step once', async () => {
   let reads = 0;

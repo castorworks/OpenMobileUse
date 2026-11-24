@@ -3,7 +3,9 @@ import { object } from './script.js';
 import {
   executeStep,
   guardObservation,
+  pointInView,
   screenAvailable,
+  type Bounds,
   type Point,
   type StepDevice,
   type View,
@@ -131,7 +133,8 @@ export async function imageTarget(png: Buffer, point: Point): Promise<ImageTarge
   const target = { rgb: patchAt(frame, left, top), dx: x - left, dy: y - top };
   // Select a matcher only if it uniquely identifies this point on the original screen.
   // Replay must use that same evidence, even if another matcher happens to find a candidate.
-  if (locateContour(frame, target)) return { ...target, match: 'contour' };
+  const contour = locateContour(frame, target);
+  if (contour && contour !== 'ambiguous') return { ...target, match: 'contour' };
   if (locateRgb(frame, target.rgb)) return target;
   // A repeated button can be identified by a different title on its row. First require
   // the button itself to have visible detail, then look for a non-overlapping landmark.
@@ -168,7 +171,7 @@ function contours(rgb: Buffer, w: number, h: number) {
   return result;
 }
 
-function locateContour(frame: Pixels, target: ImageTarget): Point | undefined {
+function locateContour(frame: Pixels, target: ImageTarget): Point | 'ambiguous' | undefined {
   const { width: w, height: h } = frame.info;
   const patch = contours(Buffer.from(target.rgb, 'base64'), width, height);
   // Match the neighbourhood of the requested point. The rest of a patch may be moving video.
@@ -241,7 +244,7 @@ function locateContour(frame: Pixels, target: ImageTarget): Point | undefined {
       const score = dot * dot / (energy * patchEnergy);
       if (score < 0.8 ** 2) continue;
       // A plausible second copy anywhere on the screen makes a tap unsafe.
-      if (near && (Math.abs(near.x - x) > 4 || Math.abs(near.y - y) > 4)) return;
+      if (near && (Math.abs(near.x - x) > 4 || Math.abs(near.y - y) > 4)) return 'ambiguous';
       near ??= { x, y };
       if (score >= bestScore && matchesParts(x, y)) {
         best = { x, y };
@@ -340,11 +343,32 @@ export async function executeImageTarget(
   target: ImageTarget,
   tap: boolean,
   signal: AbortSignal,
+  livePoint?: Point & { bounds?: Bounds },
 ) {
   const png = await imageFrame(device, identity, view, signal);
   const frame = await pixels(png);
-  const point = locateImage(frame, target);
-  if (!point) throw Error('VISUAL_TARGET_UNCLEAR');
+  let point = locateImage(frame, target);
+  // Video can temporarily hide the strokes of a toolbar icon. A live tap has an
+  // observed position, so one more frame can verify that very icon, before any dispatch.
+  // A second plausible copy is ambiguous immediately. Playback owns its own read retries.
+  if (!point && tap && livePoint && target.match === 'contour') {
+    const next = await imageFrame(device, identity, view, signal);
+    if (!next.equals(png)) {
+      const retryFrame = await pixels(next);
+      const retry = locateContour(retryFrame, target);
+      if (retry && retry !== 'ambiguous' &&
+        Math.abs(retry.x - livePoint.x) * (retryFrame.info.width - 1) <= 4 &&
+        Math.abs(retry.y - livePoint.y) * (retryFrame.info.height - 1) <= 4)
+        point = retry;
+    }
+  }
+  if (!point || point === 'ambiguous') throw Error('VISUAL_TARGET_UNCLEAR');
+  if (livePoint?.bounds) {
+    const { x, y } = pointInView(view, point);
+    const b = livePoint.bounds;
+    if (x < b.x || x >= b.x + b.width || y < b.y || y >= b.y + b.height)
+      throw Error('VISUAL_TARGET_UNCLEAR');
+  }
   signal.throwIfAborted();
   if (tap) {
     const step = { kind: 'tap' as const, point };

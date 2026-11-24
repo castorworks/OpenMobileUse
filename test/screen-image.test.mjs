@@ -93,6 +93,46 @@ test('uniform frames, missing icons and multiple candidate icons do not dispatch
   assert.deepEqual(taps, []);
 });
 
+test('a live visual tap checks one more video frame for a missing contour at the observed position', async () => {
+  const clear = await screenshot([icon], '#263143');
+  const hidden = await screenshot([], '#554150');
+  const other = { x: 70, y: 46 };
+  const duplicate = await screenshot([icon, other], '#263143');
+  const moved = await screenshot([other], '#263143');
+  const anchor = await imageTarget(clear, point);
+  assert.equal(anchor.match, 'contour');
+  const view = { app: 'example.feed', window: 'main', width, height, rotation: 0, controls: [] };
+  const taps = [];
+  async function run(frames, live, changeWindow = false) {
+    let reads = 0;
+    const device = {
+      screenshot: async () => {
+        assert.ok(reads < frames.length, 'unexpected extra capture');
+        return frames[reads++];
+      },
+      snapshot: async () => changeWindow && reads > 1 ? { ...view, window: 'other' } : view,
+      perform: async step => taps.push(step.point),
+    };
+    try {
+      await executeImageTarget(
+        device, 'harmony:test', view, anchor, true, new AbortController().signal, live,
+      );
+    } finally {
+      assert.equal(reads, frames.length);
+    }
+  }
+  await run([hidden, clear], point);
+  assert.deepEqual(taps, [point]);
+  for (const frames of [[hidden, moved], [hidden, hidden], [hidden, duplicate], [duplicate]]) {
+    await assert.rejects(run(frames, point), /VISUAL_TARGET_UNCLEAR/);
+  }
+  const nativeIcon = { ...point, bounds: { x: icon.x - 12, y: icon.y - 12, width: 24, height: 24 } };
+  await assert.rejects(run([moved], nativeIcon), /VISUAL_TARGET_UNCLEAR/);
+  await assert.rejects(run([hidden, clear], point, true), /STALE_OBSERVATION/);
+  await assert.rejects(run([hidden], undefined), /VISUAL_TARGET_UNCLEAR/);
+  assert.deepEqual(taps, [point]);
+});
+
 test('previously recorded RGB patches still use their original colour and uniqueness checks', async () => {
   const original = await screenshot([icon], '#0a1720');
   const { rgb, dx, dy } = await imageTarget(original, point);
