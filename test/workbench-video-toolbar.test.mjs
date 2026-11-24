@@ -3,7 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
 import { harmonyView, xmlControls } from '../dist/native-layout.js';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 
 const width = 240;
 const height = 480;
@@ -140,11 +140,11 @@ async function checkToolbar(platform) {
   assert.ok(!actions.includes('ask_user'));
   assert.deepEqual(live.taps, [searchCenter]);
   assert.deepEqual(centers?.map(toPixels), [searchCenter]);
-  assert.deepEqual(records.map(s => s.command.action), ['tapImage', 'input', 'check']);
-  const script = JSON.parse(JSON.stringify({ schemaVersion: 2, platform, steps: records }));
-  const playback = await compileRecording(script, platform);
+  assert.deepEqual(records.map(s => s.action), ['tapImage', 'input', 'check']);
+  const recording = JSON.parse(JSON.stringify({ platform, steps: records }));
+  const script = await compileScript(recording, platform);
   const paused = phone(platform, [frame2], searchFrame, false);
-  const replay = await replayRecording(paused, identity, playback, signal, () => {});
+  const replay = await executeRound(paused, identity, { script }, signal);
   assert.equal(replay.status, 'succeeded');
   assert.deepEqual(paused.taps, [searchCenter]);
 }

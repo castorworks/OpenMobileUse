@@ -80,7 +80,9 @@ for (const [code, invalid] of [
     assert.deepEqual(observations.map(obs => obs.controls[0].id), ['first', 'updated']);
     assert.ok(observations[1].modelReplyHint);
     assert.deepEqual(events, [code, 'observed']);
-    assert.deepEqual(records.map(step => step.command), [{ action: 'check', id: 'updated', role: 'Button' }]);
+    assert.deepEqual(records, [{
+      action: 'check', id: 'updated', role: 'Button', inApp: 'example.feed', reading: { label: 'updated' },
+    }]);
   });
 }
 
@@ -94,7 +96,7 @@ test('persistently unusable model replies stop with the saved findings', async (
   assert.match(result.answer, /第一条已读/);
   assert.equal(result.modelCalls, 4);
   assert.equal(events.length, 4);
-  assert.deepEqual(records.map(step => step.command.action), ['swipe']);
+  assert.deepEqual(records.map(step => step.action), ['swipe']);
 });
 
 test('explicit refusals, provider errors and meaningful plain text do not trigger another model call', async () => {

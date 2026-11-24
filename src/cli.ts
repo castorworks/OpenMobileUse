@@ -7,6 +7,7 @@ import { agentToolchain, list, type Platform } from './host.js';
 import { openDevice, doctor, diagnose, connectionError } from './doctor.js';
 import { parseTask } from './task.js';
 import { compileScript, executeRound } from './run.js';
+import { maxScriptSteps } from './script.js';
 import { pending, withDevice } from './session.js';
 import { saveCapture } from './inspect.js';
 import { executeStep, parseStep, stepHelp } from './steps.js';
@@ -14,7 +15,7 @@ import { text as streamText } from 'node:stream/consumers';
 import { bluetoothTask } from './agent.js';
 import { chatClient, modelConfig } from './chat.js';
 import { runConversation } from './conversation.js';
-import { maxRecordingSteps, type RecordedStep } from './recording.js';
+import type { RecordedStep } from './recording.js';
 
 const platforms: Platform[] = ['harmony', 'ios', 'android'];
 const json = (v: unknown) => console.log(JSON.stringify(v, null, 2));
@@ -177,7 +178,7 @@ async function main() {
               steps.push(step);
             },
             (name, status) => events.push({ name, status }),
-            () => steps.length < maxRecordingSteps,
+            () => steps.length < maxScriptSteps,
             undefined,
             !!values.vision,
           );
@@ -203,7 +204,7 @@ async function main() {
     let recordingError: string | undefined;
     if (values.output && steps.length) {
       try {
-        const recording = { schemaVersion: 2, platform: target.platform, steps };
+        const recording = { platform: target.platform, steps };
         await writeFile(values.output, JSON.stringify(recording, null, 2) + '\n', {
           flag: 'wx',
           mode: 0o600,

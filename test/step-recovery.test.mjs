@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readScript, runScript } from '../dist/script.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import { executeStep, guardObservation, observationId, screenAvailable } from '../dist/steps.js';
 
 const identity = 'android:script-test';
@@ -22,8 +22,8 @@ function view(controls, foreground = app) {
   return { app: foreground, window: 'main', rotation: 0, width: 200, height: 400, controls };
 }
 async function script(device, steps) {
-  const plan = await readScript({ schemaVersion: 1, steps }, 'android');
-  return runScript(device, identity, plan.steps, new AbortController().signal);
+  const plan = await compileScript({ steps }, 'android');
+  return executeRound(device, identity, { script: plan }, new AbortController().signal);
 }
 
 test('system back on a video tolerates its ticking clock and checks the page before dispatch', async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import { parseTask, runTask } from '../dist/task.js';
 
 const app = 'example.search';
@@ -32,15 +32,14 @@ function page(id = 'query', value = '', foregroundApp = app) {
 const command = (id) => ({ action: 'input', id, text: 'hello' });
 
 async function playback(device) {
-  const recording = await compileRecording(
+  const script = await compileScript(
     {
-      schemaVersion: 2,
       platform: 'harmony',
-      steps: [{ inApp: app, command: command('query'), reading: { value: '' } }],
+      steps: [{ ...command('query'), inApp: app, reading: { value: '' } }],
     },
     'harmony',
   );
-  return replayRecording(device, identity, recording, new AbortController().signal, () => {});
+  return executeRound(device, identity, { script }, new AbortController().signal);
 }
 
 test('recorded input waits for the recorded app and original field value after focus changes', async () => {

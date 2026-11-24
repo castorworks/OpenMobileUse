@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
-import { compileRecording } from '../dist/recording.js';
+import { compileScript } from '../dist/run.js';
 import { Harmony } from '../dist/harmony.js';
 
 function control(id, role = 'Stack', bounds = { x: 0, y: 0, width: 10, height: 10 }) {
@@ -97,7 +97,7 @@ test('a delayed settings launch is recorded once after its resolved app is obser
   assert.equal(result.status, 'succeeded');
   assert.deepEqual(launches, ['settings']);
   assert.deepEqual(events, ['APP_NOT_FOREGROUND', 'observed', 'observed']);
-  assert.deepEqual(records.map((s) => [s.inApp, s.command.action]), [
+  assert.deepEqual(records.map((s) => [s.inApp, s.action]), [
     ['example.feed', 'launchApp'], [targetApp, 'check'],
   ]);
 });
@@ -131,7 +131,7 @@ for (const firstRequest of ['settings', 'vendor.oem.settings']) {
     assert.equal(result.status, 'succeeded');
     assert.equal(launches, 1);
     assert.deepEqual(events, ['APP_NOT_FOREGROUND', 'APP_LAUNCH_ALREADY_ATTEMPTED', 'dispatched', 'observed']);
-    assert.deepEqual(records.map((s) => [s.inApp, s.command.action]), [
+    assert.deepEqual(records.map((s) => [s.inApp, s.action]), [
       ['vendor.chooser', 'tap'], [targetApp, 'check'],
     ]);
   });
@@ -160,7 +160,7 @@ test('ordinary foreground launches and later intentional returns still dispatch'
   assert.equal(result.status, 'succeeded');
   assert.ok(events.includes('APP_LAUNCH_ALREADY_ATTEMPTED'));
   assert.equal(launches, 2);
-  assert.deepEqual(records.map((s) => s.command.action), ['launchApp', 'tap', 'launchApp', 'check']);
+  assert.deepEqual(records.map((s) => s.action), ['launchApp', 'tap', 'launchApp', 'check']);
 });
 
 test('malformed Harmony launch metadata allows another route without dispatching a launch', async () => {
@@ -180,7 +180,7 @@ test('malformed Harmony launch metadata allows another route without dispatching
     return ['tap', { target: obs.controls[0].ref }];
   });
   assert.equal(result.status, 'succeeded');
-  assert.deepEqual(records.map((s) => s.command.action), ['tap', 'check']);
+  assert.deepEqual(records.map((s) => s.action), ['tap', 'check']);
 });
 
 test('a late toolbar icon is offered ahead of layout wrappers', async () => {
@@ -198,7 +198,7 @@ test('a late toolbar icon is offered ahead of layout wrappers', async () => {
   });
   assert.equal(result.status, 'succeeded');
   assert.deepEqual(
-    records.map((s) => s.command.action),
+    records.map((s) => s.action),
     ['tap', 'check'],
   );
 });
@@ -235,7 +235,7 @@ test('an unclear visual tap can recover a native target beyond the control limit
   assert.equal(result.status, 'succeeded');
   assert.ok(events.includes('VISUAL_TARGET_UNCLEAR'));
   assert.deepEqual(
-    records.map((s) => s.command.action),
+    records.map((s) => s.action),
     ['tap', 'check'],
   );
 });
@@ -263,7 +263,7 @@ for (const screenChanges of [false, true]) {
     }, true);
     assert.equal(result.status, 'succeeded');
     assert.deepEqual(events, ['VISUAL_TARGET_UNCLEAR', 'VISUAL_TARGET_UNCLEAR', 'dispatched', 'observed']);
-    assert.deepEqual(records.map(s => s.command.action), ['swipe', 'check']);
+    assert.deepEqual(records.map(s => s.action), ['swipe', 'check']);
   });
 }
 
@@ -325,8 +325,15 @@ test('consecutive swipes through a visual feed retain item notes across history 
     true,
   );
   assert.equal(result.status, 'succeeded');
-  assert.equal(records.filter((s) => s.command.action === 'swipe').length, 9);
-  await compileRecording({ schemaVersion: 2, platform: 'android', steps: records }, 'android');
+  assert.equal(records.filter((s) => s.action === 'swipe').length, 9);
+  assert.deepEqual(records[0].screen, {
+    width: 200,
+    height: 400,
+    rotation: 0,
+    anchors: ['field0', 'field1', 'field2'].map((id) => ({ id, role: 'Text' })),
+  });
+  const script = JSON.parse(JSON.stringify({ platform: 'android', steps: records }));
+  await compileScript(script, 'android');
 });
 
 test('an unchanged feed gets a bounded recovery and reports partial findings', async () => {
@@ -377,7 +384,7 @@ test('the final decision can report saved findings without asking the user to co
   assert.equal(result.replyRequested, false);
   assert.match(result.answer, /已读到第一条。/);
   assert.match(result.answer, /页面没有显示更多结果。/);
-  assert.deepEqual(records.map(s => s.command.action), ['swipe']);
+  assert.deepEqual(records.map(s => s.action), ['swipe']);
 });
 
 test('reused native ids with changing captions support consecutive swipes without images', async () => {
@@ -419,8 +426,8 @@ test('a rejected input is replanned from the current field and only verified ste
   });
   assert.equal(result.status, 'succeeded');
   assert.deepEqual(events, ['INPUT_TARGET_CHANGED', 'dispatched', 'observed']);
-  assert.deepEqual(records.map((s) => s.command.action), ['input', 'check']);
-  assert.equal(records[0].command.id, 'updated_query');
+  assert.deepEqual(records.map((s) => s.action), ['input', 'check']);
+  assert.equal(records[0].id, 'updated_query');
   assert.equal(records[0].reading.value, 'suggestion');
 });
 
@@ -462,12 +469,12 @@ for (const confirmed of [true, false]) {
       assert.equal(result.status, 'succeeded');
       assert.deepEqual(performed, [['input', 'query'], ['tap', 'suggestion']]);
       assert.deepEqual(
-        records.map((s) => s.command.action),
+        records.map((s) => s.action),
         confirmed ? ['input', 'tap', 'check'] : ['tap', 'check'],
       );
       if (confirmed) {
-        assert.equal(records[0].command.id, 'query');
-        assert.equal(records[0].command.text, query);
+        assert.equal(records[0].id, 'query');
+        assert.equal(records[0].text, query);
         assert.equal(records[0].reading.value, 'previous');
       } else assert.ok(events.includes('INPUT_NOT_VERIFIED'));
     },
@@ -541,7 +548,7 @@ test('an unresolved edit survives navigation and changed refs while another app 
   assert.equal(result.replyRequested, true);
   assert.deepEqual(writes, [originalApp, 'example.notes']);
   assert.ok(events.includes('INPUT_ALREADY_ATTEMPTED'));
-  assert.deepEqual(records.filter((s) => s.command.action === 'input').map((s) => s.command.id), ['note']);
+  assert.deepEqual(records.filter((s) => s.action === 'input').map((s) => s.id), ['note']);
 });
 
 test('a distinct named field in the same app remains editable after an unverified write', async () => {
@@ -560,7 +567,7 @@ test('a distinct named field in the same app remains editable after an unverifie
   });
   assert.equal(result.status, 'succeeded');
   assert.deepEqual(writes, ['first', 'second']);
-  assert.deepEqual(records.filter((s) => s.command.action === 'input').map((s) => s.command.id), ['second']);
+  assert.deepEqual(records.filter((s) => s.action === 'input').map((s) => s.id), ['second']);
 });
 
 test('a model repeating an unverified edit gets bounded attempts with only one device write', async () => {
@@ -588,7 +595,7 @@ test('input already containing the requested value is observed without rewriting
   );
   assert.equal(result.status, 'succeeded');
   assert.equal(events[0], 'observed');
-  assert.ok(records.every((s) => s.command.action === 'check' && s.reading.value === query));
+  assert.ok(records.every((s) => s.action === 'check' && s.reading.value === query));
 });
 
 test('an input with an unknown dispatch outcome stops before a second decision', async () => {
@@ -656,8 +663,8 @@ test('a truncated screenshot drops the previous visual point and uses fresh nati
   );
   assert.deepEqual(events, ['observed', 'VISUAL_TARGET_UNCLEAR', 'INVALID_PNG', 'observed']);
   assert.deepEqual(
-    records.map((s) => s.command),
-    [{ action: 'check', id: 'current_result', role: 'Button' }],
+    records,
+    [{ action: 'check', id: 'current_result', role: 'Button', inApp: 'example.feed' }],
   );
 });
 
@@ -693,7 +700,7 @@ test('a stale screenshot at the stall limit is discarded and a fresh observation
   assert.equal(result.status, 'succeeded');
   assert.ok(!published.some(image => image.equals(stale)));
   assert.equal(events.filter(e => e === 'STALE_OBSERVATION').length, 1);
-  assert.deepEqual(records.map(s => s.command.action), ['tap', 'check']);
+  assert.deepEqual(records.map(s => s.action), ['tap', 'check']);
 });
 
 test('persistent stale screenshots fall back to current native controls with bounded read attempts', async () => {
@@ -714,7 +721,7 @@ test('persistent stale screenshots fall back to current native controls with bou
   }, true);
   assert.equal(captures, 2);
   assert.equal(result.status, 'succeeded');
-  assert.deepEqual(records.map(s => s.command.action), ['check']);
+  assert.deepEqual(records.map(s => s.action), ['check']);
 });
 
 test('a disabled tap target replans to an enabled native control and records the successful action', async () => {
@@ -748,7 +755,7 @@ test('a disabled tap target replans to an enabled native control and records the
   assert.deepEqual(taps, ['second_route']);
   assert.deepEqual(events, ['ELEMENT_DISABLED', 'dispatched', 'observed']);
   assert.deepEqual(
-    records.map((s) => [s.command.action, s.command.id]),
+    records.map((s) => [s.action, s.id]),
     [
       ['tap', 'second_route'],
       ['check', 'result'],
@@ -784,7 +791,7 @@ for (const opens of [true, false]) {
     }, true);
     assert.equal(attempts, 6);
     assert.equal(result.status, opens ? 'succeeded' : 'needs_review');
-    assert.deepEqual(records.map((s) => s.command.action), opens ? ['tap', 'check'] : []);
+    assert.deepEqual(records.map((s) => s.action), opens ? ['tap', 'check'] : []);
   });
 }
 
@@ -814,7 +821,7 @@ test('a slow window transition after a tap waits for a new view without replayin
   assert.equal(result.status, 'succeeded');
   assert.equal(taps, 1);
   assert.equal(result.modelCalls, 2);
-  assert.deepEqual(records.map((r) => r.command.action), ['tap', 'check']);
+  assert.deepEqual(records.map((r) => r.action), ['tap', 'check']);
 });
 
 test('an unreadable initial view returns a partial answer after bounded read attempts', async () => {

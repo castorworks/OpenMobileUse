@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { compileScript } from '../dist/run.js';
+import { readScriptEnvelope } from '../dist/script.js';
 import { overview, stateRoot, writeJSON } from './library.mjs';
 
 const platforms = ['android', 'ios', 'harmony'];
@@ -51,11 +52,14 @@ export async function scriptEntry(id, includeHidden = false) {
   }
   if (source === 'import') {
     const saved = await json(join(dir(), key + '.json'));
+    readScriptEnvelope(saved.script);
     return { ...saved, id, source };
   }
   const options = await recordOptions(key, chatId);
   if (options.hidden && !includeHidden) throw Error('UNKNOWN_SCRIPT');
   const chat = await json(join(stateRoot(), 'conversations', key, chatId + '.json'));
+  const { platform } = readScriptEnvelope(chat.script, true);
+  if (!platform) throw Error('INVALID_SCRIPT');
   const info = overview(chat);
   return {
     id,
@@ -64,7 +68,7 @@ export async function scriptEntry(id, includeHidden = false) {
     updated: info.updated,
     stepCount: info.stepCount,
     partial: info.status !== 'succeeded',
-    platforms: [chat.script.platform],
+    platforms: [platform],
     script: chat.script,
     hidden: !!options.hidden,
   };
@@ -90,7 +94,7 @@ export async function listScripts() {
       const { script, hidden, ...summary } = await scriptEntry(id, true);
       if (!hidden && summary.stepCount) rows.push(summary);
     } catch (e) {
-      if (e.code !== 'ENOENT') throw e;
+      if (e.code !== 'ENOENT' && !['INVALID_SCRIPT', 'INVALID_SCRIPT_TARGETS'].includes(e.message)) throw e;
     }
   }
   return rows.sort(
@@ -103,16 +107,11 @@ export async function importScript(title, text) {
   title = scriptName(title);
   if (typeof text !== 'string' || Buffer.byteLength(text) > 8 * 1024 * 1024) throw Error('INVALID_FILE');
   const script = JSON.parse(text);
-  let supported;
-  if (script?.schemaVersion === 2) {
-    if (!platforms.includes(script.platform)) throw Error('INVALID_RECORDING');
-    await compileScript(script, script.platform);
-    supported = [script.platform];
-  } else {
-    const checks = await Promise.allSettled(platforms.map((p) => compileScript(script, p)));
-    supported = platforms.filter((_, i) => checks[i].status === 'fulfilled');
-    if (!supported.length) throw checks[0].reason;
-  }
+  const { platform } = readScriptEnvelope(script);
+  const candidates = platform ? [platform] : platforms;
+  const checks = await Promise.allSettled(candidates.map((platform) => compileScript(script, platform)));
+  const supported = candidates.filter((_, i) => checks[i].status === 'fulfilled');
+  if (!supported.length) throw checks[0].reason;
   const key = randomUUID();
   await writeJSON(dir(), key + '.json', {
     title,
