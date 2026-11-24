@@ -2,7 +2,15 @@ import type { Progress } from './run.js';
 import { tool, decode } from './agent-tools.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
-import { prepareBluetooth, readBluetooth, route, type Device, type Screen } from './navigation.js';
+import {
+  prepareBluetooth,
+  readBluetooth,
+  route,
+  waitForPage,
+  type Device,
+  type Screen,
+} from './navigation.js';
+import { isTargetUnavailable, isTransientObservation, reason } from './observation.js';
 
 import { bluetoothDefinition } from './bluetooth-task.js';
 export { bluetoothTask } from './bluetooth-task.js';
@@ -45,15 +53,6 @@ function sameView(a: Screen, b: Screen) {
     a.layoutKey === b.layoutKey &&
     a.bluetooth === b.bluetooth
   );
-}
-async function afterMove(device: Device, before: Screen, deadline: number) {
-  const end = Math.min(deadline, Date.now() + 1800);
-  let current = await device.observe();
-  while ((current.page === 'other' || sameView(current, before)) && Date.now() + 150 < end) {
-    await sleep(150);
-    current = await device.observe();
-  }
-  return current;
 }
 export async function runAgent(
   device: Device,
@@ -107,9 +106,11 @@ export async function runAgent(
   }
   // Also guard setup and verification moves after a slow device read or model response.
   const bounded: Device = {
-    observe: () => {
+    observe: async () => {
       checkTime();
-      return device.observe();
+      const observed = await device.observe();
+      checkTime();
+      return observed;
     },
     move: (action, from, key) => {
       checkTime();
@@ -117,12 +118,13 @@ export async function runAgent(
     },
     close: () => device.close(),
   };
+  const observeSettings = () =>
+    waitForPage(bounded, (s) => s.page !== 'other' && !!s.marker, 1800, 'Settings');
   try {
     const pre = await prepareBluetooth(bounded);
     initial = readBluetooth(pre);
     satisfied.baseline = record('preflight', pre);
-    let screen = await bounded.observe();
-    if (screen.page !== 'home') throw new Error('START_PAGE_CHANGED');
+    let screen = await waitForPage(bounded, (s) => s.page === 'home', 1800, 'home');
     let id = record('execution', screen),
       lastStall = '';
     while (decisions < limits.turns) {
@@ -162,8 +164,7 @@ export async function runAgent(
       const name = rejected ? 'rejected' : call.function.name;
       const action: Action = { observationId: id, tool: name, outcome: rejected || 'observed' };
       actions.push(action);
-      const fresh = await bounded.observe();
-      if (fresh.page === 'other') throw new Error('UNRECOGNIZED_SETTINGS_PAGE');
+      const fresh = await observeSettings();
       let next = fresh;
       if (!sameView(screen, fresh)) action.outcome = 'STALE_OBSERVATION';
       else if (!rejected) {
@@ -176,11 +177,20 @@ export async function runAgent(
             await bounded.move(name, fresh, entry?.key);
             action.outcome = 'dispatched';
           } catch (err) {
-            if ((err as Error).message !== 'STALE_OBSERVATION') throw err;
-            action.outcome = 'STALE_OBSERVATION';
+            const code = reason(err);
+            if (!isTransientObservation(code) && !isTargetUnavailable(code)) throw err;
+            action.outcome = code;
           }
-          next = await afterMove(bounded, fresh, deadline);
-        } else next = await bounded.observe();
+          next =
+            action.outcome === 'dispatched'
+              ? await waitForPage(
+                  bounded,
+                  (s) => s.page !== 'other' && s.page !== fresh.page && !!s.marker,
+                  5000,
+                  'navigation away from ' + fresh.page,
+                )
+              : await observeSettings();
+        } else next = await observeSettings();
       }
       progress?.({ kind: 'action', name, status: action.outcome });
       const nextId = record('execution', next);
@@ -227,21 +237,19 @@ export async function runAgent(
     }
     return result('failed', 'DECISION_BUDGET');
   } catch (err) {
-    const msg = (err as Error).message;
-    const reason = msg.match(/^[A-Z][A-Z_0-9]*(?=:|$)/)?.[0] || 'DEVICE_ERROR';
+    const code = reason(err);
     const last = actions.at(-1);
-    if (last && !last.after) last.outcome = reason;
+    if (last && !last.after && last.outcome !== 'dispatched') last.outcome = code;
     return result(
       [
         'UNRECOGNIZED_SETTINGS_PAGE',
         'UNSUPPORTED_ROUTE',
         'PAGE_NOT_OBSERVED',
         'BLUETOOTH_STATE_UNREADABLE',
-        'START_PAGE_CHANGED',
-      ].includes(reason)
+      ].includes(code) || isTargetUnavailable(code) || isTransientObservation(code)
         ? 'needs_review'
         : 'failed',
-      reason,
+      code,
     );
   }
 }

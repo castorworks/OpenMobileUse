@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hdc, run } from './host.js';
+import { isTransientObservation, reason } from './observation.js';
 import { focusedHarmonyWindow, harmonyView } from './native-layout.js';
 import {
   isAppIdentifier,
@@ -170,7 +171,7 @@ export class Harmony implements Device {
     const dir = await mkdtemp(join(tmpdir(), 'omu-capture-'));
     try {
       const out = await this.shell('uitest', 'screenCap', '-p', path);
-      if (!out.includes(path)) throw new Error('HDC screen capture failed');
+      if (!out.includes(path)) throw new Error('SCREENSHOT_UNAVAILABLE');
       const local = join(dir, 'screen.png');
       await run(hdc, ['-t', this.id, 'file', 'recv', path, local]);
       return await readFile(local);
@@ -189,7 +190,7 @@ export class Harmony implements Device {
   async back() {
     await this.dispatch('back', () => this.inject('keyEvent', 'Back'));
   }
-  async perform(step: Step, view: View, node?: Control) {
+  async perform(step: Step, view: View, node?: Control, signal?: AbortSignal) {
     if (step.kind === 'swipe') {
       const a = pointInView(view, step.from),
         b = pointInView(view, step.to);
@@ -209,24 +210,46 @@ export class Harmony implements Device {
       return;
     }
     const field = node!;
-    const readField = async () => {
-      const current = await this.snapshot();
-      if (current.app !== view.app) throw new Error('INPUT_TARGET_CHANGED');
+    const checkValue = async (expected: string | undefined) => {
+      let current: View;
+      try {
+        current = await this.snapshot();
+      } catch (e) {
+        const code = reason(e);
+        if (code === 'FOREGROUND_WINDOW_AMBIGUOUS') return 'INPUT_FOCUS_UNCONFIRMED';
+        if (isTransientObservation(code)) return code;
+        throw e;
+      }
+      if (current.app !== view.app || current.window !== view.window) return 'INPUT_TARGET_CHANGED';
       const hits = current.controls.filter(
         (n) =>
           n.editable && !n.secret && n.role === field.role && (field.id ? n.id === field.id : n.focused),
       );
-      if (hits.length !== 1 || !hits[0].focused) throw new Error('INPUT_FOCUS_UNCONFIRMED');
-      return hits[0];
+      if (hits.length !== 1 || !hits[0].enabled || !hits[0].focused) return 'INPUT_FOCUS_UNCONFIRMED';
+      const label = step.selector.label;
+      if (!field.id && label && label !== field.value && !hits[0].labels.includes(label))
+        return 'INPUT_TARGET_CHANGED';
+      if (hits[0].value !== expected) return 'INPUT_TARGET_CHANGED';
     };
+    const confirmValue = async (value: string | undefined, failure?: string) => {
+      for (let attempt = 1; ; attempt++) {
+        signal?.throwIfAborted();
+        const issue = await checkValue(value);
+        signal?.throwIfAborted();
+        if (!issue) return;
+        if (attempt === 3) throw new Error(failure ?? issue);
+        await sleep(120, undefined, { signal });
+      }
+    };
+    // Journal the focus tap independently. A rejected precondition has not edited the field.
+    if (!field.focused) await this.dispatch('tap', tap);
+    await confirmValue(field.value);
     await this.dispatch('input', async () => {
-      if (!field.focused) await tap();
-      if ((await readField()).value !== field.value) throw new Error('INPUT_TARGET_CHANGED');
       if (!step.replace && field.value) await this.inject('keyEvent', '2072', '2082'); // Ctrl+End
       if (step.replace && field.value) {
         await this.inject('keyEvent', '2072', '2017'); // Ctrl+A
         await this.inject('keyEvent', '2055'); // Backspace
-        if ((await readField()).value !== '') throw new Error('FIELD_NOT_CLEARED');
+        await confirmValue('', 'FIELD_NOT_CLEARED');
       }
       if (step.text) {
         try {
@@ -239,11 +262,7 @@ export class Harmony implements Device {
         }
       }
     });
-    for (let i = 0; i < 3; i++) {
-      if ((await readField()).value === inputValue(field.value ?? '', step)) return;
-      if (i < 2) await sleep(120);
-    }
-    throw new Error('INPUT_NOT_VERIFIED');
+    await confirmValue(inputValue(field.value ?? '', step), 'INPUT_NOT_VERIFIED');
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {
@@ -267,7 +286,7 @@ export class Harmony implements Device {
       const title = attrs.find((n) => n.id === key)!;
       const box = /^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(title.bounds);
       if (!box || +box[3] <= +box[1] || +box[4] <= +box[2])
-        throw new Error('Navigation entry has no visible bounds');
+        throw new Error('ELEMENT_OUTSIDE_SCREEN');
       const [left, top, right, bottom] = box.slice(1).map(Number);
       args = ['click', String(Math.floor((left + right) / 2)), String(Math.floor((top + bottom) / 2))];
     } else throw new Error('Unsupported Harmony navigation action');

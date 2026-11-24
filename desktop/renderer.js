@@ -54,6 +54,23 @@ const names = {
   failed: '失败',
   needs_review: '待人工核查',
   STALE_OBSERVATION: '操作目标或前台窗口已变化',
+  FOREGROUND_WINDOW_AMBIGUOUS: '前台窗口正在切换',
+  FOREGROUND_APP_UNAVAILABLE: '暂时读不到前台应用',
+  HDC_LAYOUT_UNAVAILABLE: '暂时读不到手机界面',
+  DISPLAY_GEOMETRY_UNAVAILABLE: '暂时读不到屏幕尺寸',
+  DISPLAY_ROTATION_UNAVAILABLE: '暂时读不到屏幕方向',
+  SCREENSHOT_GEOMETRY_MISMATCH: '截图与当前屏幕尺寸不符',
+  SCREENSHOT_UNAVAILABLE: '暂时读不到截图',
+  INVALID_PNG: '截图数据不完整',
+  ELEMENT_NOT_FOUND: '当前页面找不到目标',
+  AMBIGUOUS_ELEMENT: '有多个控件符合目标',
+  AMBIGUOUS_OR_MISSING_ELEMENT: '无法唯一定位控件',
+  ELEMENT_DISABLED: '控件暂不可操作',
+  ELEMENT_OUTSIDE_SCREEN: '控件已移出屏幕',
+  NO_FOCUSED_FIELD: '当前没有获得焦点的输入框',
+  INPUT_TARGET_CHANGED: '输入目标或内容已变化',
+  INPUT_FOCUS_UNCONFIRMED: '输入框焦点尚未确认',
+  INPUT_NOT_VERIFIED: '输入结果待核实',
   NO_PROGRESS: '目标状态未变化',
   VISUAL_TARGET_UNCLEAR: '未能唯一定位画面目标',
   cancelled: '已停止',
@@ -71,9 +88,13 @@ const issues = {
   EMULATOR_BOOT_TIMEOUT: '模拟器仍在启动，可稍后重新扫描。',
   DEVICE_BUSY: '设备正在执行其他操作。',
   STALE_OBSERVATION: '操作目标或前台窗口已变化，请核对当前画面。',
+  INPUT_TARGET_CHANGED: '输入目标或原有内容已变化，本次文字尚未写入。',
+  INPUT_FOCUS_UNCONFIRMED: '无法确认目标输入框已获得焦点，本次文字尚未写入。',
+  INPUT_NOT_VERIFIED: '输入命令已执行，请核对手机上的文字后再继续。',
   FOREGROUND_WINDOW_AMBIGUOUS: '手机正在切换前台窗口，暂时无法确认操作目标。',
   APP_NOT_INSTALLED: '设备上没有找到对应的应用。',
   APP_NOT_LAUNCHABLE: '没有找到可以直接启动的应用入口。',
+  APP_LAUNCH_REJECTED: '手机拒绝了启动应用的请求。',
   ELEMENT_NOT_FOUND: '当前页面上找不到刚才选中的控件。',
   SCREEN_TEXT_NOT_UNIQUE_OR_MISSING: '画面上的目标文字已消失或出现多次，请核对当前画面。',
   SCREEN_TEXT_UNAVAILABLE: '本机暂时无法识别画面文字。可在右侧手机画面上定位，再点击选区。',
@@ -641,7 +662,16 @@ async function action(raw) {
         if (workspaceMode === 'script') await refreshScripts();
       }
     } catch (e) {
-      if (['STALE_OBSERVATION', 'ACTION_OUTCOME_UNKNOWN'].includes(e.message)) markFrame(id, null);
+      if (
+        [
+          'STALE_OBSERVATION',
+          'INPUT_TARGET_CHANGED',
+          'INPUT_FOCUS_UNCONFIRMED',
+          'INPUT_NOT_VERIFIED',
+          'ACTION_OUTCOME_UNKNOWN',
+        ].includes(e.message)
+      )
+        markFrame(id, null);
       throw e;
     }
     if (raw.action === 'input' && selected === id) $('text').value = '';

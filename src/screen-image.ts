@@ -46,6 +46,10 @@ export async function imageFrame(device: StepDevice, identity: string, view: Vie
   return png;
 }
 
+function invalidPng(): never {
+  throw Error('INVALID_PNG');
+}
+
 async function pixels(png: Buffer) {
   const { default: sharp } = await import('sharp');
   return sharp(png, { limitInputPixels: 32000000 })
@@ -54,7 +58,8 @@ async function pixels(png: Buffer) {
     .toColourspace('srgb')
     .removeAlpha()
     .raw()
-    .toBuffer({ resolveWithObject: true });
+    .toBuffer({ resolveWithObject: true })
+    .catch(invalidPng);
 }
 
 export async function modelImage(png: Buffer) {
@@ -62,7 +67,8 @@ export async function modelImage(png: Buffer) {
   const jpeg = await sharp(png, { limitInputPixels: 32000000 })
     .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
     .jpeg({ quality: 88 })
-    .toBuffer();
+    .toBuffer()
+    .catch(invalidPng);
   return 'data:image/jpeg;base64,' + jpeg.toString('base64');
 }
 
@@ -75,7 +81,8 @@ export async function swipePreview(png: Buffer) {
     .toColourspace('srgb')
     .removeAlpha()
     .raw()
-    .toBuffer();
+    .toBuffer()
+    .catch(invalidPng);
 }
 
 export function swipePreviewChanged(before: Buffer | undefined, after: Buffer) {

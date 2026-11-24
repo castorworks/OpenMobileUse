@@ -13,6 +13,7 @@ import {
   swipePreviewChanged,
 } from './screen-image.js';
 import { compileStep, reason } from './script.js';
+import { isTargetUnavailable, isTransientObservation, readObservation } from './observation.js';
 import {
   executeStep,
   guardObservation,
@@ -36,7 +37,9 @@ When an image is attached, inspect its actual pixels. Use tap_visual on a distin
 at its centre, with coordinates from 0 to 1 relative to the full screenshot, origin at top left.
 Use finish_visual with a distinctive visible detail on the new screen to verify an in-app result.
 Prefer a matching native control, including an icon identified by its id. After a failed action use
-the fresh observation to try another route toward the same goal. Controls marked atVisualTarget
+the fresh observation to try another route toward the same goal. INPUT_TARGET_CHANGED or INPUT_FOCUS_UNCONFIRMED
+means no text was entered. Check the current app, target and field value before deciding whether to type.
+Controls marked atVisualTarget
 overlap the previous visual point; choose one only if its identity fits. For a moving background
 prefer a native ref, readable text, or a different stable entry. Never guess a position.
 For browsing tasks establish the requested search or filter first. On each swipe you can save a short
@@ -64,17 +67,8 @@ function textTool(
   return t;
 }
 
-async function observe(device: StepDevice, signal: AbortSignal): Promise<View> {
-  for (let attempt = 0; ; attempt++) {
-    signal.throwIfAborted();
-    try {
-      return await device.snapshot();
-    } catch (error) {
-      if (attempt >= 2 || !['STALE_OBSERVATION', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes(reason(error)))
-        throw error;
-      await sleep(200, undefined, { signal });
-    }
-  }
+function observe(device: StepDevice, signal: AbortSignal) {
+  return readObservation(() => device.snapshot(), signal);
 }
 
 type Dialogue = { user: string; assistant?: string };
@@ -126,6 +120,7 @@ export async function runConversation(
   let lastSwipePreview: Buffer | undefined;
   let blocker: { action: string; outcome: string } | undefined;
   let imageRejected = false;
+  let captureIssue: string | undefined;
   while (context.length > 1 && Buffer.byteLength(JSON.stringify(context)) > 18000) context.shift();
   let modelCalls = 0,
     inspectTextInApp = '',
@@ -194,11 +189,17 @@ export async function runConversation(
         ? 'The endpoint rejected image input.'
         : undefined;
       let frame: Buffer | undefined;
-      if (inspectScreen && (sendImage || localOCR)) {
+      let frameUrl: string | undefined;
+      const useNativeView = captureIssue !== undefined;
+      if (useNativeView) {
+        textStatus = captureIssue;
+        captureIssue = undefined;
+      } else if (inspectScreen && (sendImage || localOCR)) {
         activity?.(sendImage ? '正在读取手机截图' : '正在识别画面文字');
         try {
           if (sendImage) {
             frame = await imageFrame(device, identity, view, bounded);
+            frameUrl = await modelImage(frame);
           }
           if (localOCR && (!sendImage || visualPoint)) {
             const scan = await readScreenText(device, identity, view, bounded, frame);
@@ -214,9 +215,15 @@ export async function runConversation(
         } catch (e) {
           bounded.throwIfAborted();
           const code = reason(e);
-          if (code === 'STALE_OBSERVATION' || code === 'FOREGROUND_WINDOW_AMBIGUOUS') continue;
-          if (!['SCREEN_TEXT_UNAVAILABLE', 'SCREENSHOT_GEOMETRY_MISMATCH', 'INVALID_PNG'].includes(code))
-            throw e;
+          if (isTransientObservation(code)) {
+            visualMiss = undefined;
+            captureIssue = code;
+            blocker = { action: '读取手机画面', outcome: code };
+            progress(blocker.action, code);
+            stalls++;
+            continue;
+          }
+          if (code !== 'SCREEN_TEXT_UNAVAILABLE') throw e;
           textStatus = code;
         }
       } else if (inspectScreen && !imageRejected) {
@@ -241,7 +248,7 @@ export async function runConversation(
           evidence: ['foreground', ...targets.keys(), ...screenText.keys()],
         }),
       ];
-      if (!inspectScreen && (sendImage || localOCR))
+      if ((!inspectScreen || useNativeView) && (sendImage || localOCR))
         tools.push(
           tool(
             token,
@@ -318,12 +325,12 @@ export async function runConversation(
             : undefined,
       };
       const messages = messagesFor(instruction, history, obs, tools, { historyBytes: 64000 });
-      if (frame) {
+      if (frameUrl) {
         messages.push({
           role: 'user',
           content: [
             { type: 'text', text: 'Current phone screenshot for ' + token },
-            { type: 'image_url', image_url: { url: await modelImage(frame) } },
+            { type: 'image_url', image_url: { url: frameUrl } },
           ],
         });
       }
@@ -503,18 +510,16 @@ export async function runConversation(
         } catch (e) {
           const code = reason(e);
           if (
+            !isTransientObservation(code) &&
+            !isTargetUnavailable(code) &&
             ![
-              'STALE_OBSERVATION',
-              'FOREGROUND_WINDOW_AMBIGUOUS',
-              'ELEMENT_NOT_FOUND',
-              'AMBIGUOUS_OR_MISSING_ELEMENT',
-              'SCREEN_TEXT_NOT_UNIQUE_OR_MISSING',
-              'SCREENSHOT_GEOMETRY_MISMATCH',
               'SCREEN_TEXT_UNAVAILABLE',
-              'VISUAL_TARGET_UNCLEAR',
               'INVALID_ARGUMENTS',
+              'INVALID_INPUT_TEXT',
               'APP_NOT_INSTALLED',
               'APP_NOT_LAUNCHABLE',
+              'AMBIGUOUS_APP_ENTRY',
+              'APP_LAUNCH_REJECTED',
               'INVALID_APP_ID',
             ].includes(code)
           ) {
@@ -541,14 +546,8 @@ export async function runConversation(
         stalls++;
         blocker = { action: description, outcome: outcome! };
         if (
-          [
-            'NO_PROGRESS',
-            'VISUAL_TARGET_UNCLEAR',
-            'ELEMENT_NOT_FOUND',
-            'AMBIGUOUS_OR_MISSING_ELEMENT',
-            'STALE_OBSERVATION',
-            'SCREEN_TEXT_NOT_UNIQUE_OR_MISSING',
-          ].includes(outcome!)
+          name !== 'input_text' &&
+          (outcome === 'NO_PROGRESS' || isTargetUnavailable(outcome!) || isTransientObservation(outcome!))
         )
           inspectTextInApp = view.app;
       } else if (blocker) stalls++;
@@ -563,9 +562,11 @@ export async function runConversation(
           : bounded.aborted
             ? 'TIME_BUDGET'
             : reason(e);
-    if (code === 'TIME_BUDGET') return partial(code);
+    if (code === 'TIME_BUDGET' || isTransientObservation(code)) return partial(code);
     return {
-      status: code === 'SENSITIVE_OR_BLOCKED_SCREEN' ? 'needs_review' : 'failed',
+      status: ['SENSITIVE_OR_BLOCKED_SCREEN', 'INPUT_NOT_VERIFIED'].includes(code)
+        ? 'needs_review'
+        : 'failed',
       reason: code,
       modelCalls,
     };

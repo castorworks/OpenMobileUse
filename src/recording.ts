@@ -4,6 +4,7 @@ import type { Progress } from './run.js';
 import { compileStep, object, reason } from './script.js';
 import { executeTextTarget } from './screen-text.js';
 import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
+import { isTargetUnavailable, isTransientObservation } from './observation.js';
 import {
   executeStep,
   guardObservation,
@@ -176,7 +177,14 @@ export async function replayRecording(
       const deadline = Date.now() + 8000;
       for (;;) {
         signal.throwIfAborted();
-        const view = await device.snapshot();
+        let view: View;
+        try {
+          view = await device.snapshot();
+        } catch (error) {
+          if (!isTransientObservation(reason(error)) || Date.now() >= deadline) throw error;
+          await sleep(250, undefined, { signal });
+          continue;
+        }
         signal.throwIfAborted();
         screenAvailable(view);
         const hits = selector ? matchingControls(view, selector) : [];
@@ -222,14 +230,9 @@ export async function replayRecording(
             } else if (name === 'pause') await sleep(650, undefined, { signal });
             break;
           } catch (e) {
-            if (
-              ![
-                'STALE_OBSERVATION',
-                'SCREEN_TEXT_NOT_UNIQUE_OR_MISSING',
-                'VISUAL_TARGET_UNCLEAR',
-              ].includes(reason(e))
-            )
-              throw e;
+            const code = reason(e);
+            const retryTarget = isTargetUnavailable(code) || isTransientObservation(code);
+            if (!retryTarget) throw e;
           }
         }
         if (Date.now() >= deadline) throw Error('RECORDING_STATE_MISMATCH');

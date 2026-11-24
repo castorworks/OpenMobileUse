@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Screen } from './navigation.js';
+import { isTransientObservation, readObservation, reason } from './observation.js';
 
 export type Point = { x: number; y: number };
 export type Bounds = { x: number; y: number; width: number; height: number };
@@ -64,7 +65,7 @@ export type Step =
 export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
-  perform(step: Step, view: View, node?: Control): Promise<void>;
+  perform(step: Step, view: View, node?: Control, signal?: AbortSignal): Promise<void>;
   back(): Promise<void>;
   launch(step: LaunchStep): Promise<string>;
   foregroundApp(): Promise<string>;
@@ -296,15 +297,27 @@ export function visibleCenter(view: View, b: Bounds): Point {
 export function inputValue(before: string, step: Extract<Step, { kind: 'input' }>) {
   return step.replace ? step.text : before + step.text;
 }
-export async function verifyForeground(read: () => Promise<string>, target: string, timeoutMs = 10000) {
+export async function verifyForeground(
+  read: () => Promise<string>,
+  target: string,
+  timeoutMs = 10000,
+  signal?: AbortSignal,
+) {
   const deadline = performance.now() + timeoutMs;
   let matched = false;
   do {
-    const app = await read();
+    signal?.throwIfAborted();
+    let app: string | undefined;
+    try {
+      app = await read();
+    } catch (error) {
+      if (!isTransientObservation(reason(error))) throw error;
+    }
+    signal?.throwIfAborted();
     if (app === target && matched) return app;
     matched = app === target;
     if (performance.now() >= deadline) break;
-    await sleep(250);
+    await sleep(Math.min(250, Math.max(0, deadline - performance.now())), undefined, { signal });
   } while (performance.now() <= deadline);
   throw new Error('APP_NOT_FOREGROUND');
 }
@@ -315,6 +328,7 @@ export async function executeStep(
   step: CommandStep,
   expected?: string | ((view: View) => void),
   signal?: AbortSignal,
+  guardWait?: (view: View) => void,
 ) {
   signal?.throwIfAborted();
   function validate(view: View) {
@@ -324,10 +338,10 @@ export async function executeStep(
     return id;
   }
   if (step.kind === 'launch') {
-    const id = expected ? validate(await device.snapshot()) : undefined;
+    const id = expected ? validate(await readObservation(() => device.snapshot(), signal)) : undefined;
     signal?.throwIfAborted();
     const targetApp = await device.launch(step);
-    const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp);
+    const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp, 10000, signal);
     return {
       action: step.kind,
       status: 'succeeded',
@@ -341,42 +355,45 @@ export async function executeStep(
   if (step.kind === 'waitFor') {
     const end = Date.now() + step.timeoutMs;
     let first = true;
+    let lastIssue = 'WAIT_TIMEOUT';
     for (;;) {
       signal?.throwIfAborted();
+      let current: View | undefined;
       try {
-        const current = await device.snapshot();
+        current = await device.snapshot();
+      } catch (error) {
+        if (!isTransientObservation(reason(error))) throw error;
+        lastIssue = reason(error);
+      }
+      signal?.throwIfAborted();
+      if (current) {
+        guardWait?.(current);
         const token = first ? validate(current) : observationId(identity, current);
         first = false;
         const hits = matchingControls(current, step.selector);
-        if (hits.length > 1) throw new Error('AMBIGUOUS_ELEMENT');
-        if ((hits.length === 1) === (step.state === 'visible'))
+        lastIssue = hits.length > 1 ? 'AMBIGUOUS_ELEMENT' : 'WAIT_TIMEOUT';
+        if (hits.length === (step.state === 'visible' ? 1 : 0))
           return { action: step.kind, status: 'succeeded', observationId: token };
-      } catch (e) {
-        if (
-          expected ||
-          !['STALE_OBSERVATION', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes((e as Error).message)
-        )
-          throw e;
       }
-      if (Date.now() >= end) throw new Error('WAIT_TIMEOUT');
+      if (Date.now() >= end) throw new Error(lastIssue);
       await sleep(Math.min(200, end - Date.now()), undefined, { signal });
     }
   }
-  const view = await device.snapshot();
+  const view = await readObservation(() => device.snapshot(), signal);
   const id = validate(view);
   signal?.throwIfAborted();
   if (step.kind === 'back') {
     if (step.selector) {
       const node = resolveControl(view, step.selector, false);
       if (!node.navigation) throw new Error('NAVIGATION_BUTTON_REQUIRED');
-      await device.perform({ kind: 'tap', selector: step.selector }, view, node);
+      await device.perform({ kind: 'tap', selector: step.selector }, view, node, signal);
     } else await device.back();
     return { action: step.kind, status: 'succeeded', observationId: id };
   }
   const node =
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);
-  await device.perform(step, view, node);
+  await device.perform(step, view, node, signal);
   return {
     action: step.kind,
     status: 'succeeded',

@@ -1,4 +1,5 @@
 import type { Progress } from './run.js';
+import { isTargetUnavailable, isTransientObservation, reason } from './observation.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 export type Page = 'home' | 'connected' | 'preferences' | 'bluetooth' | 'other';
@@ -58,27 +59,51 @@ export function parseScript(raw: unknown): Step[] {
   });
 }
 
-async function wait(device: Device, match: (s: Screen) => boolean, timeout: number, expected: string) {
+export async function waitForPage(
+  device: Device,
+  match: (s: Screen) => boolean,
+  timeout: number,
+  expected: string,
+) {
   const end = Date.now() + timeout;
-  let screen: Screen;
-  do {
-    screen = await device.observe();
-    if (match(screen)) return screen;
-    if (Date.now() < end) await sleep(200);
-  } while (Date.now() < end);
-  throw new Error(`PAGE_NOT_OBSERVED: expected ${expected}, saw ${screen.page}`);
+  let lastPage: Page | undefined;
+  for (;;) {
+    try {
+      const screen = await device.observe();
+      if (match(screen)) return screen;
+      lastPage = screen.page;
+    } catch (e) {
+      const code = reason(e);
+      if (!isTransientObservation(code) || Date.now() >= end) throw e;
+    }
+    const remaining = end - Date.now();
+    if (remaining <= 0)
+      throw new Error(`PAGE_NOT_OBSERVED: expected ${expected}, saw ${lastPage ?? 'unknown'}`);
+    await sleep(Math.min(200, remaining));
+  }
 }
 
 export async function route(device: Device, dest: 'home' | 'bluetooth', timeout: number) {
-  let s = await device.observe();
+  const settings = () => waitForPage(device, (s) => s.page !== 'other', timeout, 'Settings');
+  let s = await settings();
   const seen = new Set<Page>();
+  let rejections = 0;
   while (s.page !== dest) {
-    if (s.page === 'other' || seen.has(s.page))
-      throw new Error(`UNSUPPORTED_ROUTE: ${s.page} to ${dest}`);
+    if (seen.has(s.page)) throw new Error(`UNSUPPORTED_ROUTE: ${s.page} to ${dest}`);
     const previous = s.page;
+    try {
+      await device.move(dest === 'home' ? 'back' : 'forward', s);
+    } catch (e) {
+      const code = reason(e);
+      rejections++;
+      if (rejections >= 3 || (!isTransientObservation(code) && !isTargetUnavailable(code))) throw e;
+      await sleep(200);
+      s = await settings();
+      continue;
+    }
+    rejections = 0;
     seen.add(previous);
-    await device.move(dest === 'home' ? 'back' : 'forward', s);
-    s = await wait(device, (x) => x.page !== previous && x.page !== 'other', timeout, dest);
+    s = await waitForPage(device, (x) => x.page !== previous && x.page !== 'other', timeout, dest);
   }
   return s;
 }
@@ -90,7 +115,6 @@ export function readBluetooth(s: Screen) {
 
 export async function prepareBluetooth(device: Device) {
   await device.move('openSettings', { page: 'other' });
-  await wait(device, (s) => s.page !== 'other', 5000, 'Settings');
   await route(device, 'home', 5000);
   const baseline = await route(device, 'bluetooth', 5000);
   readBluetooth(baseline);
@@ -105,9 +129,11 @@ export async function roundTrip(
   progress?: Progress,
 ) {
   const device: Device = {
-    observe: () => {
+    observe: async () => {
       signal?.throwIfAborted();
-      return source.observe();
+      const screen = await source.observe();
+      signal?.throwIfAborted();
+      return screen;
     },
     move: (...args) => {
       signal?.throwIfAborted();
@@ -143,7 +169,7 @@ export async function roundTrip(
         await route(device, step.name === 'settings.toBluetooth' ? 'bluetooth' : 'home', 5000);
       if (step.action === 'waitFor') {
         const page = step.target === 'bluetooth.pageMarker' ? 'bluetooth' : 'home';
-        const s = await wait(device, (o) => o.page === page, step.timeoutMs, page);
+        const s = await waitForPage(device, (o) => o.page === page, step.timeoutMs, page);
         record('execution', s);
         if (page === 'bluetooth' && readBluetooth(s) !== initial)
           throw new Error('BLUETOOTH_STATE_CHANGED');
@@ -163,8 +189,8 @@ export async function roundTrip(
     progress?.({ kind: 'step', name: step.action, status: 'succeeded' });
     steps.push({ ...item, durationMs: Math.round(performance.now() - started) });
   }
-  if (reached !== milestones.length || (await device.observe()).page !== 'home')
-    throw new Error('MISSING_EXECUTION_EVIDENCE');
+  if (reached !== milestones.length) throw new Error('MISSING_EXECUTION_EVIDENCE');
+  await waitForPage(device, (s) => s.page === 'home', 5000, 'home');
   const post = await route(device, 'bluetooth', 5000);
   const final = readBluetooth(post);
   record('verification', post);

@@ -2,6 +2,7 @@ import { bluetoothDefinition } from './bluetooth-task.js';
 import { DOMParser } from '@xmldom/xmldom';
 import { adbPath, run } from './host.js';
 import { nodeXPath, xmlControls } from './native-layout.js';
+import { isTransientObservation, reason } from './observation.js';
 import {
   isAppIdentifier,
   inputValue,
@@ -198,6 +199,28 @@ export function classifyXml(platform: Family, source: string): View {
   return other;
 }
 
+class AppiumError extends Error {
+  constructor(readonly code: string | undefined, detail: string) {
+    super('Appium: ' + detail);
+  }
+}
+function lostElement(error: unknown) {
+  return (
+    error instanceof AppiumError &&
+    (error.code === 'stale element reference' || error.code === 'no such element')
+  );
+}
+// Only observational requests may expose a stale target as safe to re-observe.
+async function observed<T>(response: Promise<T>): Promise<T> {
+  try {
+    return await response;
+  } catch (error) {
+    if (lostElement(error)) throw new Error('STALE_OBSERVATION');
+    if (error instanceof AppiumError && error.code === 'no such window')
+      throw new Error('FOREGROUND_APP_UNAVAILABLE');
+    throw error;
+  }
+}
 async function request<T>(url: string, method: string, data?: unknown, timeout = 20000): Promise<T> {
   const res = await fetch(url, {
     method,
@@ -207,8 +230,9 @@ async function request<T>(url: string, method: string, data?: unknown, timeout =
   });
   const { value } = (await res.json()) as { value: T & { message?: string; error?: string } };
   if (!res.ok || value?.error)
-    throw new Error(
-      `Appium: ${(value?.message || value?.error || res.status).toString().split('\n')[0]}`,
+    throw new AppiumError(
+      value?.error,
+      (value?.message || value?.error || res.status).toString().split('\n')[0],
     );
   return value;
 }
@@ -280,9 +304,12 @@ export class WebDriver implements Device {
     return request<T>(this.url + '/execute/sync', 'POST', { script: 'mobile: ' + name, args: [args] });
   }
   async foregroundApp() {
-    return this.platform === 'ios'
-      ? (await this.mobile<{ bundleId: string }>('activeAppInfo')).bundleId
-      : await this.mobile<string>('getCurrentPackage');
+    const app =
+      this.platform === 'ios'
+        ? (await observed(this.mobile<{ bundleId?: string } | null>('activeAppInfo')))?.bundleId
+        : await observed(this.mobile<string>('getCurrentPackage'));
+    if (!app) throw new Error('FOREGROUND_APP_UNAVAILABLE');
+    return app;
   }
   private async settingsActive() {
     return (await this.foregroundApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
@@ -340,11 +367,13 @@ export class WebDriver implements Device {
   }
   async observe(): Promise<View> {
     if (!(await this.settingsActive())) return other;
-    return classifyXml(this.platform, await request<string>(this.url + '/source', 'GET'));
+    return classifyXml(this.platform, await observed(request<string>(this.url + '/source', 'GET')));
   }
   async snapshot(): Promise<StepView> {
+    return observed(this.readSnapshot());
+  }
+  private async readSnapshot(): Promise<StepView> {
     const app = await this.foregroundApp();
-    if (!app) throw new Error('FOREGROUND_APP_UNAVAILABLE');
     const rotation = async () => (await request<{ z: number }>(this.url + '/rotation', 'GET')).z;
     const angle = await rotation();
     const { width, height } = await request<{ width: number; height: number }>(
@@ -373,7 +402,12 @@ export class WebDriver implements Device {
       try {
         active = await request(this.url + '/element/active', 'GET');
       } catch (e) {
-        if (!/no such element|could not be located|unable to find/i.test((e as Error).message)) throw e;
+        const noActiveElement =
+          e instanceof AppiumError &&
+          (e.code === 'no such element' ||
+            ((!e.code || e.code === 'unknown error') &&
+              /no such element|could not be located|unable to find/i.test(e.message)));
+        if (!noActiveElement) throw e;
       }
       if (active?.[elementKey]) {
         const base = this.url + '/element/' + encodeURIComponent(active[elementKey]);
@@ -405,7 +439,7 @@ export class WebDriver implements Device {
     };
   }
   async screenshot() {
-    return Buffer.from(await request<string>(this.url + '/screenshot', 'GET'), 'base64');
+    return Buffer.from(await observed(request<string>(this.url + '/screenshot', 'GET')), 'base64');
   }
   private async touch(step: Extract<Step, { kind: 'swipe' } | { point: unknown }>, view: StepView) {
     const swipe = step.kind === 'swipe';
@@ -430,7 +464,9 @@ export class WebDriver implements Device {
     );
   }
   private async elementURL(locator: Locator) {
-    const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
+    const hits = await observed(
+      request<Record<string, string>[]>(this.url + '/elements', 'POST', locator),
+    );
     if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
     return this.url + '/element/' + encodeURIComponent(hits[0][elementKey]);
   }
@@ -438,7 +474,7 @@ export class WebDriver implements Device {
     if (this.platform !== 'android') throw new Error('NAVIGATION_BUTTON_REQUIRED');
     await this.dispatch('back', () => request(this.url + '/back', 'POST', {}));
   }
-  async perform(step: Step, view: StepView, node?: Control) {
+  async perform(step: Step, view: StepView, node?: Control, signal?: AbortSignal) {
     if (step.kind === 'swipe' || 'point' in step) {
       await this.touch(step, view);
       return;
@@ -448,6 +484,7 @@ export class WebDriver implements Device {
       using: 'xpath',
       value: nodeXPath(this.platform, view.app, field, step.selector.label),
     });
+    signal?.throwIfAborted();
     if (step.kind === 'tap') {
       await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
       return;
@@ -463,11 +500,19 @@ export class WebDriver implements Device {
         return raw === (await request(url + '/attribute/placeholderValue', 'GET')) ? '' : raw;
       return raw && (await request(url + '/attribute/showing-hint', 'GET')) === 'true' ? '' : raw;
     };
-    if ((await readValue()) !== field.value) throw new Error('STALE_OBSERVATION');
+    const checkField = async () => {
+      if ((await this.foregroundApp()) !== view.app || (await observed(readValue())) !== field.value)
+        throw new Error('STALE_OBSERVATION');
+      signal?.throwIfAborted();
+    };
+    await checkField();
+    if (this.platform === 'android' && !field.focused) {
+      await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
+      await checkField();
+    }
     await this.dispatch('input', async () => {
       try {
         if (this.platform === 'android') {
-          if (!field.focused) await request(url + '/click', 'POST', {});
           await this.mobile('replaceElementValue', {
             elementId: url.slice(url.lastIndexOf('/') + 1),
             text: expected,
@@ -481,9 +526,41 @@ export class WebDriver implements Device {
         throw new Error('TEXT_DRIVER_ERROR');
       }
     });
+    const sameId = (n: Control) => n.id === field.id && n.role === field.role;
+    let referenceLost = false;
+    const verified = async () => {
+      if ((await this.foregroundApp()) !== view.app) return false;
+      if (!referenceLost) {
+        try {
+          return (await readValue()) === expected;
+        } catch (error) {
+          if (!lostElement(error)) throw error;
+          referenceLost = true;
+        }
+      }
+      // A refreshed accessibility tree may assign a new element handle. Reconcile from
+      // the tree only when the original field can still be identified unambiguously.
+      if (!field.id || view.controls.filter(sameId).length !== 1) return false;
+      const fresh = await this.snapshot();
+      if (fresh.app !== view.app || fresh.window !== view.window) return false;
+      const hits = fresh.controls.filter(sameId);
+      if (hits.length !== 1) return false;
+      const current = hits[0];
+      return (
+        current.editable &&
+        !current.secret &&
+        current.value === expected &&
+        nodeXPath(this.platform, fresh.app, current) === nodeXPath(this.platform, view.app, field)
+      );
+    };
     for (let i = 0; i < 3; i++) {
-      if ((await readValue()) === expected) return;
-      if (i < 2) await sleep(120);
+      signal?.throwIfAborted();
+      try {
+        if (await observed(verified())) return;
+      } catch (error) {
+        if (!isTransientObservation(reason(error))) throw error;
+      }
+      if (i < 2) await sleep(120, undefined, { signal });
     }
     throw new Error('INPUT_NOT_VERIFIED');
   }

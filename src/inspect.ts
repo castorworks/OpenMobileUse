@@ -1,5 +1,6 @@
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { readObservation } from './observation.js';
 import { observationId, visibleCenter, type StepDevice, type View } from './steps.js';
 
 function sameWindow(a: View, b: View) {
@@ -27,17 +28,11 @@ export function screenshotSize(image: Buffer, view: View) {
 }
 
 export async function captureView(device: StepDevice, identity: string) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let before: View, view: View, image: Buffer;
-    try {
-      before = await device.snapshot();
-      image = await device.screenshot();
-      view = await device.snapshot();
-    } catch (error) {
-      if ((error as Error).message === 'STALE_OBSERVATION' && attempt === 0) continue;
-      throw error;
-    }
-    if (!sameWindow(before, view)) continue;
+  return readObservation(async () => {
+    const before = await device.snapshot();
+    const image = await device.screenshot();
+    const view = await device.snapshot();
+    if (!sameWindow(before, view)) throw Error('STALE_OBSERVATION');
     const { width, height } = screenshotSize(image, view);
     const token = observationId(identity, view);
     const metadata = {
@@ -64,8 +59,7 @@ export async function captureView(device: StepDevice, identity: string) {
       };
     });
     return { metadata, controls, image, layout: view.layout, before, view };
-  }
-  throw new Error('STALE_OBSERVATION');
+  });
 }
 
 export async function saveCapture(dir: string, device: StepDevice, identity: string) {

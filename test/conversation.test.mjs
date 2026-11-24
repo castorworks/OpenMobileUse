@@ -38,6 +38,7 @@ async function run(device, choose, useImages = false) {
     const [name, args] = choose(
       obs,
       tools.map((t) => t.function.name),
+      messages,
     );
     return {
       role: 'assistant',
@@ -236,6 +237,44 @@ test('reused native ids with changing captions support consecutive swipes withou
   assert.equal(records.length, 3);
 });
 
+test('a rejected input is replanned from the current field and only verified steps are recorded', async () => {
+  const field = { ...control('query', 'TextInput'), editable: true, value: '' };
+  const device = phone([field]);
+  let attempts = 0;
+  device.perform = async (step, view, node) => {
+    assert.equal(step.kind, 'input');
+    if (++attempts === 1) {
+      view.controls = [{ ...field, id: 'updated_query', value: 'suggestion' }];
+      throw Error('INPUT_TARGET_CHANGED');
+    }
+    assert.equal(node.id, 'updated_query');
+    view.controls = [{ ...node, value: step.text }];
+  };
+  const { result, records, events } = await run(device, (obs) => {
+    const target = obs.controls[0];
+    if (target.value === 'hello') return ['finish', { evidence: target.ref, message: '已输入。' }];
+    if (target.id === 'updated_query') assert.equal(obs.lastBlocker.outcome, 'INPUT_TARGET_CHANGED');
+    return ['input_text', { target: target.ref, text: 'hello' }];
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(events, ['INPUT_TARGET_CHANGED', 'dispatched', 'observed']);
+  assert.deepEqual(records.map((s) => s.command.action), ['input', 'check']);
+  assert.equal(records[0].command.id, 'updated_query');
+  assert.equal(records[0].reading.value, 'suggestion');
+});
+
+test('an unverified text write pauses for review without a second input', async () => {
+  const device = phone([{ ...control('query', 'TextInput'), editable: true }]);
+  device.perform = async () => { throw Error('INPUT_NOT_VERIFIED'); };
+  const { result, records } = await run(device, (obs) => [
+    'input_text', { target: obs.controls[0].ref, text: 'hello' },
+  ]);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'INPUT_NOT_VERIFIED');
+  assert.equal(result.modelCalls, 1);
+  assert.deepEqual(records, []);
+});
+
 test('a sensitive screen or unconfirmed action stops dispatch immediately', async () => {
   const device = phone([control('next', 'Button')]);
   device.perform = async () => {
@@ -249,4 +288,106 @@ test('a sensitive screen or unconfirmed action stops dispatch immediately', asyn
   const blocked = await run(device, choose);
   assert.equal(blocked.result.reason, 'SENSITIVE_OR_BLOCKED_SCREEN');
   assert.equal(blocked.result.modelCalls, 0);
+});
+
+test('a truncated screenshot drops the previous visual point and uses fresh native evidence', async () => {
+  const device = phone([control('old_control', 'Button')]);
+  const blank = await frame('#202020');
+  // The PNG signature, IHDR chunk and dimensions pass geometry validation. Pixel decoding fails.
+  const truncated = blank.subarray(0, 33);
+  let captures = 0;
+  let fallback;
+  device.screenshot = async () => {
+    if (++captures === 1) return blank;
+    device.view.controls = [
+      control('current_result', 'Button', { x: 90, y: 190, width: 20, height: 20 }),
+    ];
+    return truncated;
+  };
+  const { result, records, events } = await run(
+    device,
+    (obs, tools, messages) => {
+      if (obs.textStatus === 'INVALID_PNG') {
+        fallback = { obs, tools, messages };
+        return ['finish', { evidence: obs.controls[0].ref, message: '已看到当前结果。' }];
+      }
+      if (tools.includes('tap_visual')) return ['tap_visual', { x: 0.5, y: 0.5, label: '打开结果' }];
+      return ['inspect_screen', {}];
+    },
+    true,
+  );
+  assert.equal(result.status, 'succeeded');
+  assert.equal(fallback.obs.lastBlocker.outcome, 'INVALID_PNG');
+  assert.deepEqual(
+    fallback.obs.controls.map((n) => n.id),
+    ['current_result'],
+  );
+  assert.ok(!fallback.obs.controls[0].atVisualTarget);
+  assert.ok(!fallback.tools.includes('tap_visual') && !fallback.tools.includes('finish_visual'));
+  assert.ok(
+    !fallback.messages.some(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+    ),
+  );
+  assert.deepEqual(events, ['observed', 'VISUAL_TARGET_UNCLEAR', 'INVALID_PNG', 'observed']);
+  assert.deepEqual(
+    records.map((s) => s.command),
+    [{ action: 'check', id: 'current_result', role: 'Button' }],
+  );
+});
+
+test('a disabled tap target replans to an enabled native control and records the successful action', async () => {
+  const device = phone([control('first_route', 'Button')]);
+  const blank = await frame('#202020');
+  device.screenshot = async () => blank;
+  const taps = [];
+  device.perform = async (step, view, node) => {
+    assert.equal(step.kind, 'tap');
+    if (node.id === 'first_route') {
+      view.controls = [{ ...node, enabled: false }, control('second_route', 'Button')];
+      throw Error('ELEMENT_DISABLED');
+    }
+    taps.push(node.id);
+    view.controls = [control('result', 'Text')];
+  };
+  const { result, records, events } = await run(
+    device,
+    (obs) => {
+      const current = obs.controls.find((n) => n.enabled);
+      if (current.id === 'result') return ['finish', { evidence: current.ref, message: '已打开。' }];
+      if (current.id === 'second_route') {
+        assert.equal(obs.lastBlocker.outcome, 'ELEMENT_DISABLED');
+        assert.equal(obs.controls.find((n) => n.id === 'first_route').enabled, false);
+      }
+      return ['tap', { target: current.ref }];
+    },
+    true,
+  );
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(taps, ['second_route']);
+  assert.deepEqual(events, ['ELEMENT_DISABLED', 'dispatched', 'observed']);
+  assert.deepEqual(
+    records.map((s) => [s.command.action, s.command.id]),
+    [
+      ['tap', 'second_route'],
+      ['check', 'result'],
+    ],
+  );
+});
+
+test('an unreadable initial view returns a partial answer after bounded read attempts', async () => {
+  const device = phone();
+  let reads = 0;
+  device.snapshot = async () => {
+    reads++;
+    throw Error('DISPLAY_ROTATION_UNAVAILABLE');
+  };
+  const { result, records } = await run(device, () => assert.fail('there was no view for the model'));
+  assert.equal(reads, 3);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'DISPLAY_ROTATION_UNAVAILABLE');
+  assert.equal(result.replyRequested, true);
+  assert.ok(result.answer.length);
+  assert.equal(result.modelCalls, 0);
+  assert.deepEqual(records, []);
 });

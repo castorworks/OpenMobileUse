@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
-import { setTimeout as wait } from 'node:timers/promises';
 import { basename, join } from 'node:path';
 import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
@@ -242,23 +241,7 @@ export class Workbench {
     }));
   }
   async frame(device, identity) {
-    let capture;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        capture = await captureView(device, identity);
-        break;
-      } catch (error) {
-        if (
-          attempt === 2 ||
-          !['FOREGROUND_WINDOW_AMBIGUOUS', 'STALE_OBSERVATION', 'FOREGROUND_APP_UNAVAILABLE'].includes(
-            error.message,
-          )
-        )
-          throw error;
-      }
-      await wait(200);
-    }
-    const { metadata, controls, image, before, view } = capture;
+    const { metadata, controls, image, before, view } = await captureView(device, identity);
     this.frames.set(identity, {
       token: metadata.observationId,
       view: { ...view, layout: undefined },

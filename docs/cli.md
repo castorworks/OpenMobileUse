@@ -74,7 +74,9 @@ node dist/cli.js waitFor --device "$DEVICE" --label '蓝牙地址' --state visib
 
 脚本使用 `schemaVersion: 1`。步骤支持 `launchApp`、`tap`、`swipe`、`input`、`back` 和 `waitFor`，参数沿用单步命令，JSON 中使用 `fromX`、`durationMs`、`timeoutMs` 等小驼峰字段。可直接写 `id`、`label`、`role`，或用 `target` 引用顶层 `targets` 中按平台定义的选择器。`platforms` 可限定某步适用的平台。iOS 的 `back` 指定页面上的导航或取消按钮，鸿蒙与 Android 使用系统返回键。软件键盘打开时，第一次返回可能只收起键盘。
 
-`waitFor` 等待控件出现（`visible`）或消失（`hidden`），超时返回 `WAIT_TIMEOUT`，匹配到多个同名控件时返回 `AMBIGUOUS_ELEMENT`。步骤失败后，报告中的 `failedStep` 指出失败的是第几步（从 1 开始），并附错误码。退出码 0 表示成功，1 表示执行失败，2 表示参数或脚本无效。桌面工作台导出的录制（`schemaVersion: 2`）只能在工作台中重放。
+`waitFor` 等待控件出现（`visible`）或消失（`hidden`）。短暂出现多个同名控件时会继续等待，直到出现唯一匹配项或控件全部消失。超时时，同名冲突仍存在会返回 `AMBIGUOUS_ELEMENT`，界面无法读取会返回对应的读取错误，其余情况返回 `WAIT_TIMEOUT`。
+
+通用脚本按名称或标识操作控件时，遇到定位失败会在原页面重新核对目标，最多尝试三次。已指定 `observation` 的步骤会严格核对该次采集。步骤失败后，报告中的 `failedStep` 指出失败的是第几步（从 1 开始），并附错误码。退出码 0 表示成功，1 表示执行失败，2 表示参数或脚本无效。桌面工作台导出的录制（`schemaVersion: 2`）只能在工作台中重放。
 
 ## Agent 自主导航
 
