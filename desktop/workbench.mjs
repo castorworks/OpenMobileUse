@@ -5,12 +5,13 @@ import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
-import { compileStep, reason } from '../dist/script.js';
+import { compileStep, maxScriptSteps, readScriptEnvelope, reason } from '../dist/script.js';
 import {
   executeStep,
   guardObservation,
   isScreenContainer,
   resolveControl,
+  screenAvailable,
   uniqueSelector,
 } from '../dist/steps.js';
 import { compileScript, executeRound } from '../dist/run.js';
@@ -28,7 +29,7 @@ import { LocalAppium } from './appium.mjs';
 import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 
 import { conversationTimeLimitMs, runConversation } from '../dist/conversation.js';
-import { maxRecordingSteps, recordStep, screenAvailable } from '../dist/recording.js';
+import { recordStep } from '../dist/recording.js';
 import {
   conversations,
   deviceDir,
@@ -48,6 +49,26 @@ export function errorCode(error) {
 }
 function imageUrl(png) {
   return 'data:image/png;base64,' + png.toString('base64');
+}
+function conversationScript(chat, platform) {
+  try {
+    const script = readScriptEnvelope(chat.script, true);
+    return script.platform === platform ? script : undefined;
+  } catch {
+    return undefined;
+  }
+}
+async function writableConversation(identity, chatId, platform) {
+  const chat = await loadConversation(identity, chatId);
+  const script = conversationScript(chat, platform);
+  if (!script) throw Error('INVALID_CONVERSATION_RECORDING');
+  if (chat.script.schemaVersion !== 2) return chat;
+  // A continuation gets its own file. Listing, exporting and replaying never rewrite the source.
+  if (script.steps.length) {
+    try { await compileScript(script, platform); }
+    catch { throw Error('INVALID_CONVERSATION_RECORDING'); }
+  }
+  return { ...chat, id: randomUUID(), sourceChatId: chat.id, script };
 }
 async function readRuns(identity, ids) {
   const dir = deviceDir(identity, 'workbench');
@@ -138,7 +159,7 @@ export class Workbench {
     return conversations(id);
   }
   async conversation(id, chatId) {
-    this.target(id);
+    const { platform } = this.target(id);
     const chat = await loadConversation(id, chatId);
     const group = basename(deviceDir(id, 'conversations'));
     const options = await recordOptions(group, chat.id);
@@ -148,9 +169,9 @@ export class Workbench {
       ...overview(chat),
       turns: turnsWithRuns(
         chat.turns,
-        runs.filter((r) => r.chatId === chat.id),
+        runs.filter((r) => r.chatId === chat.id || (chat.sourceChatId && r.chatId === chat.sourceChatId)),
       ),
-      recordingId: 'record:' + group + ':' + chat.id,
+      recordingId: conversationScript(chat, platform) ? 'record:' + group + ':' + chat.id : undefined,
       recordingHidden: !!options.hidden,
     };
   }
@@ -285,19 +306,19 @@ export class Workbench {
       )
         throw Error('INVALID_ACTION');
       const { step } = await compileStep(raw, t.platform);
+      const chat = chatId ? await writableConversation(id, chatId, t.platform) : null;
+      if (chat && chat.script.steps.length >= maxScriptSteps) throw Error('RECORDING_FULL');
       return this.session(t, randomUUID(), null, 'foreground', async (device) => {
         let result;
         try {
           const frame = this.frames.get(id);
           if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
           const view = frame.view;
-          const chat = chatId ? await loadConversation(id, chatId) : null;
           const validate = guardObservation(id, view, step, chat ? screenAvailable : undefined);
           // A screenshot falls between two layout reads. Check the actual gesture region on both sides.
           if (frame.before && (step.kind === 'swipe' || 'point' in step)) validate(frame.before);
           let item;
           if (chat) {
-            if (chat.script.steps.length >= maxRecordingSteps) throw Error('RECORDING_FULL');
             screenAvailable(view);
             const node = step.selector && resolveControl(view, step.selector, step.kind === 'input');
             if (node && !raw.id && !raw.label) {
@@ -320,11 +341,12 @@ export class Workbench {
           this.frames.delete(id);
           result = { action: 'tap', status: 'cancelled', reason: 'STALE_OBSERVATION' };
         }
+        const continuation = chat && chat.id !== chatId && result.status === 'succeeded' ? { chatId: chat.id } : {};
         // Capture on the open session. A failed preview cannot change the tap outcome.
         try {
-          return { result, frame: await this.frame(device, id) };
+          return { result, ...continuation, frame: await this.frame(device, id) };
         } catch (e) {
-          return { result, captureError: errorCode(e) };
+          return { result, ...continuation, captureError: errorCode(e) };
         }
       });
     });
@@ -395,12 +417,13 @@ export class Workbench {
       try {
         if (conversational) {
           chat = imported.chatId
-            ? await loadConversation(id, imported.chatId)
+            ? await writableConversation(id, imported.chatId, t.platform)
             : {
                 id: record.chatId,
                 turns: [],
-                script: { schemaVersion: 2, platform: t.platform, steps: [] },
+                script: { platform: t.platform, steps: [] },
               };
+          record.chatId = chat.id;
           turn = { runId: record.id, started: record.started, user: record.user, status: 'running' };
           chat.turns.push(turn);
           await persist();
@@ -470,7 +493,7 @@ export class Workbench {
                 chat.script.steps.push(item);
                 await persist();
                 record.stepCount = chat.script.steps.length;
-                if (item.command.action === 'pause') previewDue = true;
+                if (item.action === 'pause') previewDue = true;
               };
               result = await runConversation(
                 watched,
@@ -481,7 +504,7 @@ export class Workbench {
                 controller.signal,
                 capture,
                 (name, status) => progress({ kind: 'action', name, status }),
-                () => chat.script.steps.length < maxRecordingSteps,
+                () => chat.script.steps.length < maxScriptSteps,
                 (activity) => {
                   record.activity = activity;
                   notify();

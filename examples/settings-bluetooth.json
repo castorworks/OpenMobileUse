@@ -1,5 +1,4 @@
 {
-  "schemaVersion": 1,
   "steps": [
     { "action": "launchApp", "app": "settings" },
     { "action": "waitFor", "target": "settings.homeMarker", "state": "visible", "timeoutMs": 5000 },

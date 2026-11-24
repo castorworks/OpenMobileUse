@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import { executeTextTarget, recognizePortableText } from '../dist/screen-text.js';
 
 const width = 600;
@@ -14,7 +14,7 @@ const image = () => sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" w
   <text x="80" y="155" font-family="Arial, sans-serif" font-size="60">OPEN SETTINGS</text>
 </svg>`)).png().toBuffer();
 
-test('portable local OCR replays existing screen-text commands without a model', async () => {
+test('portable local OCR replays screen-text steps without a model', async () => {
   const png = await image();
   const taps = [];
   const device = {
@@ -23,18 +23,18 @@ test('portable local OCR replays existing screen-text commands without a model',
     perform: async (step) => taps.push(step),
   };
   const recording = {
-    schemaVersion: 2,
     platform: 'android',
     steps: ['checkScreenText', 'tapScreenText'].map((action) => ({
+      action,
+      text: 'OPEN SETTINGS',
       inApp: app,
-      command: { action, text: 'OPEN SETTINGS' },
     })),
   };
-  const compiled = await compileRecording(recording, 'android');
-  const result = await replayRecording(
-    device, identity, compiled, AbortSignal.timeout(25_000), () => {}, recognizePortableText,
+  const script = await compileScript(recording, 'android');
+  const result = await executeRound(
+    device, identity, { script, recognizeText: recognizePortableText }, AbortSignal.timeout(25_000),
   );
-  assert.deepEqual(result, { status: 'succeeded' });
+  assert.equal(result.status, 'succeeded', result.reason);
   assert.equal(taps.length, 1);
   assert.equal(taps[0].kind, 'tap');
   assert.ok(taps[0].point.x > 0.4 && taps[0].point.x < 0.7);

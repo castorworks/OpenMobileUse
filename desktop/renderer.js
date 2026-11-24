@@ -148,15 +148,14 @@ const issues = {
   NO_FOCUSED_FIELD: '请先选中普通输入框。',
   INVALID_JSON: '文件不是有效的 JSON。',
   INVALID_SCRIPT_NAME: '脚本名称需要 1 到 100 个字符。',
-  INVALID_SCRIPT: '文件缺少有效的脚本步骤。',
+  INVALID_SCRIPT: '脚本格式无效。请导入符合当前格式的 JSON 文件。',
   INVALID_SCRIPT_STEP: '脚本含有无法执行的步骤。',
-  INVALID_RECORDING: '录制脚本格式无效。',
+  INVALID_CONVERSATION_RECORDING: '此对话的录制格式已失效。请新建对话再录制。',
   SCRIPT_PLATFORM_MISMATCH: '请选择与脚本兼容的设备。',
   UNKNOWN_SCRIPT: '脚本已从脚本库移除。',
   INVALID_FILE: '请选择有效的任务 JSON 文件。',
   CANCELLED: '已停止调度后续步骤。',
   RECORDING_STATE_MISMATCH: '当前应用、控件或读数与录制不同。请恢复此步骤的起始界面。',
-  RECORDING_PLATFORM_MISMATCH: '请选择与录制相同平台的设备。',
   RECORDING_WRITE_FAILED: '保存录制失败，操作可能已执行。请检查磁盘后核对画面。',
   RECORDING_TARGET_UNAVAILABLE: '录制此操作需要能唯一定位的控件，请选择目标。',
   RECORDING_FULL: '本段录制已满，请新建对话继续。',
@@ -676,7 +675,7 @@ async function action(raw) {
     let r;
     try {
       // Prefer a stable control selector for recorded manual taps.
-      const chatId = s.recordManual && workspaceMode === 'chat' && s.chat?.id;
+      const chatId = s.recordManual && workspaceMode === 'chat' && s.chat?.recordingId && s.chat.id;
       if (raw.action === 'tap' && chatId && s.hit !== null) {
         const loc = selector(s.frame.controls[s.hit]);
         const hits = s.frame.controls.filter(
@@ -697,7 +696,7 @@ async function action(raw) {
         return;
       }
       if (chatId) {
-        await refreshLibrary(id, chatId);
+        await refreshLibrary(id, r.chatId || chatId);
         if (workspaceMode === 'script') await refreshScripts();
       }
     } catch (e) {
@@ -844,11 +843,11 @@ function drawChat() {
     ? '在下方描述任务，或打开一段历史对话。'
     : '选择设备后，在下方输入任务。';
   if (follow) stream.scrollTop = stream.scrollHeight;
-  $('open-recording').hidden = !chat?.stepCount;
+  $('open-recording').hidden = !chat?.recordingId || !chat.stepCount;
   $('open-recording').textContent = chat?.recordingHidden
     ? '恢复到脚本库'
     : '查看录制 · ' + (chat?.stepCount || 0) + ' 步';
-  $('manual-record-label').hidden = !chat || workspaceMode !== 'chat';
+  $('manual-record-label').hidden = !chat?.recordingId || workspaceMode !== 'chat';
   $('manual-record').checked = !!s.recordManual;
 }
 $('chats').onchange = () => {
@@ -899,7 +898,7 @@ function switchMode(value) {
   $('import-script').hidden = chatting;
   $(chatting ? 'chat-mode' : 'script-mode').setAttribute('aria-current', 'page');
   $(chatting ? 'script-mode' : 'chat-mode').removeAttribute('aria-current');
-  $('manual-record-label').hidden = !chatting || !state().chat;
+  $('manual-record-label').hidden = !chatting || !state().chat?.recordingId;
   render();
 }
 $('chat-mode').onclick = () => switchMode('chat');

@@ -1,6 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Platform } from './host.js';
-import type { Progress } from './run.js';
 import { compileStep, object, reason } from './script.js';
 import { executeTextTarget, type ScreenTextRecognizer } from './screen-text.js';
 import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
@@ -12,6 +11,7 @@ import {
   guardObservation,
   isAppIdentifier,
   matchingControls,
+  observationId,
   screenAvailable,
   uniqueSelector,
   type CommandStep,
@@ -22,15 +22,13 @@ import {
 } from './steps.js';
 
 type Reading = { checked?: boolean; value?: string; label?: string };
-export type RecordedStep = {
+type RecordingAction = Record<string, unknown> & { action: string };
+export type RecordedStep = RecordingAction & {
   inApp: string;
-  command: Record<string, unknown>;
   reading?: Reading;
   screen?: { width: number; height: number; rotation: number; anchors: Selector[] };
 };
-export const maxRecordingSteps = 1000;
-
-export function reading(node?: Control): Reading | undefined {
+function reading(node?: Control): Reading | undefined {
   if (!node || node.secret) return;
   const state: Reading = {};
   if (node.checked !== undefined) state.checked = node.checked;
@@ -40,8 +38,10 @@ export function reading(node?: Control): Reading | undefined {
 }
 
 // Geometry-dependent gestures need the original orientation and recognizable page landmarks.
-export function recordStep(view: View, command: Record<string, unknown>, node?: Control): RecordedStep {
-  const item: RecordedStep = { inApp: view.app, command, reading: reading(node) };
+export function recordStep(view: View, command: RecordingAction, node?: Control): RecordedStep {
+  const item: RecordedStep = { ...command, inApp: view.app };
+  const observed = reading(node);
+  if (observed) item.reading = observed;
   if (
     command.action === 'swipe' ||
     (command.action === 'tap' && 'x' in command) ||
@@ -59,216 +59,219 @@ export function recordStep(view: View, command: Record<string, unknown>, node?: 
   return item;
 }
 
-export { screenAvailable };
-
-type PlaybackStep = {
-  source: RecordedStep;
+type StepGuards = { inApp?: unknown; reading?: unknown; screen?: unknown };
+type GuardedStep = {
+  action: string;
+  inApp?: string;
+  reading?: Reading;
+  screen?: RecordedStep['screen'];
   step?: CommandStep;
   selector?: Selector;
+  observation?: string;
   screenText?: string;
   image?: ImageTarget;
   videoItem?: string;
   search?: SearchRequest;
 };
 
-export async function compileRecording(data: unknown, platform: Platform): Promise<PlaybackStep[]> {
-  if (
-    !object(data) ||
-    data.schemaVersion !== 2 ||
-    !Array.isArray(data.steps) ||
-    !data.steps.length ||
-    data.steps.length > maxRecordingSteps
-  )
-    throw Error('INVALID_RECORDING');
-  if (data.platform !== platform) throw Error('RECORDING_PLATFORM_MISMATCH');
-  const parsed: PlaybackStep[] = [];
-  for (const item of data.steps) {
-    if (!object(item) || !isAppIdentifier(item.inApp) || !object(item.command))
-      throw Error('INVALID_RECORDING');
-    const { command } = item;
-    if (
-      item.reading !== undefined &&
-      (!object(item.reading) ||
-        Object.keys(item.reading).some((k) => !['checked', 'value', 'label'].includes(k)) ||
-        (item.reading.label !== undefined && typeof item.reading.label !== 'string') ||
-        (item.reading.value !== undefined && typeof item.reading.value !== 'string') ||
-        (item.reading.checked !== undefined && typeof item.reading.checked !== 'boolean'))
-    )
-      throw Error('INVALID_RECORDING');
-    const source: RecordedStep = { inApp: item.inApp, command, reading: item.reading as Reading };
-    if (item.screen !== undefined) {
-      const g = item.screen;
-      if (
-        !object(g) ||
-        !Number.isSafeInteger(g.width) ||
-        !Number.isSafeInteger(g.height) ||
-        !Number.isFinite(g.rotation) ||
-        !Array.isArray(g.anchors) ||
-        g.anchors.length > 3 ||
-        !g.anchors.every(
-          (a) =>
-            object(a) &&
-            (!!a.id || !!a.label) &&
-            Object.entries(a).every(
-              ([k, v]) => ['id', 'label', 'role'].includes(k) && typeof v === 'string',
-            ),
-        )
-      )
-        throw Error('INVALID_RECORDING');
-      source.screen = g as RecordedStep['screen'];
-    }
-    if (command.action === 'tapScreenText' || command.action === 'checkScreenText') {
-      if (
-        Object.keys(command).length !== 2 ||
-        typeof command.text !== 'string' ||
-        !command.text.trim() ||
-        command.text.length > 160 ||
-        source.reading ||
-        source.screen
-      )
-        throw Error('INVALID_RECORDING');
-      parsed.push({ source, screenText: command.text });
-      continue;
-    }
-    if (command.action === 'verifiedSearch') {
-      if (Object.keys(command).length !== 3 || typeof command.query !== 'string' || !command.query.trim() ||
-        command.query.length > 200 || typeof command.firstResult !== 'boolean' || source.reading || source.screen)
-        throw Error('INVALID_RECORDING');
-      parsed.push({ source, search: { query: command.query, firstResult: command.firstResult } });
-      continue;
-    }
-    if (command.action === 'pauseVideoCenter') {
-      if (platform !== 'android' || Object.keys(command).length !== 2 || typeof command.item !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(command.item) || source.reading || source.screen) throw Error('INVALID_RECORDING');
-      parsed.push({ source, videoItem: command.item });
-      continue;
-    }
-    if (command.action === 'tapImage' || command.action === 'checkImage') {
-      if (
-        Object.keys(command).length !== 3 ||
-        typeof command.label !== 'string' ||
-        !command.label.trim() ||
-        command.label.length > 100 ||
-        !isImageTarget(command.anchor) ||
-        source.reading ||
-        source.screen
-      )
-        throw Error('INVALID_RECORDING');
-      parsed.push({ source, image: command.anchor });
-      continue;
-    }
-    if (command.action === 'pause' && Object.keys(command).length === 1 && !source.reading) {
-      parsed.push({ source });
-      continue;
-    }
-    if (command.action === 'check') {
-      const { action, ...fields } = command;
-      if (Object.keys(fields).length === 0 && !source.reading) parsed.push({ source });
-      else {
-        const { step } = await compileStep({ ...fields, action: 'waitFor' }, platform);
-        if (step.kind !== 'waitFor' || step.state !== 'visible') throw Error('INVALID_RECORDING');
-        parsed.push({ source, selector: step.selector });
-      }
-      continue;
-    }
-    const { step, observation } = await compileStep(command, platform);
-    if (observation || !['tap', 'input', 'swipe', 'back', 'launch', 'goHome'].includes(step.kind))
-      throw Error('INVALID_RECORDING');
-    const selector = 'selector' in step ? step.selector : undefined;
-    if (source.reading && !selector) throw Error('INVALID_RECORDING');
-    parsed.push({ source, step, selector });
-  }
-  return parsed;
+export function isGuardedAction(action: unknown) {
+  return ['check', 'pause', 'tapScreenText', 'checkScreenText', 'tapImage', 'checkImage', 'pauseVideoCenter', 'verifiedSearch'].some(
+    (name) => name === action,
+  );
 }
 
-export async function replayRecording(
+function compileGuards(guards: StepGuards) {
+  const { inApp, reading, screen } = guards;
+  if (inApp !== undefined && !isAppIdentifier(inApp)) throw Error('INVALID_STEP_GUARD');
+  if (
+    reading !== undefined &&
+    (!object(reading) ||
+      Object.keys(reading).some((key) => !['checked', 'value', 'label'].includes(key)) ||
+      (reading.label !== undefined && typeof reading.label !== 'string') ||
+      (reading.value !== undefined && typeof reading.value !== 'string') ||
+      (reading.checked !== undefined && typeof reading.checked !== 'boolean'))
+  )
+    throw Error('INVALID_STEP_GUARD');
+  if (
+    screen !== undefined &&
+    (!object(screen) ||
+      Object.keys(screen).some((key) => !['width', 'height', 'rotation', 'anchors'].includes(key)) ||
+      typeof screen.width !== 'number' ||
+      !Number.isSafeInteger(screen.width) ||
+      screen.width <= 0 ||
+      typeof screen.height !== 'number' ||
+      !Number.isSafeInteger(screen.height) ||
+      screen.height <= 0 ||
+      !Number.isFinite(screen.rotation) ||
+      !Array.isArray(screen.anchors) ||
+      screen.anchors.length > 3 ||
+      !screen.anchors.every(
+        (anchor) =>
+          object(anchor) &&
+          (!!anchor.id || !!anchor.label) &&
+          Object.entries(anchor).every(
+            ([key, value]) => ['id', 'label', 'role'].includes(key) && typeof value === 'string',
+          ),
+      ))
+  )
+    throw Error('INVALID_STEP_GUARD');
+  return {
+    inApp,
+    reading: reading as Reading | undefined,
+    screen: screen as RecordedStep['screen'],
+  };
+}
+
+export async function compileGuardedStep(
+  command: Record<string, unknown>,
+  platform: Platform,
+  guards: StepGuards = {},
+): Promise<GuardedStep> {
+  const { action, ...fields } = command;
+  if (typeof action !== 'string') throw Error('INVALID_STEP');
+  const source = { action, ...compileGuards(guards) };
+  const only = (...keys: string[]) => Object.keys(fields).every((key) => keys.includes(key));
+  if (action === 'verifiedSearch') {
+    if (!only('query', 'firstResult') || typeof fields.query !== 'string' || !fields.query.trim() ||
+      fields.query.length > 200 || typeof fields.firstResult !== 'boolean' || source.reading || source.screen)
+      throw Error('INVALID_STEP');
+    return { ...source, search: { query: fields.query, firstResult: fields.firstResult } };
+  }
+  if (action === 'pauseVideoCenter') {
+    if (platform !== 'android' || !only('item') || typeof fields.item !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(fields.item) || source.reading || source.screen) throw Error('INVALID_STEP');
+    return { ...source, videoItem: fields.item };
+  }
+  if (action === 'tapScreenText' || action === 'checkScreenText') {
+    if (
+      !only('text') ||
+      typeof fields.text !== 'string' ||
+      !fields.text.trim() ||
+      fields.text.length > 160 ||
+      source.reading ||
+      source.screen
+    )
+      throw Error('INVALID_STEP');
+    return { ...source, screenText: fields.text };
+  }
+  if (action === 'tapImage' || action === 'checkImage') {
+    if (
+      !only('label', 'anchor') ||
+      typeof fields.label !== 'string' ||
+      !fields.label.trim() ||
+      fields.label.length > 100 ||
+      !isImageTarget(fields.anchor) ||
+      source.reading ||
+      source.screen
+    )
+      throw Error('INVALID_STEP');
+    return { ...source, image: fields.anchor };
+  }
+  if (action === 'pause') {
+    if (!only() || source.reading) throw Error('INVALID_STEP');
+    return source;
+  }
+  if (action === 'check') {
+    if (!only('id', 'label', 'role', 'within', 'cardX', 'cardY')) throw Error('INVALID_STEP');
+    if (!Object.keys(fields).length && !source.reading) return source;
+    const { step } = await compileStep({ ...fields, action: 'waitFor' }, platform);
+    if (step.kind !== 'waitFor') throw Error('INVALID_STEP');
+    return { ...source, selector: step.selector };
+  }
+
+  const { step, observation } = await compileStep(command, platform);
+  const target = 'selector' in step ? step.selector : undefined;
+  const selector = target?.id || target?.label ? target : undefined;
+  if (source.reading && (!selector || (step.kind === 'waitFor' && step.state === 'hidden')))
+    throw Error('INVALID_STEP_GUARD');
+  return { ...source, step, selector, observation };
+}
+
+export async function executeGuardedStep(
   device: StepDevice,
   identity: string,
-  steps: PlaybackStep[],
+  source: GuardedStep,
   signal: AbortSignal,
-  progress: Progress,
   recognizeText?: ScreenTextRecognizer,
 ) {
-  for (const [index, { source, step, selector, screenText, image, videoItem, search }] of steps.entries()) {
-    const name = String(source.command.action);
+  const { action, step, screenText, image, videoItem, search, selector, inApp, reading, screen } = source;
+  const matches = (view: View) => {
+    // Launch and Android Home are independent of the starting app.
+    if (step?.kind !== 'launch' && step?.kind !== 'goHome' && inApp !== undefined && inApp !== view.app) return false;
+    if (
+      screen &&
+      (view.width !== screen.width ||
+        view.height !== screen.height ||
+        view.rotation !== screen.rotation ||
+        screen.anchors.some((anchor) => matchingControls(view, anchor).length !== 1))
+    )
+      return false;
+    if (!selector) return true;
+    const hits = matchingControls(view, selector);
+    if (step?.kind === 'waitFor' && step.state === 'hidden') return hits.length === 0;
+    if (hits.length !== 1) return false;
+    const [node] = hits;
+    return (
+      (!step || step.kind === 'waitFor' || node.enabled) &&
+      (reading?.label === undefined || node.labels.includes(reading.label)) &&
+      (reading?.checked === undefined || node.checked === reading.checked) &&
+      (reading?.value === undefined || node.value === reading.value)
+    );
+  };
+
+  const deadline = Date.now() + (step?.kind === 'waitFor' ? step.timeoutMs : 8000);
+  let observation = source.observation;
+  for (;;) {
+    signal.throwIfAborted();
+    let view: View | undefined;
     try {
-      const deadline = Date.now() + 8000;
-      for (;;) {
-        signal.throwIfAborted();
-        let view: View;
-        try {
-          view = await device.snapshot();
-        } catch (error) {
-          if (!isTransientObservation(reason(error)) || Date.now() >= deadline) throw error;
-          await sleep(250, undefined, { signal });
-          continue;
-        }
-        signal.throwIfAborted();
-        screenAvailable(view);
-        const hits = selector ? matchingControls(view, selector) : [];
-        const node = hits[0];
-        // Launch and Home are independent of the starting app.
-        const sameApp = step?.kind === 'launch' || step?.kind === 'goHome' || source.inApp === view.app;
-        const g = source.screen;
-        const samePage =
-          !g ||
-          (view.width === g.width &&
-            view.height === g.height &&
-            view.rotation === g.rotation &&
-            g.anchors.every((a) => matchingControls(view, a).length === 1));
-        if (
-          sameApp &&
-          samePage &&
-          (!selector ||
-            (hits.length === 1 &&
-              (!step || node.enabled) &&
-              (source.reading?.label === undefined || node.labels.includes(source.reading.label)) &&
-              (source.reading?.checked === undefined || node.checked === source.reading.checked) &&
-              (source.reading?.value === undefined || node.value === source.reading.value)))
-        ) {
-          try {
-            if (search) {
-              const verified = await executeVerifiedSearch(device, identity, view, search, signal);
-              if ('reason' in verified) throw Error(verified.reason);
-            } else if (videoItem) {
-              await pauseVideoCenter(device, identity, view, videoItem, signal);
-            } else if (image) {
-              await executeImageTarget(device, identity, view, image, name === 'tapImage', signal);
-            } else if (screenText) {
-              await executeTextTarget(
-                device,
-                identity,
-                view,
-                screenText,
-                name === 'tapScreenText' ? 'tap' : 'check',
-                signal,
-                recognizeText,
-              );
-            } else if (step) {
-              const validate = guardObservation(identity, view, step, (fresh) => {
-                screenAvailable(fresh);
-                if (g?.anchors.some((a) => matchingControls(fresh, a).length !== 1))
-                  throw Error('STALE_OBSERVATION');
-              });
-              await executeStep(device, identity, step, validate, signal);
-            } else if (name === 'pause') await sleep(650, undefined, { signal });
-            break;
-          } catch (e) {
-            const code = reason(e);
-            const retryTarget = isTargetUnavailable(code) || isTransientObservation(code);
-            if (!retryTarget) throw e;
-          }
-        }
-        if (Date.now() >= deadline) throw Error('RECORDING_STATE_MISMATCH');
-        await sleep(250, undefined, { signal });
-      }
-      progress({ kind: 'step', name, status: 'succeeded' });
-    } catch (e) {
-      const code =
-        reason(e) === 'ACTION_OUTCOME_UNKNOWN' ? reason(e) : signal.aborted ? 'CANCELLED' : reason(e);
-      progress({ kind: 'step', name, status: code });
-      return { status: 'failed', failedStep: index + 1, reason: code };
+      view = await device.snapshot();
+    } catch (error) {
+      if (!isTransientObservation(reason(error)) || Date.now() >= deadline) throw error;
     }
+    signal.throwIfAborted();
+    if (view) {
+      screenAvailable(view);
+      if (observation && observationId(identity, view) !== observation) throw Error('STALE_OBSERVATION');
+      if (step?.kind === 'waitFor') observation = undefined;
+      if (matches(view)) {
+        try {
+          if (search) {
+            const verified = await executeVerifiedSearch(device, identity, view, search, signal);
+            if ('reason' in verified) throw Error(verified.reason);
+          } else if (videoItem) {
+            await pauseVideoCenter(device, identity, view, videoItem, signal);
+          } else if (image) {
+            await executeImageTarget(device, identity, view, image, action === 'tapImage', signal);
+          } else if (screenText) {
+            await executeTextTarget(
+              device,
+              identity,
+              view,
+              screenText,
+              action === 'tapScreenText' ? 'tap' : 'check',
+              signal,
+              recognizeText,
+            );
+          } else if (step && step.kind !== 'waitFor') {
+            const validate = guardObservation(identity, view, step, (fresh) => {
+              screenAvailable(fresh);
+              if (!matches(fresh) || (observation && observationId(identity, fresh) !== observation))
+                throw Error('STALE_OBSERVATION');
+            });
+            await executeStep(device, identity, step, validate, signal);
+          } else if (action === 'pause') {
+            await sleep(650, undefined, { signal });
+          }
+          return;
+        } catch (error) {
+          const code = reason(error);
+          if (!isTargetUnavailable(code) && !isTransientObservation(code)) throw error;
+        }
+      }
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw Error('RECORDING_STATE_MISMATCH');
+    await sleep(Math.min(250, remaining), undefined, { signal });
   }
-  return { status: 'succeeded' };
 }

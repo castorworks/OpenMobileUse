@@ -3,7 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
 import { xmlControls } from '../dist/native-layout.js';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import { asksToSubmitQuery, firstSearchResult, requestedSearch, searchForm } from '../dist/verified-search.js';
 
 const app = 'example.search', id = 'android:search-test';
@@ -137,9 +137,9 @@ test('search verifies the replacement and reads the refreshed first card, includ
   assert.match(result.answer, /橘猫/);
   assert.match(result.answer, /左上角的橘猫打哈欠/);
   assert.deepEqual(d.actions, ['input', 'tap']);
-  const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: records }, 'android');
+  const script = await compileScript({ platform: 'android', steps: records }, 'android');
   const replay = phone();
-  assert.equal((await replayRecording(replay, id, steps, new AbortController().signal, () => {})).status, 'succeeded');
+  assert.equal((await executeRound(replay, id, { script }, new AbortController().signal, () => {})).status, 'succeeded');
   assert.deepEqual(replay.actions, ['input', 'tap']);
 });
 
@@ -256,10 +256,10 @@ for (const [code, reads] of [['STALE_OBSERVATION', 5], ['OBSERVATION_TIMEOUT', 5
       }
       return read();
     };
-    const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: [
+    const script = await compileScript({ schemaVersion: 2, platform: 'android', steps: [
       { inApp: app, command: { action: 'verifiedSearch', query: '橘猫', firstResult: true } },
     ] }, 'android');
-    const result = await replayRecording(d, id, steps, new AbortController().signal, () => {});
+    const result = await executeRound(d, id, { script }, new AbortController().signal, () => {});
     assert.equal(result.reason, 'SEARCH_RESULTS_UNVERIFIED');
     assert.equal(resultReads, reads);
     assert.deepEqual(d.actions, ['input', 'tap']);

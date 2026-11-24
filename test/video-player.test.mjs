@@ -3,7 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { xmlControls } from '../dist/native-layout.js';
 import { readVideoPlayer, pauseVideoCenter } from '../dist/video-player.js';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import { runConversation } from '../dist/conversation.js';
 
 const app = 'example.video', identity = 'android:test', signal = new AbortController().signal;
@@ -59,15 +59,15 @@ test('a sheet covering a still-visible player or a switch of work blocks dispatc
 test('recorded pauses recompute the player centre on replay and skip a paused work', async () => {
   const command = { action: 'pauseVideoCenter', item: item() };
   const data = { schemaVersion: 2, platform: 'android', steps: [{ inApp: app, command }] };
-  const steps = await compileRecording(JSON.parse(JSON.stringify(data)), 'android');
+  const script = await compileScript(JSON.parse(JSON.stringify(data)), 'android');
   const area = '[32,8][180,168]';
   const resized = frame({ area }), stopped = frame({ area, label: '播放视频，按钮' });
   const phoneDevice = phone([resized, resized, stopped, stopped, stopped]);
   for (let i = 0; i < 2; i++)
-    assert.equal((await replayRecording(phoneDevice, identity, steps, signal, () => {})).status, 'succeeded');
+    assert.equal((await executeRound(phoneDevice, identity, { script }, signal, () => {})).status, 'succeeded');
   assert.deepEqual(phoneDevice.clicks, [{ x: 106 / 199, y: 88 / 399 }]);
-  await assert.rejects(compileRecording({ ...data, platform: 'ios' }, 'ios'), /INVALID_RECORDING/);
-  await assert.rejects(compileRecording({ ...data, steps: [{ inApp: app, command: { ...command, x: 0.5 } }] }, 'android'), /INVALID_RECORDING/);
+  await assert.rejects(compileScript({ ...data, platform: 'ios' }, 'ios'), /INVALID_SCRIPT_STEP/);
+  await assert.rejects(compileScript({ ...data, steps: [{ inApp: app, command: { ...command, x: 0.5 } }] }, 'android'), /INVALID_SCRIPT_STEP/);
 });
 
 async function requestCenterPause(phoneDevice) {
@@ -107,11 +107,11 @@ test('a screenshot with the wrong orientation stops the centre-pause request bef
 });
 
 test('missing pause evidence never retries the toggle, including on recording replay', async () => {
-  const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: [
+  const script = await compileScript({ schemaVersion: 2, platform: 'android', steps: [
     { inApp: app, command: { action: 'pauseVideoCenter', item: item() } },
   ] }, 'android');
   const phoneDevice = phone([playing, playing, frame({ label: '播放视频，按钮', caption: '下一条' })]);
-  const result = await replayRecording(phoneDevice, identity, steps, signal, () => {});
+  const result = await executeRound(phoneDevice, identity, { script }, signal, () => {});
   assert.equal(result.reason, 'VIDEO_PAUSE_UNCONFIRMED');
   assert.equal(phoneDevice.clicks.length, 1);
 });

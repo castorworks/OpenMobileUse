@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
 import { Workbench } from '../desktop/workbench.mjs';
+import { deviceDir, loadConversation, saveConversation } from '../desktop/library.mjs';
+import { scriptEntry } from '../desktop/script-library.mjs';
 import { openDevice } from '../dist/doctor.js';
 import { guardObservation, screenAvailable } from '../dist/steps.js';
-import { compileRecording, replayRecording } from '../dist/recording.js';
+import { compileScript, executeRound } from '../dist/run.js';
 
 test('only Android workbench sessions request a one-second UI idle wait', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'omu-session-settings-'));
@@ -73,16 +75,16 @@ test('swipe revalidation rejects a changed target, window, overlay or touch endp
 });
 
 test('an existing v2 recording replays a swipe across player edge jitter', async () => {
-  const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: [{
+  const script = await compileScript({ schemaVersion: 2, platform: 'android', steps: [{
     inApp: 'example.feed',
     command: { action: 'swipe', fromX: 0.5, fromY: 0.78, toX: 0.5, toY: 0.26 },
     screen: { width: 1272, height: 2772, rotation: 0, anchors: [{ id: 'image' }] },
   }] }, 'android');
   let reads = 0, moves = 0;
-  const result = await replayRecording({
+  const result = await executeRound({
     snapshot: async () => reads++ % 2 ? player(297, 1690) : player(),
     perform: async (step) => { assert.equal(step.kind, 'swipe'); moves++; },
-  }, 'android:test', steps, new AbortController().signal, () => {});
+  }, 'android:test', { script }, new AbortController().signal, () => {});
   assert.equal(result.status, 'succeeded');
   assert.equal(moves, 1);
 });
@@ -158,4 +160,43 @@ test('a stale screenshot after a confirmed tap preserves the successful action a
   assert.equal(result.status, 'succeeded');
   assert.equal(captureError, 'STALE_OBSERVATION');
   assert.deepEqual(taps, ['comments']);
+});
+
+
+test('a stale manual tap never forks a V2 recording; a successful continuation writes a separate flat copy', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'omu-v2-continuation-'));
+  const previous = process.env.OMU_STATE_DIR;
+  process.env.OMU_STATE_DIR = dir;
+  t.after(async () => {
+    if (previous === undefined) delete process.env.OMU_STATE_DIR;
+    else process.env.OMU_STATE_DIR = previous;
+    await rm(dir, { recursive: true, force: true });
+  });
+  const { id, wb, phone, panel, preview, taps } = await previewFixture(t);
+  const oldId = '01234567-89ab-4cde-8123-0123456789ab';
+  const originalStep = { inApp: 'example.feed', command: { action: 'check', id: 'comments' } };
+  await saveConversation(id, {
+    id: oldId, updated: new Date().toISOString(), turns: [{ user: '已录制', status: 'succeeded' }],
+    script: { schemaVersion: 2, platform: 'android', steps: [originalStep] },
+  });
+  const folder = deviceDir(id, 'conversations'), file = join(folder, oldId + '.json');
+  const originalBytes = await readFile(file);
+  phone.view = panel;
+  const blocked = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId, oldId);
+  assert.equal(blocked.result.status, 'cancelled');
+  assert.equal(blocked.chatId, undefined);
+  assert.deepEqual(await readdir(folder), [oldId + '.json']);
+  const ok = await wb.action(id, { action: 'tap', id: 'close' }, blocked.frame.observationId, oldId);
+  assert.deepEqual(taps, ['close']);
+  assert.ok(ok.chatId && ok.chatId !== oldId);
+  assert.deepEqual(await readFile(file), originalBytes);
+  const copy = await loadConversation(id, ok.chatId);
+  assert.equal(copy.sourceChatId, oldId);
+  assert.equal(copy.script.schemaVersion, undefined);
+  assert.deepEqual(copy.script.steps.map(({ action, id }) => [action, id]), [['check', 'comments'], ['tap', 'close']]);
+  const old = await wb.conversation(id, oldId);
+  const exported = (await scriptEntry(old.recordingId)).script;
+  assert.deepEqual(exported.steps, [{ inApp: 'example.feed', action: 'check', id: 'comments' }]);
+  assert.equal((await compileScript(copy.script, 'android')).steps.length, 2);
+  assert.deepEqual(await readFile(file), originalBytes);
 });

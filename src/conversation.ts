@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { tool, decode } from './agent-tools.js';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
 import type { Platform } from './host.js';
-import { recordStep, reading, type RecordedStep } from './recording.js';
+import { recordStep, type RecordedStep } from './recording.js';
 import { executeTextTarget, readScreenText, type ScreenTextRecognizer } from './screen-text.js';
 import { pauseVideoCenter, readVideoPlayer } from './video-player.js';
 import {
@@ -795,15 +795,11 @@ export async function runConversation(
               if (name === 'finish') {
                 if (visual)
                   await executeTextTarget(device, identity, fresh, visual.text, 'check', bounded, recognizeText);
-                // Home already verified the foreground without depending on one launcher package.
-                if (visual || target || fresh.app !== lastHomeApp)
-                  await record({
-                    inApp: fresh.app,
-                    command: visual
-                      ? { action: 'checkScreenText', text: visual.text }
-                      : { action: 'check', ...target?.selector },
-                    reading: reading(target?.node),
-                  });
+                const command = visual
+                  ? { action: 'checkScreenText', text: visual.text }
+                  : { action: 'check', ...target?.selector };
+                // Home has already verified the platform's default launcher.
+                if (visual || target || fresh.app !== lastHomeApp) await record(recordStep(fresh, command, target?.node));
                 progress(description, 'observed');
               }
               return {
@@ -814,7 +810,7 @@ export async function runConversation(
               };
             }
           } else {
-            let command: Record<string, unknown>;
+            let command: { action: string; [field: string]: unknown };
             if (name === 'launch_app') command = { action: 'launchApp', app: a.app };
             else if (name === 'home') command = { action: 'goHome' };
             else if (name === 'swipe') {

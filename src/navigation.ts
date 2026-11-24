@@ -17,46 +17,42 @@ export interface Device {
   close(): Promise<void>;
 }
 
-type Step =
+type BluetoothMarker = 'bluetooth.pageMarker' | 'settings.homeMarker';
+type Step = { index: number } & (
   | { action: 'launchApp'; app: 'settings' }
   | { action: 'route'; name: 'settings.toBluetooth' | 'bluetooth.toSettingsHome' }
   | {
       action: 'waitFor';
-      target: 'bluetooth.pageMarker' | 'settings.homeMarker';
-      state: 'visible';
+      target: BluetoothMarker;
       timeoutMs: number;
-    };
-export function parseScript(raw: unknown): Step[] {
-  const script = raw as { schemaVersion?: number; steps?: Record<string, unknown>[] } | null;
-  if (
-    script?.schemaVersion !== 1 ||
-    !Array.isArray(script.steps) ||
-    !script.steps.length ||
-    script.steps.length > 64
-  )
-    throw new Error('Invalid Bluetooth navigation script');
-  return script.steps.map((s, i) => {
-    const only = (...keys: string[]) => Object.keys(s).every((k) => keys.includes(k));
-    if (s?.action === 'launchApp' && s.app === 'settings' && only('action', 'app'))
-      return { action: s.action, app: s.app };
-    if (
-      s?.action === 'route' &&
-      (s.name === 'settings.toBluetooth' || s.name === 'bluetooth.toSettingsHome') &&
-      only('action', 'name')
-    )
-      return { action: s.action, name: s.name };
-    if (
-      s?.action === 'waitFor' &&
-      s.state === 'visible' &&
-      (s.target === 'bluetooth.pageMarker' || s.target === 'settings.homeMarker') &&
-      only('action', 'target', 'state', 'timeoutMs')
-    ) {
-      const ms = s.timeoutMs ?? 5000;
-      if (typeof ms === 'number' && Number.isInteger(ms) && ms > 0 && ms <= 60000)
-        return { action: s.action, target: s.target, state: s.state, timeoutMs: ms };
     }
-    throw new Error(`Unsupported step at index ${i}`);
-  });
+);
+
+export function isBluetoothMarker(value: unknown): value is BluetoothMarker {
+  return value === 'bluetooth.pageMarker' || value === 'settings.homeMarker';
+}
+
+export function compileBluetoothStep(step: Record<string, unknown>, index: number): Step {
+  const only = (...keys: string[]) => Object.keys(step).every((key) => keys.includes(key));
+  if (step.action === 'launchApp' && step.app === 'settings' && only('action', 'app'))
+    return { index, action: step.action, app: step.app };
+  if (
+    step.action === 'route' &&
+    (step.name === 'settings.toBluetooth' || step.name === 'bluetooth.toSettingsHome') &&
+    only('action', 'name')
+  )
+    return { index, action: step.action, name: step.name };
+  if (
+    step.action === 'waitFor' &&
+    step.state === 'visible' &&
+    isBluetoothMarker(step.target) &&
+    only('action', 'target', 'state', 'timeoutMs')
+  ) {
+    const timeoutMs = step.timeoutMs ?? 5000;
+    if (typeof timeoutMs === 'number' && Number.isInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60000)
+      return { index, action: step.action, target: step.target, timeoutMs };
+  }
+  throw new Error('INVALID_BLUETOOTH_STEP');
 }
 
 export async function waitForPage(
@@ -160,9 +156,9 @@ export async function roundTrip(
   let reached = 0;
   const steps: { index: number; action: string; status: string; durationMs: number; error?: string }[] =
     [];
-  for (const [index, step] of script.entries()) {
+  for (const step of script) {
     const started = performance.now();
-    const item = { index: index + 1, action: step.action, status: 'succeeded', durationMs: 0 };
+    const item = { index: step.index, action: step.action, status: 'succeeded', durationMs: 0 };
     try {
       if (step.action === 'launchApp') await device.move('openSettings', { page: 'other' });
       if (step.action === 'route')
@@ -184,7 +180,7 @@ export async function roundTrip(
         error: code,
         durationMs: Math.round(performance.now() - started),
       });
-      return { status: 'failed', reason: code, failedStep: index + 1, steps, evidence };
+      return { status: 'failed', reason: code, failedStep: step.index, steps, evidence };
     }
     progress?.({ kind: 'step', name: step.action, status: 'succeeded' });
     steps.push({ ...item, durationMs: Math.round(performance.now() - started) });

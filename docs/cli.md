@@ -72,17 +72,21 @@ node dist/cli.js run --device "$DEVICE" --script examples/settings-search.json -
 node dist/cli.js waitFor --device "$DEVICE" --label '蓝牙地址' --state visible --timeout-ms 10000
 ```
 
-手写通用脚本使用 `schemaVersion: 1`。步骤支持 `launchApp`、`tap`、`swipe`、`input`、`back` 和 `waitFor`，参数沿用单步命令，JSON 中使用 `fromX`、`durationMs`、`timeoutMs` 等小驼峰字段。可直接写 `id`、`label`、`role`，或用 `target` 引用顶层 `targets` 中按平台定义的选择器。`platforms` 可限定某步适用的平台。iOS 的 `back` 指定页面上的导航或取消按钮，鸿蒙与 Android 使用系统返回键。软件键盘打开时，第一次返回可能只收起键盘。
+手写脚本和新对话录制使用同一种 JSON。CLI 也可以直接重放已有的 V2 录制。顶层包含 `steps`，每一步把 `action` 和参数写在同一个对象里。可在顶层用 `platform` 限定手机平台，或用 `targets` 定义按平台选择的控件，再通过步骤中的 `target` 引用。`platforms` 可限定某一步适用的手机平台。
+
+录制中的 `goHome` 会核对安卓默认主屏幕，`pauseVideoCenter` 会核对同一作品的暂停状态，`verifiedSearch` 会核对实际搜索词和请求的结果。
+
+常用动作有 `launchApp`、`tap`、`swipe`、`input`、`back` 和 `waitFor`。参数沿用单步命令，JSON 中使用 `fromX`、`durationMs`、`timeoutMs` 等小驼峰字段。可用 `id`、`label` 和 `role` 定位控件。iOS 的 `back` 指定页面上的导航或取消按钮，鸿蒙与 Android 使用系统返回键。软件键盘打开时，第一次返回可能只收起键盘。
 
 `waitFor` 等待控件出现（`visible`）或消失（`hidden`）。短暂出现多个同名控件时会继续等待，直到出现唯一匹配项或控件全部消失。超时时，同名冲突仍存在会返回 `AMBIGUOUS_ELEMENT`，界面无法读取会返回对应的读取错误，其余情况返回 `WAIT_TIMEOUT`。
 
 通用脚本按名称或标识操作控件时，遇到定位失败会在原页面重新核对目标，最多尝试三次。已指定 `observation` 的步骤会严格核对该次采集。步骤失败后，报告中的 `failedStep` 指出失败的是第几步（从 1 开始），并附错误码。退出码 0 表示成功，1 表示执行失败，2 表示参数或脚本无效。
 
-`run --script` 也接受工作台导出或 `chat` 保存的对话录制（`schemaVersion: 2`）。选择相同手机平台的兼容设备，并先恢复录制所需的起始界面。涉及画面文字的步骤使用本机识别。 [录制兼容条件](desktop.md#脚本库)
+`run --script` 可直接运行工作台导出或 `chat` 保存的对话录制。录制步骤带有 `inApp`，部分步骤还会检查 `reading` 或 `screen`。选择相同手机平台的兼容设备，并先恢复起始界面。涉及画面文字的步骤使用本机识别。 [录制条件](desktop.md#脚本库)
 
 ## 自由对话
 
-`chat` 使用与工作台相同的对话引擎处理一条自然语言指令。模型配置与下文的 `agent` 相同。默认使用原生控件和本机识别文字，加 `--vision` 才允许模型按需接收手机截图。`--output` 可把已确认的步骤保存为新的 V2 JSON 文件，供 CLI 重放或导入工作台。
+`chat` 使用与工作台相同的对话引擎处理一条自然语言指令。模型配置与下文的 `agent` 相同。默认使用原生控件和本机识别文字，加 `--vision` 才允许模型按需接收手机截图。`--output` 可把已确认的步骤保存为新的脚本文件，供 CLI 重放或导入工作台。
 
 ```sh
 node dist/cli.js chat --device "$DEVICE" --message '打开设置，确认蓝牙是否开启' --output ./recording.json
