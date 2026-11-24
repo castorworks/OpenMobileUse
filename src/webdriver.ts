@@ -296,6 +296,25 @@ export class WebDriver implements Device {
   private async settingsActive() {
     return (await this.foregroundApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
   }
+  private async resolveAndroidActivity(intent: string[]) {
+    const resolved = await run(this.adb, [
+      '-s', this.id, 'shell', 'cmd', 'package', 'resolve-activity', '--brief', '--user', 'current',
+      ...intent,
+    ]);
+    return resolved.split(/\r?\n/).at(-1) ?? '';
+  }
+  async goHome() {
+    if (this.platform !== 'android') throw new Error('HOME_UNAVAILABLE');
+    const component = await this.resolveAndroidActivity([
+      '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.HOME',
+    ]);
+    const [app, activity] = component.split('/');
+    if (!isAppIdentifier(app) || !activity || app === 'android') throw new Error('HOME_UNAVAILABLE');
+    await this.dispatch('goHome', () =>
+      run(this.adb, ['-s', this.id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME']),
+    );
+    return app;
+  }
   async launch(step: LaunchStep) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     if (this.platform === 'ios') {
@@ -311,16 +330,7 @@ export class WebDriver implements Device {
     const intent = settings
       ? ['-a', 'android.settings.SETTINGS']
       : ['-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.LAUNCHER', '-p', step.app];
-    const resolved = await shell(
-      'cmd',
-      'package',
-      'resolve-activity',
-      '--brief',
-      '--user',
-      'current',
-      ...intent,
-    );
-    const component = resolved.split(/\r?\n/).at(-1) ?? '';
+    const component = await this.resolveAndroidActivity(intent);
     const [app, activity] = component.split('/');
     if (!isAppIdentifier(app) || !activity || (settings ? app === 'android' : app !== step.app)) {
       if (!settings) {

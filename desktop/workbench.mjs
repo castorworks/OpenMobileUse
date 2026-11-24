@@ -456,7 +456,9 @@ export class Workbench {
             for (const name of ['foregroundApp', 'observe', 'screenshot', 'close']) {
               watched[name] = device[name].bind(device);
             }
-            for (const name of ['move', 'perform', 'launch', 'back']) {
+            const actions = ['move', 'perform', 'launch', 'back'];
+            if (device.goHome) actions.push('goHome');
+            for (const name of actions) {
               watched[name] = async (...args) => {
                 lastView = undefined;
                 const value = await device[name](...args);

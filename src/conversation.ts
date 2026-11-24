@@ -32,6 +32,7 @@ import {
 
 const instruction = `Operate the selected phone for the user's latest request, using earlier dialogue as context.
 Observe the foreground app, native controls and any locally recognized screen text. Choose one tool, then observe again.
+Use home, when available, to return to the phone's home screen (e.g. 退出到桌面). A dispatched home action has verified the default home screen.
 For games and custom-drawn views use the screenText refs for visible labels that fit the user's intent.
 When the native list lacks the target, use inspect_screen or read_screen_text if offered before asking for help.
 When an image is attached, inspect its actual pixels. Use tap_visual on a distinctive label or icon
@@ -130,6 +131,7 @@ export async function runConversation(
   let visualMiss: { page: string; point: Point } | undefined;
   let lastSwipePreview: Buffer | undefined;
   let lastSwipeView: ReturnType<typeof swipeObservation> | undefined;
+  let lastHomeApp: string | undefined;
   let blocker: BlockedAction | undefined;
   const missingDispatches = new Map<string, BlockedAction>();
   let labelsBeforeSwipe: Set<string> | undefined;
@@ -264,6 +266,8 @@ export async function runConversation(
           evidence: ['foreground', ...targets.keys(), ...screenText.keys()],
         }),
       ];
+      if (platform === 'android' && device.goHome)
+        tools.push(tool(token, 'home', 'Press Android Home and verify the default home screen.', {}));
       if (!inspectScreen && (sendImage || localOCR))
         tools.push(
           tool(
@@ -396,6 +400,7 @@ export async function runConversation(
           const verb = name === 'tap' ? '点击' : '返回';
           description = verb + '「' + (target.node.labels[0] || target.node.id).slice(0, 48) + '」';
         } else if (name === 'launch_app') description = '打开 ' + a.app;
+        else if (name === 'home') description = '回到主屏幕';
         else if (name === 'swipe')
           description =
             '向' +
@@ -468,13 +473,15 @@ export async function runConversation(
               if (name === 'finish') {
                 if (visual)
                   await executeTextTarget(device, identity, fresh, visual.text, 'check', bounded);
-                await record({
-                  inApp: fresh.app,
-                  command: visual
-                    ? { action: 'checkScreenText', text: visual.text }
-                    : { action: 'check', ...target?.selector },
-                  reading: reading(target?.node),
-                });
+                // Home already verified the foreground without depending on one launcher package.
+                if (visual || target || fresh.app !== lastHomeApp)
+                  await record({
+                    inApp: fresh.app,
+                    command: visual
+                      ? { action: 'checkScreenText', text: visual.text }
+                      : { action: 'check', ...target?.selector },
+                    reading: reading(target?.node),
+                  });
                 progress(description, 'observed');
               }
               return {
@@ -487,6 +494,7 @@ export async function runConversation(
           } else {
             let command: Record<string, unknown>;
             if (name === 'launch_app') command = { action: 'launchApp', app: a.app };
+            else if (name === 'home') command = { action: 'goHome' };
             else if (name === 'swipe') {
               const [fromX, fromY, toX, toY] = (
                 {
@@ -520,13 +528,14 @@ export async function runConversation(
               const priorLabels = name === 'swipe'
                 ? new Set(view.controls.flatMap((c) => c.labels))
                 : undefined;
-              await executeStep(
+              const result = await executeStep(
                 device,
                 identity,
                 step,
                 guardObservation(identity, view, step, screenAvailable),
                 bounded,
               );
+              if (result.action === 'goHome') lastHomeApp = result.foregroundApp;
               lastDispatch = signature;
               lastSwipeView = swipeView;
               lastSwipePreview = preview;
@@ -570,6 +579,7 @@ export async function runConversation(
       if (wrappingUp) return partial(blocker?.outcome ?? 'DECISION_BUDGET');
       if (outcome === 'dispatched' && name !== 'wait') {
         stalls = 0;
+        if (name !== 'home') lastHomeApp = undefined;
         // A navigation action can prepare a retry. Only the matching gesture clears a missed swipe.
         missingDispatches.delete('action');
         if (name === 'swipe') missingDispatches.delete(dispatchKey);
@@ -578,7 +588,7 @@ export async function runConversation(
       } else if (outcome !== 'observed' && outcome !== 'dispatched') {
         stalls++;
         blocker = { action: description, outcome: outcome! };
-        if (['swipe', 'tap', 'tap_visual', 'input_text', 'back', 'launch_app'].includes(name))
+        if (['swipe', 'tap', 'tap_visual', 'input_text', 'back', 'launch_app', 'home'].includes(name))
           missingDispatches.set(dispatchKey, blocker);
         if (
           [

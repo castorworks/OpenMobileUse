@@ -60,7 +60,7 @@ export type WaitStep = {
   state: 'visible' | 'hidden';
   timeoutMs: number;
 };
-export type CommandStep = Step | BackStep | WaitStep | LaunchStep;
+export type CommandStep = Step | BackStep | WaitStep | LaunchStep | { kind: 'goHome' };
 export type Step =
   | { kind: 'tap'; selector: Selector }
   | { kind: 'tap'; point: Point }
@@ -71,6 +71,7 @@ export interface StepDevice {
   screenshot(): Promise<Buffer>;
   perform(step: Step, view: View, node?: Control): Promise<void>;
   back(): Promise<void>;
+  goHome?(): Promise<string>;
   launch(step: LaunchStep): Promise<string>;
   foregroundApp(): Promise<string>;
 }
@@ -121,6 +122,7 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
     waitFor: ['id', 'label', 'role', 'state', 'timeout-ms', 'within', 'card-x', 'card-y'],
     back: ['id', 'label', 'role'],
+    goHome: [],
     launch: ['app', 'ability', 'module'],
   };
   const allowed = ['device', 'observation', 'json', ...(byKind[kind] ?? [])];
@@ -129,6 +131,10 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     observation = v.observation;
   if (!device || (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation)))
     throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (kind === 'goHome') {
+    if (!device.startsWith('android:')) throw new Error('HOME_UNAVAILABLE');
+    return { step: { kind } as const, device, observation };
+  }
   if (kind === 'launch') {
     if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
     for (const name of [v.ability, v.module]) {
@@ -235,7 +241,8 @@ function controlsInGestureRegion(view: View, a: Point, b: Point) {
 
 function relevantControls(view: View, scope?: ObservationScope) {
   if (!scope) return view.controls.map(observedControl);
-  if (scope.kind === 'launch' || (scope.kind === 'check' && !scope.selector)) return [];
+  if (scope.kind === 'launch' || scope.kind === 'goHome' || (scope.kind === 'check' && !scope.selector))
+    return [];
   if (scope.kind === 'back' && !scope.selector)
     return view.controls.map(controlState);
   if ('selector' in scope && scope.selector && (scope.selector.id || scope.selector.label)) {
@@ -411,15 +418,16 @@ export async function executeStep(
     else if (expected && expected !== id) throw new Error('STALE_OBSERVATION');
     return id;
   }
-  if (step.kind === 'launch') {
+  if (step.kind === 'launch' || step.kind === 'goHome') {
     const id = expected ? validate(await device.snapshot()) : undefined;
     signal?.throwIfAborted();
-    const targetApp = await device.launch(step);
+    const targetApp = step.kind === 'launch' ? await device.launch(step) : await device.goHome?.();
+    if (!targetApp) throw new Error('HOME_UNAVAILABLE');
     const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp);
     return {
       action: step.kind,
       status: 'succeeded',
-      requestedApp: step.app,
+      ...(step.kind === 'launch' ? { requestedApp: step.app } : {}),
       targetApp,
       foregroundApp,
       foregroundVerified: true,

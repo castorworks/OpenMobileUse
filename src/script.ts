@@ -25,7 +25,7 @@ const strings = ['app', 'id', 'label', 'role', 'within', 'text', 'state', 'modul
 export async function compileStep(raw: unknown, platform: Platform) {
   if (!object(raw) || typeof raw.action !== 'string') throw new Error('INVALID_STEP');
   const kind = raw.action === 'launchApp' ? 'launch' : raw.action;
-  if (!['launch', 'tap', 'swipe', 'input', 'waitFor', 'back'].includes(kind))
+  if (!['launch', 'tap', 'swipe', 'input', 'waitFor', 'back', 'goHome'].includes(kind))
     throw new Error('UNKNOWN_STEP');
   const args = ['--device', platform + ':script'];
   for (const [key, value] of Object.entries(raw)) {

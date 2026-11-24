@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
-import { compileRecording } from '../dist/recording.js';
+import { compileRecording, replayRecording } from '../dist/recording.js';
 import { captureView } from '../dist/inspect.js';
 
 function control(id, role = 'Stack', bounds = { x: 0, y: 0, width: 10, height: 10 }) {
@@ -67,6 +67,34 @@ async function run(device, choose, useImages = false) {
   );
   return { result, records, events };
 }
+
+test('Android Home is verified and replays with a different starting app and default launcher', async () => {
+  const device = phone([control('player')]);
+  let launcher = 'example.launcher';
+  let presses = 0;
+  device.goHome = async () => {
+    presses++;
+    device.view.app = launcher;
+    return launcher;
+  };
+  device.foregroundApp = async () => device.view.app;
+  const { result, records } = await run(device, (obs, tools) => {
+    if (obs.app === launcher) return ['finish', { evidence: 'foreground', message: '已回到主屏幕。' }];
+    assert.ok(tools.includes('home'));
+    return ['home', {}];
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.equal(presses, 1);
+  assert.deepEqual(records.map((step) => step.command), [{ action: 'goHome' }]);
+
+  const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: records }, 'android');
+  device.view.app = 'example.other';
+  launcher = 'example.customhome';
+  const replay = await replayRecording(device, 'android:test', steps, new AbortController().signal, () => {});
+  assert.equal(replay.status, 'succeeded');
+  assert.equal(device.view.app, launcher);
+  assert.equal(presses, 2);
+});
 
 test('a late toolbar icon is offered ahead of layout wrappers', async () => {
   const controls = Array.from({ length: 90 }, (_, i) => control('layout' + i));

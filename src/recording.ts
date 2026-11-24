@@ -154,7 +154,7 @@ export async function compileRecording(data: unknown, platform: Platform): Promi
       continue;
     }
     const { step, observation } = await compileStep(command, platform);
-    if (observation || !['tap', 'input', 'swipe', 'back', 'launch'].includes(step.kind))
+    if (observation || !['tap', 'input', 'swipe', 'back', 'launch', 'goHome'].includes(step.kind))
       throw Error('INVALID_RECORDING');
     const selector = 'selector' in step ? step.selector : undefined;
     if (source.reading && !selector) throw Error('INVALID_RECORDING');
@@ -181,8 +181,8 @@ export async function replayRecording(
         screenAvailable(view);
         const hits = selector ? matchingControls(view, selector) : [];
         const node = hits[0];
-        // A launch is independent of the starting app. Other operations must match the recording.
-        const sameApp = step?.kind === 'launch' || source.inApp === view.app;
+        // Launch and Home are independent of the starting app.
+        const sameApp = step?.kind === 'launch' || step?.kind === 'goHome' || source.inApp === view.app;
         const g = source.screen;
         const samePage =
           !g ||
