@@ -6,6 +6,10 @@ import { recordStep, reading, type RecordedStep } from './recording.js';
 import { executeTextTarget, readScreenText } from './screen-text.js';
 import { pauseVideoCenter, readVideoPlayer } from './video-player.js';
 import {
+  executeVerifiedSearch, firstSearchResult, requestedSearch, searchFailureMessage, searchField, searchForm,
+  searchReport, type SearchEvidence, type SearchRequest,
+} from './verified-search.js';
+import {
   imageFrame,
   modelImage,
   imageTarget,
@@ -48,6 +52,8 @@ Prefer a matching native control, including an icon identified by its id. After 
 the fresh observation to try another route toward the same goal. Controls marked atVisualTarget
 overlap the previous visual point; choose one only if its identity fits. For a moving background
 prefer a native ref, readable text, or a different stable entry. Never guess a position.
+When verified_search is offered, it reads back the requested term, submits it and verifies the results.
+Choose report when only the search and its result are requested, or continue if other work follows.
 For browsing tasks establish the requested search or filter first. On each swipe you can save a short
 note in the user's language identifying the current relevant item and what you actually learned.
 Count distinct observed items, never gestures or changing frames. Use the saved notes in the summary.
@@ -86,7 +92,7 @@ async function observe(device: StepDevice, signal: AbortSignal): Promise<View> {
   }
 }
 
-type Dialogue = { user: string; assistant?: string };
+type Dialogue = { user: string; assistant?: string; reason?: string };
 type BlockedAction = { action: string; outcome: string };
 const turnLimit = 1000;
 const observationItemLimit = 1000;
@@ -131,6 +137,12 @@ export async function runConversation(
   const bounded = AbortSignal.any([signal, AbortSignal.timeout(conversationTimeLimitMs)]);
   const history: History = [];
   const context = dialogue.slice();
+  let searchTurn = context.length - 1;
+  while (searchTurn > 0 && context[searchTurn - 1].reason === 'SEARCH_NOT_SUBMITTED' &&
+    /^(?:继续|重试|再试一次|continue|retry)[。！!.]?$/i.test(context[searchTurn].user.trim())) searchTurn--;
+  const searchRequest = requestedSearch(context[searchTurn]?.user ?? '');
+  let searchEvidence: (SearchEvidence & { app: string }) | undefined;
+  let requestedFinishTool = false;
   const notes = new Set<string>();
   let visualMiss: { page: string; point: Point } | undefined;
   let lastSwipePreview: Buffer | undefined;
@@ -167,6 +179,10 @@ export async function runConversation(
       answer: findings + stop + detail,
       modelCalls,
     };
+  }
+  function incompleteSearch(view: View, request: SearchRequest) {
+    const failure = { reason: 'SEARCH_NOT_SUBMITTED' as const, actual: searchField(view)?.value };
+    return { status: 'needs_review', reason: failure.reason, answer: searchFailureMessage(request, failure), modelCalls };
   }
   try {
     for (let turn = 0; turn < turnLimit; turn++) {
@@ -216,6 +232,7 @@ export async function runConversation(
       if (newLabelRefs.length) inspectTextInApp = '';
       const tappable = refs((n) => n.enabled);
       const player = platform === 'android' ? readVideoPlayer(view) : undefined;
+      const form = searchRequest && !searchEvidence ? searchForm(view) : undefined;
       const inspectScreen = !tappable.length || inspectTextInApp === view.app;
       const sendImage = useImages && !imageRejected;
       const localOCR = process.platform === 'darwin';
@@ -326,6 +343,13 @@ export async function runConversation(
         tools.push(
           tool(token, 'back', 'Navigate back.', platform === 'ios' ? { target: navigation } : {}),
         );
+      if (form) {
+        // A raw tap on this form could submit an old query or choose an autocomplete suggestion.
+        tools = tools.filter(t => !['tap', 'tap_visual', 'input_text'].includes(t.function.name));
+        tools.push(tool(token, 'verified_search', 'Replace and verify the term, submit the search and read the requested result. Report ends the task with actual phone readings.', {
+          next: ['report', 'continue'],
+        }));
+      }
       const observation = {
         app: view.app,
         appTitle: view.controls
@@ -333,6 +357,7 @@ export async function runConversation(
           ?.labels[0]?.slice(0, 140),
         controls,
         videoPlayer: player ? { title: player.title.slice(0, 140), state: player.state, evidence: player.evidence } : undefined,
+        searchTask: searchRequest && { ...searchRequest, actual: form?.field.value, verified: searchEvidence },
         newLabelRefs: newLabelRefs.length ? newLabelRefs : undefined,
         observationId: token,
         textStatus,
@@ -347,7 +372,9 @@ export async function runConversation(
         ...observation,
         savedNotes: [...notes],
         lastBlocker: blocker,
-        nextDecision: wrappingUp
+        nextDecision: requestedFinishTool
+          ? 'Use finish with evidence if all requested steps are verified, or ask_user if more help is needed.'
+          : wrappingUp
           ? 'Report verified results. If incomplete, give the partial findings and ask for specific help.'
           : blocker
             ? 'Check what changed. Choose a different evidenced route toward the original goal.'
@@ -379,7 +406,17 @@ export async function runConversation(
         continue;
       }
       bounded.throwIfAborted();
-      if (!reply.tool_calls.length) return { status: 'needs_review', answer: reply.content, modelCalls };
+      if (!reply.tool_calls.length) {
+        if (searchRequest && !searchEvidence) return incompleteSearch(view, searchRequest);
+        if (searchEvidence && !requestedFinishTool) {
+          requestedFinishTool = true;
+          remember(history, observation, reply, []);
+          continue;
+        }
+        return { status: 'needs_review', modelCalls, answer: searchEvidence
+          ? searchReport(searchEvidence) + '本轮其余要求尚未确认完成。' : reply.content };
+      }
+      requestedFinishTool = false;
       const call = reply.tool_calls[0],
         name = call.function.name;
       let outcome =
@@ -391,14 +428,34 @@ export async function runConversation(
       if (!outcome) {
         const a = JSON.parse(call.function.arguments);
         if (name === 'swipe') dispatchKey = a.direction;
+        let finishView: View | undefined;
+        if (searchRequest && (name === 'finish' || name === 'finish_visual')) {
+          finishView = await observe(device, bounded);
+          screenAvailable(finishView);
+          if (!searchEvidence) return incompleteSearch(finishView, searchRequest);
+          const current = finishView.app === searchEvidence.app ? searchField(finishView) : undefined;
+          const lastWasSearch = lastDispatch === JSON.stringify([searchEvidence.app, 'verifiedSearch', searchEvidence.query]);
+          if (searchRequest.firstResult && (current || lastWasSearch) && (!current ||
+            current.value !== searchEvidence.query || firstSearchResult(finishView, current) !== searchEvidence.first)) {
+            const failure = { reason: 'SEARCH_RESULTS_UNVERIFIED' as const, actual: current?.value };
+            return { status: 'needs_review', reason: failure.reason, answer: searchFailureMessage(searchRequest, failure), modelCalls };
+          }
+          if (searchEvidence.first && (!a.message.includes(searchEvidence.first) || !a.message.includes(searchEvidence.query)))
+            a.message = lastWasSearch ? searchReport(searchEvidence) : a.message + '\n' + searchReport(searchEvidence);
+        }
         const missing = missingDispatches.values().next().value;
         if ((name === 'finish' || name === 'finish_visual') && missing)
           return partial(missing.outcome, missing);
         const target = targets.get(a.target || a.evidence);
         const visual = screenText.get(a.target || a.evidence);
+        if (name === 'input_text' && target)
+          dispatchKey = JSON.stringify(['input', view.app, target.selector, a.text]);
+        if (name === 'verified_search' && form && searchRequest)
+          dispatchKey = JSON.stringify(['input', view.app, form.input, searchRequest.query]);
         if (name === 'swipe' && a.note?.trim()) notes.add(a.note.trim());
         if (name === 'inspect_screen') description = '查看手机画面';
         else if (name === 'pause_video_center') description = '点击视频中央并核对暂停状态';
+        else if (name === 'verified_search' && searchRequest) description = '核对搜索词并搜索「' + searchRequest.query + '」';
         else if (name === 'tap_visual')
           description = '点击画面上的「' + a.label.trim().slice(0, 48) + '」';
         else if (name === 'finish_visual') description = '核对手机画面';
@@ -424,6 +481,24 @@ export async function runConversation(
           if (name === 'read_screen_text' || name === 'inspect_screen') {
             inspectTextInApp = view.app;
             outcome = 'observed';
+          } else if (name === 'verified_search' && form && searchRequest) {
+            const evidence = await executeVerifiedSearch(device, identity, view, searchRequest, bounded);
+            if ('reason' in evidence) {
+              progress(description, evidence.reason);
+              return { status: 'needs_review', reason: evidence.reason, answer: searchFailureMessage(searchRequest, evidence), modelCalls };
+            }
+            searchEvidence = { ...evidence, app: view.app };
+            await record(recordStep(view, { action: 'verifiedSearch', ...searchRequest }));
+            lastDispatch = JSON.stringify([view.app, 'verifiedSearch', evidence.query]);
+            outcome = 'dispatched';
+            if (a.next === 'report') {
+              progress(description, outcome);
+              missingDispatches.delete('action');
+              missingDispatches.delete(dispatchKey);
+              const missed = missingDispatches.values().next().value;
+              if (missed) return partial(missed.outcome, missed);
+              return { status: 'succeeded', answer: searchReport(evidence), modelCalls };
+            }
           } else if (name === 'pause_video_center' && player) {
             verifiedPause = await pauseVideoCenter(device, identity, view, player.key, bounded);
             await record(recordStep(view, { action: 'pauseVideoCenter', item: player.key }));
@@ -437,7 +512,7 @@ export async function runConversation(
             const signature = JSON.stringify([view.app, view.window, anchor]);
             if (tap && signature === lastDispatch) outcome = 'NO_PROGRESS';
             else {
-              const fresh = await observe(device, bounded);
+              const fresh = finishView ?? await observe(device, bounded);
               guardObservation(identity, view, { kind: 'check' }, screenAvailable)(fresh);
               await executeImageTarget(device, identity, fresh, anchor, tap, bounded);
               await record(
@@ -471,7 +546,7 @@ export async function runConversation(
               outcome = 'dispatched';
             }
           } else if (name === 'ask_user' || name === 'finish' || name === 'wait') {
-            const fresh = await observe(device, bounded);
+            const fresh = finishView ?? await observe(device, bounded);
             bounded.throwIfAborted();
             guardObservation(
               identity,
@@ -607,7 +682,7 @@ export async function runConversation(
         if (name !== 'home') lastHomeApp = undefined;
         // A navigation action can prepare a retry. Only the matching gesture clears a missed swipe.
         missingDispatches.delete('action');
-        if (name === 'swipe') missingDispatches.delete(dispatchKey);
+        missingDispatches.delete(dispatchKey);
         blocker = missingDispatches.values().next().value;
         visualMiss = undefined;
       } else if (outcome !== 'observed' && outcome !== 'dispatched') {

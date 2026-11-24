@@ -5,6 +5,7 @@ import { compileStep, object, reason } from './script.js';
 import { executeTextTarget } from './screen-text.js';
 import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
 import { pauseVideoCenter } from './video-player.js';
+import { executeVerifiedSearch, type SearchRequest } from './verified-search.js';
 import {
   executeStep,
   guardObservation,
@@ -66,6 +67,7 @@ type PlaybackStep = {
   screenText?: string;
   image?: ImageTarget;
   videoItem?: string;
+  search?: SearchRequest;
 };
 
 export async function compileRecording(data: unknown, platform: Platform): Promise<PlaybackStep[]> {
@@ -127,6 +129,13 @@ export async function compileRecording(data: unknown, platform: Platform): Promi
       parsed.push({ source, screenText: command.text });
       continue;
     }
+    if (command.action === 'verifiedSearch') {
+      if (Object.keys(command).length !== 3 || typeof command.query !== 'string' || !command.query.trim() ||
+        command.query.length > 200 || typeof command.firstResult !== 'boolean' || source.reading || source.screen)
+        throw Error('INVALID_RECORDING');
+      parsed.push({ source, search: { query: command.query, firstResult: command.firstResult } });
+      continue;
+    }
     if (command.action === 'pauseVideoCenter') {
       if (platform !== 'android' || Object.keys(command).length !== 2 || typeof command.item !== 'string' ||
         !/^[a-f0-9]{64}$/.test(command.item) || source.reading || source.screen) throw Error('INVALID_RECORDING');
@@ -178,7 +187,7 @@ export async function replayRecording(
   signal: AbortSignal,
   progress: Progress,
 ) {
-  for (const [index, { source, step, selector, screenText, image, videoItem }] of steps.entries()) {
+  for (const [index, { source, step, selector, screenText, image, videoItem, search }] of steps.entries()) {
     const name = String(source.command.action);
     try {
       const deadline = Date.now() + 8000;
@@ -209,7 +218,10 @@ export async function replayRecording(
               (source.reading?.value === undefined || node.value === source.reading.value)))
         ) {
           try {
-            if (videoItem) {
+            if (search) {
+              const verified = await executeVerifiedSearch(device, identity, view, search, signal);
+              if ('reason' in verified) throw Error(verified.reason);
+            } else if (videoItem) {
               await pauseVideoCenter(device, identity, view, videoItem, signal);
             } else if (image) {
               await executeImageTarget(device, identity, view, image, name === 'tapImage', signal);

@@ -477,7 +477,7 @@ export class Workbench {
             if (conversational) {
               const dialogue = chat.turns
                 .slice(-8)
-                .map(({ user, assistant, reason }) => ({ user, assistant: assistant || reason }));
+                .map(({ user, assistant, reason }) => ({ user, assistant: assistant || reason, reason }));
               const capture = async (item) => {
                 chat.script.steps.push(item);
                 await persist();
