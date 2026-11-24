@@ -309,34 +309,41 @@ export class Workbench {
         throw Error('INVALID_ACTION');
       const { step } = await compileStep(raw, t.platform);
       return this.session(t, randomUUID(), null, 'foreground', async (device) => {
-        const frame = this.frames.get(id);
-        if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
-        const view = frame.view;
-        const chat = chatId ? await loadConversation(id, chatId) : null;
-        const validate = guardObservation(id, view, step, chat ? screenAvailable : undefined);
-        // A screenshot falls between two layout reads. Check the actual gesture region on both sides.
-        if (frame.before && (step.kind === 'swipe' || 'point' in step)) validate(frame.before);
-        let item;
-        if (chat) {
-          if (chat.script.steps.length >= maxRecordingSteps) throw Error('RECORDING_FULL');
-          screenAvailable(view);
-          const node = step.selector && resolveControl(view, step.selector, step.kind === 'input');
-          if (node && !raw.id && !raw.label) {
-            const selector = uniqueSelector(view, node);
-            if (!selector) throw Error('RECORDING_TARGET_UNAVAILABLE');
-            raw = { ...raw, ...selector };
+        let result;
+        try {
+          const frame = this.frames.get(id);
+          if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
+          const view = frame.view;
+          const chat = chatId ? await loadConversation(id, chatId) : null;
+          const validate = guardObservation(id, view, step, chat ? screenAvailable : undefined);
+          // A screenshot falls between two layout reads. Check the actual gesture region on both sides.
+          if (frame.before && (step.kind === 'swipe' || 'point' in step)) validate(frame.before);
+          let item;
+          if (chat) {
+            if (chat.script.steps.length >= maxRecordingSteps) throw Error('RECORDING_FULL');
+            screenAvailable(view);
+            const node = step.selector && resolveControl(view, step.selector, step.kind === 'input');
+            if (node && !raw.id && !raw.label) {
+              const selector = uniqueSelector(view, node);
+              if (!selector) throw Error('RECORDING_TARGET_UNAVAILABLE');
+              raw = { ...raw, ...selector };
+            }
+            item = recordStep(view, raw, node);
           }
-          item = recordStep(view, raw, node);
+          result = await executeStep(device, id, step, validate);
+          if (chat) {
+            chat.script.steps.push(item);
+            chat.updated = new Date().toISOString();
+            await saveConversation(id, chat).catch(() => {
+              throw Error('RECORDING_WRITE_FAILED');
+            });
+          }
+        } catch (error) {
+          if (step.kind !== 'tap' || reason(error) !== 'STALE_OBSERVATION') throw error;
+          this.frames.delete(id);
+          result = { action: 'tap', status: 'cancelled', reason: 'STALE_OBSERVATION' };
         }
-        const result = await executeStep(device, id, step, validate);
-        if (chat) {
-          chat.script.steps.push(item);
-          chat.updated = new Date().toISOString();
-          await saveConversation(id, chat).catch(() => {
-            throw Error('RECORDING_WRITE_FAILED');
-          });
-        }
-        // Keep a confirmed write distinct from a subsequent capture failure.
+        // Capture on the open session. A failed preview cannot change the tap outcome.
         try {
           return { result, frame: await this.frame(device, id) };
         } catch (e) {

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import sharp from 'sharp';
 import { Workbench } from '../desktop/workbench.mjs';
 import { openDevice } from '../dist/doctor.js';
 import { guardObservation, screenAvailable } from '../dist/steps.js';
@@ -84,4 +85,77 @@ test('an existing v2 recording replays a swipe across player edge jitter', async
   }, 'android:test', steps, new AbortController().signal, () => {});
   assert.equal(result.status, 'succeeded');
   assert.equal(moves, 1);
+});
+
+async function previewFixture(t) {
+  const id = 'android:preview';
+  const wb = new Workbench(() => {});
+  wb.targets.set(id, { id: 'preview', platform: 'android', available: true });
+  const button = (id, text, x, y) => ({
+    id, role: 'android.widget.Button', labels: [text], bounds: { x, y, width: 24, height: 24 },
+    enabled: true, focused: false, editable: false, secret: false,
+  });
+  const video = { ...player(), screen: { page: 'other' }, width: 100, height: 200,
+    controls: [button('comments', '评论', 70, 100)] };
+  const panel = { ...video, controls: [...video.controls, button('reply', '回复', 70, 100), button('close', '关闭', 60, 50)] };
+  const image = await sharp({ create: { width: 100, height: 200, channels: 3, background: 'black' } }).png().toBuffer();
+  const taps = [];
+  const phone = {
+    view: video,
+    snapshot: async () => phone.view,
+    screenshot: async () => image,
+    perform: async (step, view, node) => { taps.push(node?.id ?? step.point); phone.view = video; },
+  };
+  const session = t.mock.method(wb, 'session', async (_target, _run, _signal, _mode, work) => work(phone));
+  const preview = await wb.frame(phone, id);
+  return { id, wb, phone, panel, taps, session, preview };
+}
+
+test('a covered preview tap is cancelled and returns a fresh actionable panel in the same session', async t => {
+  for (const location of [{ x: 0.82, y: 0.56 }, { id: 'comments', role: 'android.widget.Button' }]) {
+    const { id, wb, phone, panel, taps, session, preview } = await previewFixture(t);
+    phone.view = panel;
+    const capture = t.mock.method(phone, 'screenshot');
+    const recovery = await wb.action(id, { action: 'tap', ...location }, preview.observationId);
+    assert.equal(recovery.result.status, 'cancelled');
+    assert.equal(recovery.result.reason, 'STALE_OBSERVATION');
+    assert.deepEqual(taps, []);
+    assert.equal(session.mock.callCount(), 1);
+    assert.equal(capture.mock.callCount(), 1);
+    assert.notEqual(recovery.frame.observationId, preview.observationId);
+    assert.ok(recovery.frame.controls.some(c => c.id === 'close'));
+    const next = await wb.action(id, { action: 'tap', id: 'close' }, recovery.frame.observationId);
+    assert.equal(next.result.status, 'succeeded');
+    assert.deepEqual(taps, ['close']);
+  }
+});
+
+test('an unavailable replacement frame leaves a stale tap cancelled and invalidates its preview', async t => {
+  const { id, wb, phone, panel, taps, preview } = await previewFixture(t);
+  phone.view = panel;
+  phone.screenshot = async () => { throw Error('SCREENSHOT_UNAVAILABLE'); };
+  const recovery = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId);
+  assert.equal(recovery.result.status, 'cancelled');
+  assert.equal(recovery.captureError, 'SCREENSHOT_UNAVAILABLE');
+  assert.equal(recovery.frame, undefined);
+  assert.equal(wb.frames.has(id), false);
+  assert.deepEqual(taps, []);
+});
+
+test('a tap with a missing dispatch receipt is never reported as a cancelled stale tap', async t => {
+  const { id, wb, phone, preview } = await previewFixture(t);
+  const dispatched = t.mock.method(phone, 'perform', async () => { throw Error('ACTION_OUTCOME_UNKNOWN'); });
+  const capture = t.mock.method(phone, 'screenshot');
+  await assert.rejects(wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId), /ACTION_OUTCOME_UNKNOWN/);
+  assert.equal(dispatched.mock.callCount(), 1);
+  assert.equal(capture.mock.callCount(), 0);
+});
+
+test('a stale screenshot after a confirmed tap preserves the successful action and its receipt', async t => {
+  const { id, wb, preview, taps } = await previewFixture(t);
+  t.mock.method(wb, 'frame', async () => { throw Error('STALE_OBSERVATION'); });
+  const { result, captureError } = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(captureError, 'STALE_OBSERVATION');
+  assert.deepEqual(taps, ['comments']);
 });

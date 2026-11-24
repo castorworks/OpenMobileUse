@@ -647,6 +647,17 @@ async function action(raw) {
         if (loc.within || hits.length === 1) raw = { action: 'tap', ...loc };
       }
       r = await api.action(id, raw, observation, chatId || undefined);
+      if (r.result.status === 'cancelled' && r.result.reason === 'STALE_OBSERVATION') {
+        markFrame(id, r.frame || null);
+        message(
+          id,
+          r.frame
+            ? '手机画面已变化，本次点击已取消。已刷新画面，请重新选择。'
+            : '手机画面已变化，本次点击已取消。自动刷新失败，请点「刷新画面」重试。' + describe(r.captureError),
+          'warning',
+        );
+        return;
+      }
       if (chatId) {
         await refreshLibrary(id, chatId);
         if (workspaceMode === 'script') await refreshScripts();
