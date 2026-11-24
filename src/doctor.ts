@@ -1,4 +1,4 @@
-import { adbPath, hdc, agentToolchain, type Target } from './host.js';
+import { adbPath, hdcToolchain, agentToolchain, type Target } from './host.js';
 import { Harmony } from './harmony.js';
 import { WebDriver } from './webdriver.js';
 import { pending, withDevice, type Dispatch } from './session.js';
@@ -59,7 +59,12 @@ export async function doctor(target: Target, runId: string, prepareAppium?: () =
     connected: target.available,
     controllable: false,
     unconfirmed: pending(target),
-    bridge: target.platform === 'android' ? adbPath() : target.platform === 'harmony' ? hdc : 'xcrun',
+    bridge:
+      target.platform === 'android'
+        ? adbPath()
+        : target.platform === 'harmony'
+          ? hdcToolchain().executable
+          : 'xcrun',
     probes: [] as {
       stage: string;
       ok: boolean;
@@ -108,7 +113,7 @@ export async function doctor(target: Target, runId: string, prepareAppium?: () =
         const v = await device.snapshot();
         report.current = {
           app: v.app,
-          page: v.screen.page,
+          page: device.settingsScreen(v).page,
           observationId: observationId(target.platform + ':' + target.id, v),
         };
         record(true);

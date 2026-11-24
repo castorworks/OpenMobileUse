@@ -1,15 +1,44 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 const exec = promisify(execFile);
-export const hdc =
-  process.env.HDC_PATH ||
-  (process.platform === 'win32'
-    ? 'hdc.exe'
-    : '/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc');
+export function hdcToolchain() {
+  const env = process.env;
+  const windows = process.platform === 'win32';
+  const override = env.HDC_PATH;
+  const name = override || (windows ? 'hdc.exe' : 'hdc');
+  const executable = windows && !extname(name) ? name + '.exe' : name;
+  const installDirectories = windows
+    ? [env.ProgramFiles, env['ProgramFiles(x86)']]
+        .filter((dir): dir is string => !!dir)
+        .map((dir) => join(dir, 'Huawei', 'DevEco Studio', 'sdk'))
+    : ['/Applications', join(homedir(), 'Applications')]
+        .map((dir) => join(dir, 'DevEco-Studio.app', 'Contents', 'sdk'));
+  const defaults = installDirectories.map((dir) =>
+    join(dir, 'default', 'openharmony', 'toolchains', windows ? 'hdc.exe' : 'hdc'),
+  );
+  const candidates = override ? [override, ...(executable === override ? [] : [executable])] : defaults.slice();
+  if (!/[\\/]/.test(name)) {
+    for (const directory of (env.PATH || '').split(delimiter)) {
+      if (directory) candidates.push(join(directory.replace(/^"(.*)"$/, '$1'), executable));
+    }
+  }
+  const found = candidates.find((file) => {
+    try {
+      accessSync(file, constants.X_OK);
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  });
+  return {
+    executable: found ? resolve(found) : override || (windows ? executable : defaults[0]),
+    available: found !== undefined,
+  };
+}
 export function adbPath() {
   const env = process.env;
   const windows = process.platform === 'win32';
@@ -49,6 +78,7 @@ export interface Target {
 }
 export async function agentToolchain(target: Target) {
   if (target.platform === 'harmony') {
+    const { executable: hdc } = hdcToolchain();
     const [bridge, version] = await Promise.all([
       run(hdc, ['-v']),
       run(hdc, ['-t', target.id, 'shell', 'uitest', '--version']),
@@ -88,6 +118,7 @@ export async function list(platform: Platform): Promise<Target[]> {
       }));
   }
   if (platform === 'harmony') {
+    const { executable: hdc } = hdcToolchain();
     const lines = (await run(hdc, ['list', 'targets', '-v'])).split('\n');
     const targets = lines
       .map((l) => l.trim().split(/\s+/))

@@ -3,6 +3,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { tool, decode } from './agent-tools.js';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
 import { compileStep, object, reason } from './script.js';
+import { isTargetUnavailable, isTransientObservation, readObservation } from './observation.js';
+import { screenshotSize } from './inspect.js';
 import {
   executeStep,
   isAppIdentifier,
@@ -153,10 +155,8 @@ async function crop(device: StepDevice, task: Task, v: View, selector: Selector,
   if (observationId(identity, after) !== observationId(identity, v))
     throw new Error('STALE_OBSERVATION');
   const { default: sharp } = await import('sharp');
+  const { width, height } = screenshotSize(raw, v);
   const png = sharp(raw, { limitInputPixels: 32000000 });
-  const { width, height, format } = await png.metadata();
-  if (format !== 'png' || !width || !height || Math.abs(width / v.width - height / v.height) > 0.02)
-    throw new Error('SCREENSHOT_GEOMETRY_MISMATCH');
   const left = Math.max(0, Math.ceil((b.x * width) / v.width)),
     top = Math.max(0, Math.ceil((b.y * height) / v.height));
   const right = Math.min(width, Math.floor(((b.x + b.width) * width) / v.width)),
@@ -166,7 +166,10 @@ async function crop(device: StepDevice, task: Task, v: View, selector: Selector,
     .extract({ left, top, width: right - left, height: bottom - top })
     .resize({ width: 768, height: 768, fit: 'inside', withoutEnlargement: true })
     .png()
-    .toBuffer();
+    .toBuffer()
+    .catch(() => {
+      throw Error('INVALID_PNG');
+    });
   if (data.length > 1_000_000) throw new Error('IMAGE_BUDGET');
   return {
     url: 'data:image/png;base64,' + data.toString('base64'),
@@ -196,6 +199,7 @@ export async function runTask(
     decisions = 0,
     lastAction = '',
     lastStall = '',
+    lastDispatch = '',
     image: Awaited<ReturnType<typeof crop>> | undefined,
     imageToken = '',
     imageAction = '',
@@ -214,14 +218,14 @@ export async function runTask(
     signal.throwIfAborted();
     if (Date.now() >= deadline) throw new Error('TIME_BUDGET');
   };
+  const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(task.limits.ms)]);
   const read = async () => {
     time();
-    const v = await device.snapshot();
+    const v = await readObservation(() => device.snapshot(), boundedSignal);
     scope(task, v);
     time();
     return v;
   };
-  const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(task.limits.ms)]);
   try {
     while (true) {
       const v = await read(),
@@ -321,10 +325,22 @@ export async function runTask(
         if (name === 'finish') outcome = 'MISSING_CHECKPOINTS';
         if (name === 'wait') await sleep(200, undefined, { signal: boundedSignal });
         if (name === 'request_view' && a?.step.kind === 'tap' && 'selector' in a.step) {
-          image = await crop(device, task, current, a.step.selector, identity);
-          imageToken = token;
-          imageAction = a.name;
-          sourceCall = call.id;
+          const selector = a.step.selector;
+          image = undefined;
+          try {
+            image = await readObservation(
+              () => crop(device, task, current, selector, identity),
+              boundedSignal,
+            );
+            imageToken = token;
+            imageAction = a.name;
+            sourceCall = call.id;
+          } catch (error) {
+            const code = reason(error);
+            if (!isTransientObservation(code) && !isTargetUnavailable(code) && code !== 'IMAGE_BUDGET')
+              throw error;
+            outcome = code;
+          }
         }
         if (a && (name === 'act' || name === 'tap_visual')) {
           let step = a.step;
@@ -338,10 +354,31 @@ export async function runTask(
             };
           }
           time();
-          await executeStep(device, identity, step, token, boundedSignal);
-          lastAction = a.name;
+          const signature = JSON.stringify([token, step, evidence.length]);
+          if (step.kind !== 'waitFor' && signature === lastDispatch) outcome = 'NO_PROGRESS';
+          else {
+            try {
+              await executeStep(device, identity, step, token, boundedSignal, (view) => {
+                scope(task, view);
+                if (view.app !== a.app) throw Error('STALE_OBSERVATION');
+              });
+              lastAction = a.name;
+              if (step.kind !== 'waitFor') lastDispatch = signature;
+              outcome = 'dispatched';
+            } catch (error) {
+              const code = reason(error);
+              const canReplan =
+                isTargetUnavailable(code) ||
+                isTransientObservation(code) ||
+                (step.kind === 'waitFor' && code === 'WAIT_TIMEOUT') ||
+                (step.kind === 'launch' &&
+                  ['APP_NOT_INSTALLED', 'APP_NOT_LAUNCHABLE', 'APP_LAUNCH_REJECTED', 'AMBIGUOUS_APP_ENTRY'].includes(code));
+              if (!canReplan) throw error;
+              lastAction = '';
+              outcome = code;
+            }
+          }
           image = undefined;
-          outcome = 'dispatched';
         }
       }
       const status = outcome || 'observed';
@@ -369,12 +406,9 @@ export async function runTask(
     const last = actions.at(-1);
     if (last?.outcome === 'pending') last.outcome = code;
     return result(
-      [
-        'APP_OUT_OF_SCOPE',
-        'SENSITIVE_OR_BLOCKED_SCREEN',
-        'STALE_OBSERVATION',
-        'SCREENSHOT_GEOMETRY_MISMATCH',
-      ].includes(code)
+      isTransientObservation(code) ||
+        code === 'APP_OUT_OF_SCOPE' ||
+        code === 'SENSITIVE_OR_BLOCKED_SCREEN'
         ? 'needs_review'
         : 'failed',
       code,

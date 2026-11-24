@@ -1,6 +1,11 @@
 import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { readObservation } from './observation.js';
 import { observationId, visibleCenter, type StepDevice, type View } from './steps.js';
+
+type CaptureDevice = StepDevice & {
+  settingsScreen?(view: View): { page: string; marker?: string };
+};
 
 function sameWindow(a: View, b: View) {
   return (
@@ -26,20 +31,17 @@ export function screenshotSize(image: Buffer, view: View) {
   return { width, height };
 }
 
-export async function captureView(device: StepDevice, identity: string, initialView?: View) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    let before: View, view: View, image: Buffer;
-    try {
-      before = attempt === 0 && initialView ? initialView : await device.snapshot();
-      image = await device.screenshot();
-      view = await device.snapshot();
-    } catch (error) {
-      if ((error as Error).message === 'STALE_OBSERVATION' && attempt === 0) continue;
-      throw error;
-    }
-    if (!sameWindow(before, view)) continue;
+export async function captureView(device: CaptureDevice, identity: string, initialView?: View) {
+  return readObservation(async () => {
+    const before = initialView ?? await device.snapshot();
+    initialView = undefined;
+    const image = await device.screenshot();
+    const view = await device.snapshot();
+    if (!sameWindow(before, view)) throw Error('STALE_OBSERVATION');
     const { width, height } = screenshotSize(image, view);
     const token = observationId(identity, view);
+    // Keep the CLI diagnostics fields without making Settings classification part of every snapshot.
+    const settings = device.settingsScreen?.(view);
     const metadata = {
       observationId: token,
       controlsChangedDuringCapture: observationId(identity, before) !== token,
@@ -50,8 +52,8 @@ export async function captureView(device: StepDevice, identity: string, initialV
       height,
       actionWidth: view.width,
       actionHeight: view.height,
-      page: view.screen.page,
-      marker: view.screen.marker,
+      page: settings?.page ?? 'other',
+      marker: settings?.marker,
     };
     const controls = view.controls.map((n) => {
       const center = visibleCenter(view, n.bounds);
@@ -64,11 +66,10 @@ export async function captureView(device: StepDevice, identity: string, initialV
       };
     });
     return { metadata, controls, image, layout: view.layout, before, view };
-  }
-  throw new Error('STALE_OBSERVATION');
+  });
 }
 
-export async function saveCapture(dir: string, device: StepDevice, identity: string) {
+export async function saveCapture(dir: string, device: CaptureDevice, identity: string) {
   const { metadata, controls, image, layout } = await captureView(device, identity);
   const staging = await mkdtemp(dir + '.');
   try {

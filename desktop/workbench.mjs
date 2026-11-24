@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
-import { setTimeout as wait } from 'node:timers/promises';
 import { basename, join } from 'node:path';
 import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
-import { compileStep, readScript, reason } from '../dist/script.js';
+import { compileStep, reason } from '../dist/script.js';
 import {
   executeStep,
   guardObservation,
@@ -14,7 +13,7 @@ import {
   resolveControl,
   uniqueSelector,
 } from '../dist/steps.js';
-import { executeRound } from '../dist/run.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import {
   listScripts,
   importScript,
@@ -29,13 +28,7 @@ import { LocalAppium } from './appium.mjs';
 import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 
 import { conversationTimeLimitMs, runConversation } from '../dist/conversation.js';
-import {
-  compileRecording,
-  maxRecordingSteps,
-  recordStep,
-  replayRecording,
-  screenAvailable,
-} from '../dist/recording.js';
+import { maxRecordingSteps, recordStep, screenAvailable } from '../dist/recording.js';
 import {
   conversations,
   deviceDir,
@@ -244,23 +237,7 @@ export class Workbench {
     }));
   }
   async frame(device, identity, initialView) {
-    let capture;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        capture = await captureView(device, identity, attempt === 0 ? initialView : undefined);
-        break;
-      } catch (error) {
-        if (
-          attempt === 2 ||
-          !['FOREGROUND_WINDOW_AMBIGUOUS', 'STALE_OBSERVATION', 'FOREGROUND_APP_UNAVAILABLE'].includes(
-            error.message,
-          )
-        )
-          throw error;
-      }
-      await wait(200);
-    }
-    const { metadata, controls, image, before, view } = capture;
+    const { metadata, controls, image, before, view } = await captureView(device, identity, initialView);
     this.frames.set(identity, {
       token: metadata.observationId,
       view: { ...view, layout: undefined },
@@ -374,9 +351,7 @@ export class Workbench {
       throw Error('INVALID_MESSAGE');
     const entry = conversational ? undefined : await scriptEntry(imported);
     if (entry && !entry.platforms.includes(t.platform)) throw Error('SCRIPT_PLATFORM_MISMATCH');
-    const playback =
-      entry?.script.schemaVersion === 2 ? await compileRecording(entry.script, t.platform) : null;
-    const script = entry && !playback ? await readScript(entry.script, t.platform) : undefined;
+    const script = entry ? await compileScript(entry.script, t.platform) : undefined;
     const controller = new AbortController();
     const config = conversational ? this.preferences.clientConfig() : undefined;
     const useImages = conversational && this.preferences.useImages === true;
@@ -434,33 +409,45 @@ export class Workbench {
           target,
           record.id,
           controller.signal,
-          conversational || playback || script?.kind === 'general' ? 'foreground' : 'settings',
+          script?.mode ?? 'foreground',
           async (device) => {
-            const showFrame = async () => {
-              if (controller.signal.aborted) return;
+            let screenshotAt;
+            const screenshot = async () => {
+              const image = await device.screenshot();
+              screenshotAt = new Date().toISOString();
+              return image;
+            };
+            const showFrame = async (captured) => {
+              if (controller.signal.aborted) return false;
               try {
+                const image = captured ?? await screenshot();
+                if (controller.signal.aborted) return false;
                 this.emit({
                   type: 'frame',
                   device: id,
                   runId: record.id,
                   frame: {
-                    image: imageUrl(await device.screenshot()),
-                    observedAt: new Date().toISOString(),
+                    image: imageUrl(image),
+                    observedAt: screenshotAt,
                     controls: [],
                   },
                 });
+                return true;
               } catch (e) {
                 this.emit({ type: 'frameError', device: id, runId: record.id, error: errorCode(e) });
+                return false;
               }
             };
-            // The task's own session supplies previews, in order, after actual native operations.
-            const watched = {};
+            // Chat publishes at the next observation so navigation has time to settle.
+            // Scripts without a decision loop still publish after each native operation.
+            let previewDue = true;
+            const watched = { screenshot };
             let lastView;
             watched.snapshot = async () => {
               lastView = await device.snapshot();
               return lastView;
             };
-            for (const name of ['foregroundApp', 'observe', 'screenshot', 'close']) {
+            for (const name of ['foregroundApp', 'observe', 'close']) {
               watched[name] = device[name].bind(device);
             }
             const actions = ['move', 'perform', 'launch', 'back'];
@@ -469,7 +456,8 @@ export class Workbench {
               watched[name] = async (...args) => {
                 lastView = undefined;
                 const value = await device[name](...args);
-                await showFrame();
+                if (conversational) previewDue = true;
+                else await showFrame();
                 return value;
               };
             }
@@ -482,6 +470,7 @@ export class Workbench {
                 chat.script.steps.push(item);
                 await persist();
                 record.stepCount = chat.script.steps.length;
+                if (item.command.action === 'pause') previewDue = true;
               };
               result = await runConversation(
                 watched,
@@ -498,9 +487,11 @@ export class Workbench {
                   notify();
                 },
                 useImages,
+                async (image) => {
+                  if (!image && !previewDue) return;
+                  previewDue = !(await showFrame(image));
+                },
               );
-            } else if (playback) {
-              result = await replayRecording(watched, id, playback, controller.signal, progress);
             } else {
               result = await executeRound(watched, id, { script }, controller.signal, progress);
             }

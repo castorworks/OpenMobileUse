@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { hdcToolchain } from '../dist/host.js';
 import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 const exec = promisify(execFile);
 const first = (...paths) => paths.find((p) => p && existsSync(p));
@@ -36,29 +37,11 @@ async function signingTeams() {
 }
 export async function configureHost() {
   const env = process.env;
-  const windows = process.platform === 'win32';
   const tools = androidToolchain();
   applyAndroidToolchain(tools);
   const androidSetup = androidSetupStatus(tools);
   const developer =
     process.platform === 'darwin' && first(env.DEVELOPER_DIR, installed('Xcode.app/Contents/Developer'));
-  const hdc = first(
-    env.HDC_PATH,
-    windows &&
-      env.ProgramFiles &&
-      join(
-        env.ProgramFiles,
-        'Huawei',
-        'DevEco Studio',
-        'sdk',
-        'default',
-        'openharmony',
-        'toolchains',
-        'hdc.exe',
-      ),
-    installed('DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc'),
-  );
-  if (hdc) env.HDC_PATH = hdc;
   if (developer) env.DEVELOPER_DIR = developer;
   const teams = developer ? await signingTeams() : [];
   if (!env.OMU_IOS_TEAM_ID && !env.OMU_IOS_XCCONFIG && teams.length === 1)
@@ -68,6 +51,6 @@ export async function configureHost() {
     android: !androidSetup.missing.length,
     androidSetup,
     ios: !!developer,
-    harmony: !!hdc,
+    harmony: hdcToolchain().available,
   };
 }

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { Screen } from './navigation.js';
+import type { Platform } from './host.js';
+import { isTransientObservation, readObservation, reason } from './observation.js';
 
 export type Point = { x: number; y: number };
 export type Bounds = { x: number; y: number; width: number; height: number };
@@ -13,6 +14,7 @@ export interface Control {
   bounds: Bounds;
   card?: AndroidCard;
   enabled: boolean;
+  clickable?: boolean;
   focused: boolean;
   editable: boolean;
   secret: boolean;
@@ -23,12 +25,12 @@ export interface Control {
 export interface View {
   app: string;
   window: string;
+  windowIdentity?: string;
   width: number;
   height: number;
   rotation: number;
   controls: Control[];
   layout: unknown;
-  screen: Screen;
 }
 export type Selector = {
   id?: string; label?: string; role?: string;
@@ -69,10 +71,10 @@ export type Step =
 export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
-  perform(step: Step, view: View, node?: Control): Promise<void>;
+  perform(step: Step, view: View, node?: Control, signal?: AbortSignal): Promise<void>;
   back(): Promise<void>;
   goHome?(): Promise<string>;
-  launch(step: LaunchStep): Promise<string>;
+  launch(step: LaunchStep, guard?: (targetApp: string) => void): Promise<string>;
   foregroundApp(): Promise<string>;
 }
 export const stepHelp = `omu tap --device <platform:id> (--id <id> | --label <label>) [--role <role>]
@@ -84,10 +86,177 @@ omu back --device <platform:id> [--id <navigation-control> | --label <name>] [--
 omu waitFor --device <platform:id> (--id <id> | --label <name>) [--role <role>] [--state visible|hidden] [--timeout-ms 5000]
 For repeated Android ids, tap and waitFor accept --id <id> --role <role> --within <card label> [--card-x <0..1> --card-y <0..1>].
 --ability and --module are Harmony-only. All commands accept [--observation <observationId>] [--json].`;
+const stepArgumentTypes = {
+  id: 'string',
+  label: 'string',
+  role: 'string',
+  within: 'string',
+  cardX: 'number',
+  cardY: 'number',
+  app: 'string',
+  ability: 'string',
+  module: 'string',
+  text: 'string',
+  state: 'string',
+  observation: 'string',
+  replace: 'boolean',
+  x: 'number',
+  y: 'number',
+  fromX: 'number',
+  fromY: 'number',
+  toX: 'number',
+  toY: 'number',
+  durationMs: 'number',
+  timeoutMs: 'number',
+} as const;
+type ArgumentTypes = { string: string; boolean: boolean; number: number };
+type StepArgument = keyof typeof stepArgumentTypes;
+type StepArguments = {
+  [K in StepArgument]?: ArgumentTypes[(typeof stepArgumentTypes)[K]];
+};
+const stepArguments: Record<CommandStep['kind'], readonly StepArgument[]> = {
+  tap: ['id', 'label', 'role', 'x', 'y', 'within', 'cardX', 'cardY'],
+  input: ['id', 'label', 'role', 'text', 'replace'],
+  swipe: ['fromX', 'fromY', 'toX', 'toY', 'durationMs'],
+  waitFor: ['id', 'label', 'role', 'state', 'timeoutMs', 'within', 'cardX', 'cardY'],
+  back: ['id', 'label', 'role'],
+  goHome: [],
+  launch: ['app', 'ability', 'module'],
+};
+type StepKind = CommandStep['kind'];
+
+function isStepKind(kind: string): kind is StepKind {
+  return Object.hasOwn(stepArguments, kind);
+}
+
+function checkStepArguments(kind: StepKind, options: Record<string, unknown>) {
+  const allowed: readonly string[] = stepArguments[kind];
+  if (Object.keys(options).some((key) => key !== 'observation' && !allowed.includes(key)))
+    throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
+}
+
+export function compileCommandStep(action: string, options: Record<string, unknown>, platform: Platform) {
+  const kind = action === 'launchApp' ? 'launch' : action;
+  if (!isStepKind(kind)) throw new Error('UNKNOWN_STEP');
+  for (const [key, value] of Object.entries(options)) {
+    if (
+      !Object.hasOwn(stepArgumentTypes, key) ||
+      typeof value !== stepArgumentTypes[key as StepArgument] ||
+      (typeof value === 'number' && !Number.isFinite(value)) ||
+      (key === 'replace' && kind !== 'input')
+    )
+      throw new Error('INVALID_STEP_ARGUMENT');
+  }
+  checkStepArguments(kind, options);
+  return validateStep(kind, options, platform);
+}
+
+function validateStep(
+  kind: StepKind,
+  v: StepArguments,
+  platform: string | undefined,
+): { step: CommandStep; observation?: string } {
+  const observation = v.observation;
+  if (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation))
+    throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (kind === 'goHome') {
+    if (platform !== 'android') throw Error('HOME_UNAVAILABLE');
+    return { step: { kind }, observation };
+  }
+  if (kind === 'launch') {
+    if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
+    for (const name of [v.ability, v.module]) {
+      if (name !== undefined && (platform !== 'harmony' || !isAppIdentifier(name)))
+        throw new Error('INVALID_HARMONY_ENTRY');
+    }
+    const step: LaunchStep = { kind, app: v.app, ability: v.ability, module: v.module };
+    return { step, observation };
+  }
+  const selector: Selector = { id: v.id, label: v.label, role: v.role };
+  if ([v.id, v.label, v.role].includes('') || (v.id !== undefined && v.label !== undefined))
+    throw new Error('INVALID_SELECTOR');
+  function coordinate(value: number | undefined) {
+    if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error('COORDINATE_OUT_OF_RANGE');
+    return value;
+  }
+  if (v.within !== undefined || v.cardX !== undefined || v.cardY !== undefined) {
+    if (platform !== 'android' || !v.within?.trim() || !v.id || !v.role ||
+      (v.cardX === undefined) !== (v.cardY === undefined)) throw Error('INVALID_SELECTOR');
+    selector.within = v.within;
+    if (v.cardX !== undefined) {
+      selector.cardX = coordinate(v.cardX);
+      selector.cardY = coordinate(v.cardY);
+    }
+  }
+  let step: CommandStep;
+  if (kind === 'back') {
+    const specified = !!(selector.id || selector.label);
+    if (platform === 'ios' ? !specified : specified || selector.role)
+      throw new Error('BACK_REQUIRES_IOS_NAVIGATION_SELECTOR_ONLY');
+    step = { kind, selector: specified ? selector : undefined };
+    return { step, observation };
+  }
+  if (kind === 'waitFor') {
+    const state = v.state ?? 'visible',
+      timeoutMs = v.timeoutMs ?? 5000;
+    if (
+      (!selector.id && !selector.label) ||
+      (state !== 'visible' && state !== 'hidden') ||
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > 60000
+    )
+      throw new Error('INVALID_WAIT');
+    step = { kind, selector, state, timeoutMs };
+    return { step, observation };
+  }
+  if (kind === 'swipe') {
+    const from = { x: coordinate(v.fromX), y: coordinate(v.fromY) },
+      to = { x: coordinate(v.toX), y: coordinate(v.toY) };
+    const duration = v.durationMs ?? 400;
+    if (
+      !Number.isInteger(duration) ||
+      duration < 1 ||
+      duration > 10000 ||
+      (from.x === to.x && from.y === to.y)
+    )
+      throw new Error('INVALID_SWIPE');
+    step = { kind, from, to, duration };
+  } else if (kind === 'tap') {
+    if (v.x !== undefined || v.y !== undefined) {
+      if (v.id || v.label || v.role) throw new Error('MIXED_TAP_TARGET');
+      step = { kind, point: { x: coordinate(v.x), y: coordinate(v.y) } };
+    } else {
+      if (!v.id && !v.label) throw new Error('MISSING_TAP_TARGET');
+      step = { kind, selector };
+    }
+  } else if (kind === 'input') {
+    if (v.text === undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
+    const text = v.text;
+    if (text.includes('\0') || (!text && !v.replace)) throw new Error('INVALID_INPUT_TEXT');
+    step = { kind, selector, text, replace: !!v.replace };
+  } else throw new Error(stepHelp);
+  return { step, observation };
+}
+
+const cliArgumentNames: Partial<Record<string, StepArgument>> = {
+  'from-x': 'fromX',
+  'from-y': 'fromY',
+  'to-x': 'toX',
+  'to-y': 'toY',
+  'duration-ms': 'durationMs',
+  'timeout-ms': 'timeoutMs',
+  'card-x': 'cardX',
+  'card-y': 'cardY',
+};
+
 export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
     flag = { type: 'boolean' } as const;
-  const { values: v } = parseArgs({
+  const {
+    values: { device, stdin: useStdin, json: _json, ...values },
+  } = parseArgs({
     args,
     options: {
       device: str,
@@ -116,104 +285,57 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       'timeout-ms': str,
     },
   });
-  const byKind: Record<string, string[]> = {
-    tap: ['id', 'label', 'role', 'x', 'y', 'within', 'card-x', 'card-y'],
-    input: ['id', 'label', 'role', 'text', 'stdin', 'replace'],
-    swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
-    waitFor: ['id', 'label', 'role', 'state', 'timeout-ms', 'within', 'card-x', 'card-y'],
-    back: ['id', 'label', 'role'],
-    goHome: [],
-    launch: ['app', 'ability', 'module'],
-  };
-  const allowed = ['device', 'observation', 'json', ...(byKind[kind] ?? [])];
-  if (Object.keys(v).some((k) => !allowed.includes(k))) throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
-  const device = v.device,
-    observation = v.observation;
-  if (!device || (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation)))
-    throw new Error('INVALID_DEVICE_OR_OBSERVATION');
-  if (kind === 'goHome') {
-    if (!device.startsWith('android:')) throw new Error('HOME_UNAVAILABLE');
-    return { step: { kind } as const, device, observation };
+  if (!isStepKind(kind)) throw new Error(stepHelp);
+  if (useStdin !== undefined && kind !== 'input') throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
+  const options = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => {
+      const key = cliArgumentNames[name] ?? name;
+      const type = stepArgumentTypes[key as StepArgument];
+      if (type === 'number' && typeof value === 'string')
+        return [key, value.trim() ? Number(value) : NaN];
+      return [key, value];
+    }),
+  );
+  checkStepArguments(kind, options);
+  if (!device) throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (useStdin) {
+    if (values.text !== undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
+    options.text = await stdin();
   }
-  if (kind === 'launch') {
-    if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
-    for (const name of [v.ability, v.module]) {
-      if (name !== undefined && (!device.startsWith('harmony:') || !isAppIdentifier(name)))
-        throw new Error('INVALID_HARMONY_ENTRY');
-    }
-    const step: LaunchStep = { kind, app: v.app, ability: v.ability, module: v.module };
-    return { step, device, observation };
-  }
-  const selector: Selector = { id: v.id, label: v.label, role: v.role };
-  if ([v.id, v.label, v.role].includes('') || (v.id !== undefined && v.label !== undefined))
-    throw new Error('INVALID_SELECTOR');
-  function coordinate(raw: string | undefined) {
-    if (!raw?.trim() || !Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > 1)
-      throw new Error('COORDINATE_OUT_OF_RANGE');
-    return Number(raw);
-  }
-  if (v.within !== undefined || v['card-x'] !== undefined || v['card-y'] !== undefined) {
-    if (
-      !device.startsWith('android:') || !v.within?.trim() || !v.id || !v.role ||
-      (v['card-x'] === undefined) !== (v['card-y'] === undefined)
-    ) throw Error('INVALID_SELECTOR');
-    selector.within = v.within;
-    if (v['card-x'] !== undefined) {
-      selector.cardX = coordinate(v['card-x']);
-      selector.cardY = coordinate(v['card-y']);
-    }
-  }
-  let step: CommandStep;
-  if (kind === 'back') {
-    const specified = !!(selector.id || selector.label);
-    if (device.startsWith('ios:') ? !specified : specified || selector.role)
-      throw new Error('BACK_REQUIRES_IOS_NAVIGATION_SELECTOR_ONLY');
-    step = { kind, selector: specified ? selector : undefined };
-    return { step, device, observation };
-  }
-  if (kind === 'waitFor') {
-    const state = v.state ?? 'visible',
-      timeoutMs = Number(v['timeout-ms'] ?? 5000);
-    if (
-      (!selector.id && !selector.label) ||
-      !['visible', 'hidden'].includes(state) ||
-      !Number.isInteger(timeoutMs) ||
-      timeoutMs < 1 ||
-      timeoutMs > 60000
-    )
-      throw new Error('INVALID_WAIT');
-    step = { kind, selector, state: state as WaitStep['state'], timeoutMs };
-    return { step, device, observation };
-  }
-  if (kind === 'swipe') {
-    const from = { x: coordinate(v['from-x']), y: coordinate(v['from-y']) },
-      to = { x: coordinate(v['to-x']), y: coordinate(v['to-y']) };
-    const duration = Number(v['duration-ms'] ?? 400);
-    if (
-      !Number.isInteger(duration) ||
-      duration < 1 ||
-      duration > 10000 ||
-      (from.x === to.x && from.y === to.y)
-    )
-      throw new Error('INVALID_SWIPE');
-    step = { kind, from, to, duration };
-  } else if (kind === 'tap') {
-    if (v.x !== undefined || v.y !== undefined) {
-      if (v.id || v.label || v.role) throw new Error('MIXED_TAP_TARGET');
-      step = { kind, point: { x: coordinate(v.x), y: coordinate(v.y) } };
-    } else {
-      if (!v.id && !v.label) throw new Error('MISSING_TAP_TARGET');
-      step = { kind, selector };
-    }
-  } else if (kind === 'input') {
-    if ((v.text !== undefined) === Boolean(v.stdin)) throw new Error('SPECIFY_TEXT_OR_STDIN');
-    const text = v.stdin ? await stdin() : v.text!;
-    if (text.includes('\0') || (!text && !v.replace)) throw new Error('INVALID_INPUT_TEXT');
-    step = { kind, selector, text, replace: !!v.replace };
-  } else throw new Error(stepHelp);
-  return { step, device, observation };
+  const prefix = device.indexOf(':');
+  const platform = prefix === -1 ? undefined : device.slice(0, prefix);
+  return { ...validateStep(kind, options, platform), device };
 }
-type ObservationScope = CommandStep | { kind: 'check'; selector?: Selector };
+type ObservationScope =
+  | CommandStep
+  | { kind: 'check'; selector?: Selector }
+  | { kind: 'visualTap'; point: Point };
+
+function isPassiveScreenText(view: View, node: Control) {
+  return /^(?:Text|TextView|StaticText)$/.test(controlType(node)) &&
+    node.clickable === false && !node.editable && !node.focused &&
+    node.bounds.width >= 0.9 * view.width && node.bounds.height >= 0.9 * view.height;
+}
+
+function controlType(node: Control) {
+  return node.role.slice(node.role.lastIndexOf('.') + 1).replace(/^XCUIElementType/, '');
+}
+
+export function isIconControl(node: Control) {
+  return node.clickable === true && node.enabled && !node.editable && !node.secret &&
+    /^(?:Button|Icon|Image|ImageButton|ImageView)$/.test(controlType(node));
+}
+
+function visualTapControls(view: View, hits: Control[]) {
+  const button = hits.at(-1);
+  if (
+    !button || !isIconControl(button) ||
+    button.bounds.width > view.width / 4 || button.bounds.height > view.height / 4
+  ) return hits;
+  // A video can expose its changing playback time in a screen-sized accessibility label
+  // behind the toolbar. Keep the entire hit stack, including its order and geometry.
+  return hits.map((node) => isPassiveScreenText(view, node) ? { ...node, labels: [] } : node);
+}
 
 export function containsPoint(r: Bounds, p: Point) {
   return r.x <= p.x && p.x < r.x + r.width && r.y <= p.y && p.y < r.y + r.height;
@@ -244,7 +366,15 @@ function relevantControls(view: View, scope?: ObservationScope) {
   if (scope.kind === 'launch' || scope.kind === 'goHome' || (scope.kind === 'check' && !scope.selector))
     return [];
   if (scope.kind === 'back' && !scope.selector)
-    return view.controls.map(controlState);
+    return view.controls.map((node) => {
+      const state = controlState(node);
+      if (!isPassiveScreenText(view, node)) return state;
+      // The elapsed time can tick while checking a system Back. Keep the total
+      // duration, captions and other controls as evidence of the current page.
+      const [label = '', ...rest] = state.labels;
+      const time = /^(?:\d{1,2}:)?\d{1,2}:[0-5]\d(\s*\/\s*(?:\d{1,2}:)?\d{1,2}:[0-5]\d)?$/.exec(label);
+      return time ? { ...state, labels: [{ duration: time[1] ?? '' }, ...rest] } : state;
+    });
   if ('selector' in scope && scope.selector && (scope.selector.id || scope.selector.label)) {
     // Resolve the same unique control in the new tree. The driver uses its current bounds.
     const hits = matchingControls(view, scope.selector);
@@ -254,10 +384,14 @@ function relevantControls(view: View, scope?: ObservationScope) {
     const atTarget = view.controls.filter((n) => containsPoint(n.bounds, center));
     return [states, atTarget.map((c) => [c.role, c.id])];
   }
-  if (scope.kind === 'swipe' || (scope.kind === 'tap' && 'point' in scope)) {
+  if (
+    scope.kind === 'swipe' || scope.kind === 'visualTap' ||
+    (scope.kind === 'tap' && 'point' in scope)
+  ) {
     const a = pointInView(view, scope.kind === 'swipe' ? scope.from : scope.point);
     const b = scope.kind === 'swipe' ? pointInView(view, scope.to) : a;
-    return controlsInGestureRegion(view, a, b).map(observedControl);
+    const hits = controlsInGestureRegion(view, a, b).map(observedControl);
+    return scope.kind === 'visualTap' ? visualTapControls(view, hits) : hits;
   }
   return view.controls.map(observedControl);
 }
@@ -391,17 +525,73 @@ export function visibleCenter(view: View, b: Bounds): Point {
 export function inputValue(before: string, step: Extract<Step, { kind: 'input' }>) {
   return step.replace ? step.text : before + step.text;
 }
-export async function verifyForeground(read: () => Promise<string>, target: string, timeoutMs = 10000) {
+export function hasWrittenValue(
+  before: View,
+  after: View,
+  field: Control,
+  selectorLabel: string | undefined,
+  expected: string,
+) {
+  if (
+    after.app !== before.app ||
+    after.rotation !== before.rotation ||
+    after.width !== before.width ||
+    after.height !== before.height ||
+    (after.window !== before.window &&
+      (!before.windowIdentity || after.windowIdentity !== before.windowIdentity))
+  )
+    return false;
+
+  const peers = (v: View) => v.controls.filter((n) => n.editable && n.role === field.role);
+  const previous = peers(before);
+  const current = peers(after);
+  // Harmony can change the accessibilityId on every dump. An id-less search box can
+  // also replace its placeholder label with the query while suggestions echo the query below it.
+  const { x, y, width, height } = field.bounds;
+  let matches = (n: Control) =>
+    n.bounds.x === x && n.bounds.y === y && n.bounds.width === width && n.bounds.height === height;
+  if (field.id) matches = (n) => n.id === field.id;
+  else if (!current.some(matches) && selectorLabel && selectorLabel !== field.value)
+    matches = (n) => n.labels.includes(selectorLabel);
+  if (previous.filter(matches).length !== 1) return false;
+  const hits = current.filter(matches);
+  if (hits.length !== 1) return false;
+  const [target] = hits;
+  if (target.secret || target.id !== field.id || target.value !== expected) return false;
+  if (field.id) return true;
+  if (target.labels.some((label) => label !== expected && !field.labels.includes(label))) return false;
+  return target.focused || (previous.length === 1 && current.length === 1);
+}
+
+export class AppNotForeground extends Error {
+  constructor(readonly targetApp: string) {
+    super('APP_NOT_FOREGROUND');
+  }
+}
+
+export async function verifyForeground(
+  read: () => Promise<string>,
+  target: string,
+  timeoutMs = 10000,
+  signal?: AbortSignal,
+) {
   const deadline = performance.now() + timeoutMs;
   let matched = false;
   do {
-    const app = await read();
+    signal?.throwIfAborted();
+    let app: string | undefined;
+    try {
+      app = await read();
+    } catch (error) {
+      if (!isTransientObservation(reason(error))) throw error;
+    }
+    signal?.throwIfAborted();
     if (app === target && matched) return app;
     matched = app === target;
     if (performance.now() >= deadline) break;
-    await sleep(250);
+    await sleep(Math.min(250, Math.max(0, deadline - performance.now())), undefined, { signal });
   } while (performance.now() <= deadline);
-  throw new Error('APP_NOT_FOREGROUND');
+  throw new AppNotForeground(target);
 }
 
 export async function executeStep(
@@ -410,6 +600,7 @@ export async function executeStep(
   step: CommandStep,
   expected?: string | ((view: View) => void),
   signal?: AbortSignal,
+  guard?: ((view: View) => void) | { launch: (targetApp: string) => void },
 ) {
   signal?.throwIfAborted();
   function validate(view: View) {
@@ -419,11 +610,13 @@ export async function executeStep(
     return id;
   }
   if (step.kind === 'launch' || step.kind === 'goHome') {
-    const id = expected ? validate(await device.snapshot()) : undefined;
+    const id = expected ? validate(await readObservation(() => device.snapshot(), signal)) : undefined;
     signal?.throwIfAborted();
-    const targetApp = step.kind === 'launch' ? await device.launch(step) : await device.goHome?.();
+    const targetApp = step.kind === 'launch'
+      ? await device.launch(step, typeof guard === 'object' ? guard.launch : undefined)
+      : await device.goHome?.();
     if (!targetApp) throw new Error('HOME_UNAVAILABLE');
-    const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp);
+    const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp, 10000, signal);
     return {
       action: step.kind,
       status: 'succeeded',
@@ -437,42 +630,45 @@ export async function executeStep(
   if (step.kind === 'waitFor') {
     const end = Date.now() + step.timeoutMs;
     let first = true;
+    let lastIssue = 'WAIT_TIMEOUT';
     for (;;) {
       signal?.throwIfAborted();
+      let current: View | undefined;
       try {
-        const current = await device.snapshot();
+        current = await device.snapshot();
+      } catch (error) {
+        if (!isTransientObservation(reason(error))) throw error;
+        lastIssue = reason(error);
+      }
+      signal?.throwIfAborted();
+      if (current) {
+        if (typeof guard === 'function') guard(current);
         const token = first ? validate(current) : observationId(identity, current);
         first = false;
         const hits = matchingControls(current, step.selector);
-        if (hits.length > 1) throw new Error('AMBIGUOUS_ELEMENT');
-        if ((hits.length === 1) === (step.state === 'visible'))
+        lastIssue = hits.length > 1 ? 'AMBIGUOUS_ELEMENT' : 'WAIT_TIMEOUT';
+        if (hits.length === (step.state === 'visible' ? 1 : 0))
           return { action: step.kind, status: 'succeeded', observationId: token };
-      } catch (e) {
-        if (
-          expected ||
-          !['STALE_OBSERVATION', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes((e as Error).message)
-        )
-          throw e;
       }
-      if (Date.now() >= end) throw new Error('WAIT_TIMEOUT');
+      if (Date.now() >= end) throw new Error(lastIssue);
       await sleep(Math.min(200, end - Date.now()), undefined, { signal });
     }
   }
-  const view = await device.snapshot();
+  const view = await readObservation(() => device.snapshot(), signal);
   const id = validate(view);
   signal?.throwIfAborted();
   if (step.kind === 'back') {
     if (step.selector) {
       const node = resolveControl(view, step.selector, false);
       if (!node.navigation) throw new Error('NAVIGATION_BUTTON_REQUIRED');
-      await device.perform({ kind: 'tap', selector: step.selector }, view, node);
+      await device.perform({ kind: 'tap', selector: step.selector }, view, node, signal);
     } else await device.back();
     return { action: step.kind, status: 'succeeded', observationId: id };
   }
   const node =
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);
-  await device.perform(step, view, node);
+  await device.perform(step, view, node, signal);
   return {
     action: step.kind,
     status: 'succeeded',

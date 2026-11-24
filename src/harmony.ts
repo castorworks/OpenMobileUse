@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hdc, run } from './host.js';
+import { hdcToolchain, run } from './host.js';
+import { isTransientObservation, reason } from './observation.js';
 import { focusedHarmonyWindow, harmonyView } from './native-layout.js';
 import {
+  hasWrittenValue,
   isAppIdentifier,
   inputValue,
   pointInView,
@@ -23,6 +25,14 @@ const bluetoothTitle = 'bluetooth_entry.title';
 const bluetoothToggle = 'Setting.Fusion.BluetoothSwitchGroup.BluetoothSwitchItem.result';
 type Attr = Record<string, string>;
 type Node = { attributes: Attr; children: Node[] };
+function isLayoutNode(node: Node | null): boolean {
+  return (
+    !!node &&
+    !!node.attributes &&
+    typeof node.attributes === 'object' &&
+    (node.children == null || (Array.isArray(node.children) && node.children.every(isLayoutNode)))
+  );
+}
 interface HapModule {
   moduleName: string;
   mainElementName?: string;
@@ -33,16 +43,28 @@ export function harmonyEntry(output: string, app: string, step: LaunchStep) {
   if (output.startsWith('error: failed to get information')) throw new Error('APP_NOT_INSTALLED');
   const start = output.indexOf('{');
   if (start < 0) throw new Error('BUNDLE_INFO_UNAVAILABLE');
-  const info = JSON.parse(output.slice(start)) as {
+  let info: {
     name: string;
     entryModuleName?: string;
     hapModuleInfos: HapModule[];
   };
+  try {
+    info = JSON.parse(output.slice(start));
+  } catch {
+    throw new Error('BUNDLE_INFO_UNAVAILABLE');
+  }
   if (info.name !== app || !Array.isArray(info.hapModuleInfos))
     throw new Error('BUNDLE_INFO_UNAVAILABLE');
   const moduleName = step.module ?? (step.ability ? undefined : info.entryModuleName);
   const entries: { module: string; ability: string }[] = [];
   for (const mod of info.hapModuleInfos) {
+    if (
+      !mod ||
+      typeof mod.moduleName !== 'string' ||
+      (mod.abilityInfos != null &&
+        (!Array.isArray(mod.abilityInfos) || mod.abilityInfos.some((a) => typeof a?.name !== 'string')))
+    )
+      throw new Error('BUNDLE_INFO_UNAVAILABLE');
     if (moduleName && mod.moduleName !== moduleName) continue;
     const main = mod.mainElementName || mod.mainAbility;
     const name = step.ability ?? main;
@@ -103,19 +125,29 @@ export function classifyHarmony(attrs: Attr[]): Screen {
   return { page: 'other' };
 }
 export class Harmony implements Device {
+  private readonly hdc = hdcToolchain().executable;
+
   constructor(
     readonly id: string,
     private dispatch: Dispatch,
   ) {}
   private async shell(...args: string[]) {
-    return run(hdc, ['-t', this.id, 'shell', ...args]);
+    return run(this.hdc, ['-t', this.id, 'shell', ...args]);
   }
   private async layout(): Promise<Node> {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.json';
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const out = await this.shell('uitest', 'dumpLayout', '-p', path);
-        if (out.includes(path)) return JSON.parse(await this.shell('cat', path));
+        if (out.includes(path)) {
+          const data = await this.shell('cat', path);
+          try {
+            const root: Node = JSON.parse(data);
+            if (isLayoutNode(root)) return root;
+          } catch (error) {
+            if (!(error instanceof SyntaxError)) throw error;
+          }
+        }
         if (attempt === 0) await sleep(120);
       }
       throw new Error('HDC_LAYOUT_UNAVAILABLE');
@@ -132,10 +164,11 @@ export class Harmony implements Device {
   async foregroundApp() {
     return focusedHarmonyWindow(await this.layout())?.attributes.bundleName ?? '';
   }
-  async launch(step: LaunchStep) {
+  async launch(step: LaunchStep, guard?: (targetApp: string) => void) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     const app = step.app === 'settings' ? bundle : step.app;
     const entry = harmonyEntry(await this.shell('bm', 'dump', '-n', app), app, step);
+    guard?.(app);
     let rejected = false;
     await this.dispatch('launch', async () => {
       const response = await this.shell(
@@ -161,19 +194,27 @@ export class Harmony implements Device {
     const match = /^\s*ScreenRotation:\s*(0|1|2|3|90|180|270)\s*$/m.exec(display);
     if (!match) throw new Error('DISPLAY_ROTATION_UNAVAILABLE');
     const raw = Number(match[1]);
-    const view = harmonyView(layout, raw <= 3 ? raw * 90 : raw);
-    view.screen = classifyHarmony(settingsNodes(layout));
-    return view;
+    return harmonyView(layout, raw <= 3 ? raw * 90 : raw);
+  }
+  settingsScreen(view: View): Screen {
+    return view.app === bundle
+      ? classifyHarmony(settingsNodes(view.layout as Node))
+      : { page: 'other' };
   }
   async screenshot() {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.png';
     const dir = await mkdtemp(join(tmpdir(), 'omu-capture-'));
     try {
       const out = await this.shell('uitest', 'screenCap', '-p', path);
-      if (!out.includes(path)) throw new Error('HDC screen capture failed');
+      if (!out.includes(path)) throw new Error('SCREENSHOT_UNAVAILABLE');
       const local = join(dir, 'screen.png');
-      await run(hdc, ['-t', this.id, 'file', 'recv', path, local]);
-      return await readFile(local);
+      await run(this.hdc, ['-t', this.id, 'file', 'recv', path, local]);
+      try {
+        return await readFile(local);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw Error('SCREENSHOT_UNAVAILABLE');
+        throw error;
+      }
     } finally {
       try {
         await this.shell('rm', '-f', path);
@@ -189,7 +230,7 @@ export class Harmony implements Device {
   async back() {
     await this.dispatch('back', () => this.inject('keyEvent', 'Back'));
   }
-  async perform(step: Step, view: View, node?: Control) {
+  async perform(step: Step, view: View, node?: Control, signal?: AbortSignal) {
     if (step.kind === 'swipe') {
       const a = pointInView(view, step.from),
         b = pointInView(view, step.to);
@@ -209,24 +250,57 @@ export class Harmony implements Device {
       return;
     }
     const field = node!;
-    const readField = async () => {
-      const current = await this.snapshot();
-      if (current.app !== view.app) throw new Error('INPUT_TARGET_CHANGED');
+    const checkValue = async (expected: string | undefined, written: boolean) => {
+      let current: View;
+      try {
+        current = await this.snapshot();
+      } catch (e) {
+        const code = reason(e);
+        if (code === 'FOREGROUND_WINDOW_AMBIGUOUS') return 'INPUT_FOCUS_UNCONFIRMED';
+        if (isTransientObservation(code)) return code;
+        throw e;
+      }
+      if (written) {
+        if (
+          expected !== undefined &&
+          hasWrittenValue(view, current, field, step.selector.label, expected)
+        )
+          return;
+        return 'INPUT_NOT_VERIFIED';
+      }
+      if (current.app !== view.app || current.window !== view.window) return 'INPUT_TARGET_CHANGED';
       const hits = current.controls.filter(
         (n) =>
           n.editable && !n.secret && n.role === field.role && (field.id ? n.id === field.id : n.focused),
       );
-      if (hits.length !== 1 || !hits[0].focused) throw new Error('INPUT_FOCUS_UNCONFIRMED');
-      return hits[0];
+      if (hits.length !== 1 || !hits[0].enabled || !hits[0].focused) return 'INPUT_FOCUS_UNCONFIRMED';
+      const label = step.selector.label;
+      if (!field.id && label && label !== field.value && !hits[0].labels.includes(label))
+        return 'INPUT_TARGET_CHANGED';
+      if (hits[0].value !== expected) return 'INPUT_TARGET_CHANGED';
     };
+    const confirmValue = async (
+      value: string | undefined,
+      failure?: 'FIELD_NOT_CLEARED' | 'INPUT_NOT_VERIFIED',
+    ) => {
+      for (let attempt = 1; ; attempt++) {
+        signal?.throwIfAborted();
+        const issue = await checkValue(value, failure === 'INPUT_NOT_VERIFIED');
+        signal?.throwIfAborted();
+        if (!issue) return;
+        if (attempt === 3) throw new Error(failure ?? issue);
+        await sleep(120, undefined, { signal });
+      }
+    };
+    // Journal the focus tap independently. A rejected precondition has not edited the field.
+    if (!field.focused) await this.dispatch('tap', tap);
+    await confirmValue(field.value);
     await this.dispatch('input', async () => {
-      if (!field.focused) await tap();
-      if ((await readField()).value !== field.value) throw new Error('INPUT_TARGET_CHANGED');
       if (!step.replace && field.value) await this.inject('keyEvent', '2072', '2082'); // Ctrl+End
       if (step.replace && field.value) {
         await this.inject('keyEvent', '2072', '2017'); // Ctrl+A
         await this.inject('keyEvent', '2055'); // Backspace
-        if ((await readField()).value !== '') throw new Error('FIELD_NOT_CLEARED');
+        await confirmValue('', 'FIELD_NOT_CLEARED');
       }
       if (step.text) {
         try {
@@ -239,11 +313,7 @@ export class Harmony implements Device {
         }
       }
     });
-    for (let i = 0; i < 3; i++) {
-      if ((await readField()).value === inputValue(field.value ?? '', step)) return;
-      if (i < 2) await sleep(120);
-    }
-    throw new Error('INPUT_NOT_VERIFIED');
+    await confirmValue(inputValue(field.value ?? '', step), 'INPUT_NOT_VERIFIED');
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {
@@ -267,7 +337,7 @@ export class Harmony implements Device {
       const title = attrs.find((n) => n.id === key)!;
       const box = /^\[(\d+),(\d+)\]\[(\d+),(\d+)\]$/.exec(title.bounds);
       if (!box || +box[3] <= +box[1] || +box[4] <= +box[2])
-        throw new Error('Navigation entry has no visible bounds');
+        throw new Error('ELEMENT_OUTSIDE_SCREEN');
       const [left, top, right, bottom] = box.slice(1).map(Number);
       args = ['click', String(Math.floor((left + right) / 2)), String(Math.floor((top + bottom) / 2))];
     } else throw new Error('Unsupported Harmony navigation action');

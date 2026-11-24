@@ -57,6 +57,34 @@ const names = {
   failed: '失败',
   needs_review: '待人工核查',
   STALE_OBSERVATION: '操作目标或前台窗口已变化',
+  FOREGROUND_WINDOW_AMBIGUOUS: '前台窗口正在切换',
+  FOREGROUND_APP_UNAVAILABLE: '暂时读不到前台应用',
+  HDC_LAYOUT_UNAVAILABLE: '暂时读不到手机界面',
+  LAYOUT_UNAVAILABLE: '控件树不完整',
+  OBSERVATION_INCOMPLETE: '设备返回的界面数据不完整',
+  OBSERVATION_TIMEOUT: '读取手机界面超时',
+  DISPLAY_GEOMETRY_UNAVAILABLE: '暂时读不到屏幕尺寸',
+  DISPLAY_ROTATION_UNAVAILABLE: '暂时读不到屏幕方向',
+  SCREENSHOT_GEOMETRY_MISMATCH: '截图与当前屏幕尺寸不符',
+  SCREENSHOT_UNAVAILABLE: '暂时读不到截图',
+  INVALID_PNG: '截图数据不完整',
+  ELEMENT_NOT_FOUND: '当前页面找不到目标',
+  AMBIGUOUS_ELEMENT: '有多个控件符合目标',
+  AMBIGUOUS_OR_MISSING_ELEMENT: '无法唯一定位控件',
+  ELEMENT_DISABLED: '控件暂不可操作',
+  ELEMENT_OUTSIDE_SCREEN: '控件已移出屏幕',
+  NO_FOCUSED_FIELD: '当前没有获得焦点的输入框',
+  INPUT_TARGET_CHANGED: '输入目标或内容已变化',
+  INPUT_FOCUS_UNCONFIRMED: '输入框焦点尚未确认',
+  INPUT_NOT_VERIFIED: '文字已发送，尚未核实',
+  INPUT_ALREADY_ATTEMPTED: '相同文字已发送过',
+  APP_NOT_FOREGROUND: '启动后尚未确认目标应用已在前台',
+  APP_LAUNCH_ALREADY_ATTEMPTED: '已向同一应用发送过启动命令',
+  BUNDLE_INFO_UNAVAILABLE: '暂时读不到应用入口',
+  MODEL_REPLY_TRUNCATED: '模型回复被截断',
+  MODEL_TOOL_CALL_REQUIRED: '模型缺少操作指令',
+  MODEL_INVALID_TOOL_CALL: '模型操作指令格式有误',
+  MODEL_INVALID_JSON: '暂时无法解析模型回复',
   NO_PROGRESS: '目标状态未变化',
   VISUAL_TARGET_UNCLEAR: '未能唯一定位画面目标',
   cancelled: '已停止',
@@ -74,11 +102,15 @@ const issues = {
   EMULATOR_BOOT_TIMEOUT: '模拟器仍在启动，可稍后重新扫描。',
   DEVICE_BUSY: '设备正在执行其他操作。',
   STALE_OBSERVATION: '操作目标或前台窗口已变化，请核对当前画面。',
+  INPUT_TARGET_CHANGED: '输入目标或原有内容已变化，本次文字尚未写入。',
+  INPUT_FOCUS_UNCONFIRMED: '无法确认目标输入框已获得焦点，本次文字尚未写入。',
+  INPUT_NOT_VERIFIED: '输入命令已执行，请核对手机上的文字后再继续。',
   FOREGROUND_WINDOW_AMBIGUOUS: '手机正在切换前台窗口，暂时无法确认操作目标。',
   APP_NOT_INSTALLED: '设备上没有找到对应的应用。',
   APP_NOT_LAUNCHABLE: '没有找到可以直接启动的应用入口。',
   APP_NOT_FOREGROUND: '未能确认目标应用已出现在前台，请核对手机画面。',
   HOME_UNAVAILABLE: '无法确认手机的默认主屏幕，请在手机上检查默认桌面设置。',
+  APP_LAUNCH_REJECTED: '手机拒绝了启动应用的请求。',
   ELEMENT_NOT_FOUND: '当前页面上找不到刚才选中的控件。',
   SCREEN_TEXT_NOT_UNIQUE_OR_MISSING: '画面上的目标文字已消失或出现多次，请核对当前画面。',
   SCREEN_TEXT_UNAVAILABLE: '本机暂时无法识别画面文字。可在右侧手机画面上定位，再点击选区。',
@@ -103,6 +135,9 @@ const issues = {
   MODEL_HTTP_403: '此凭据无权调用当前模型，请检查工作台设置。',
   MODEL_HTTP_404: '模型或接口不存在，请检查模型名称和接口地址。',
   MODEL_REQUEST_TIMEOUT: '模型请求超时，已达到重试上限。请稍后重试。',
+  MODEL_CONTENT_FILTERED: '模型服务过滤了本轮回复。',
+  MODEL_REFUSED: '模型拒绝执行本轮请求。',
+  MODEL_PROVIDER_ERROR: '模型服务返回了错误。',
   APPIUM_HTTPS_UNAVAILABLE:
     '配置的本机 HTTPS 服务尚未启动。请检查 TLS 服务，或使用 HTTP 回环地址以自动启动。',
   WDA_SIGNING_FAILED: '请检查 WDA 签名配置和开发者信任。',
@@ -537,7 +572,7 @@ function renderFrame() {
     p.style.top = 100 * s.point.y + '%';
   }
   $('manual-hint').textContent = s.active
-    ? '任务运行中，画面随设备动作更新。'
+    ? '任务运行中，显示最近一次采集的手机画面。'
     : mode === 'swipe'
       ? '在画面上拖动并松开以执行滑动。'
       : control
@@ -666,7 +701,16 @@ async function action(raw) {
         if (workspaceMode === 'script') await refreshScripts();
       }
     } catch (e) {
-      if (['STALE_OBSERVATION', 'ACTION_OUTCOME_UNKNOWN'].includes(e.message)) markFrame(id, null);
+      if (
+        [
+          'STALE_OBSERVATION',
+          'INPUT_TARGET_CHANGED',
+          'INPUT_FOCUS_UNCONFIRMED',
+          'INPUT_NOT_VERIFIED',
+          'ACTION_OUTCOME_UNKNOWN',
+        ].includes(e.message)
+      )
+        markFrame(id, null);
       throw e;
     }
     if (raw.action === 'input' && selected === id) $('text').value = '';

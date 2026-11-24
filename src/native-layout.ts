@@ -1,4 +1,4 @@
-import { DOMParser, type Element as XmlElement } from '@xmldom/xmldom';
+import { DOMParser, onErrorStopParsing, type Element as XmlElement } from '@xmldom/xmldom';
 import type { Bounds, Control, View } from './steps.js';
 export type HarmonyNode = { attributes: Record<string, string>; children?: HarmonyNode[] };
 export function bounds(s: string | null | undefined): Bounds | undefined {
@@ -10,6 +10,14 @@ export function bounds(s: string | null | undefined): Bounds | undefined {
 const labels = (...xs: (string | null | undefined)[]) => [
   ...new Set(xs.filter((s): s is string => !!s)),
 ];
+function booleanAttribute(value: string | undefined) {
+  return value === 'true' ? true : value === 'false' ? false : undefined;
+}
+function iosClickable(role: string, hittable: string) {
+  if (role === 'XCUIElementTypeButton') return booleanAttribute(hittable);
+  // Hittable images and labels can be decorative. Only a non-hittable text backdrop is passive.
+  if (role === 'XCUIElementTypeStaticText' && hittable === 'false') return false;
+}
 function onScreen(b: Bounds | undefined, w: number, h: number): b is Bounds {
   return (
     !!b &&
@@ -58,6 +66,7 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
         role: a.type,
         bounds: b,
         enabled: a.enabled !== 'false',
+        clickable: booleanAttribute(a.clickable),
         focused: a.focused === 'true' || (searchFocused && a.type === 'SearchField'),
         editable,
         secret,
@@ -70,21 +79,26 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
     );
   }
   collect(win);
+  const { hostWindowId, abilityName, pagePath } = win.attributes;
+  const owner = [hostWindowId, abilityName, pagePath];
   return {
     app: win.attributes.bundleName,
-    window: [
-      win.attributes.hostWindowId,
-      win.attributes.abilityName,
-      win.attributes.pagePath,
-      win.attributes.bounds,
-    ].join('/'),
+    window: [...owner, win.attributes.bounds].join('/'),
+    // The keyboard can resize the same app window between text injection and readback.
+    windowIdentity: hostWindowId && (abilityName || pagePath) ? JSON.stringify(owner) : undefined,
     width,
     height,
     rotation,
     controls,
     layout: root,
-    screen: { page: 'other' },
   };
+}
+export function parseXmlLayout(source: string) {
+  try {
+    return new DOMParser({ onError: onErrorStopParsing }).parseFromString(source, 'application/xml');
+  } catch {
+    throw Error('LAYOUT_UNAVAILABLE');
+  }
 }
 export function xmlControls(
   platform: 'android' | 'ios',
@@ -93,7 +107,7 @@ export function xmlControls(
   width: number,
   height: number,
 ): Control[] {
-  const doc = new DOMParser().parseFromString(source, 'application/xml');
+  const doc = parseXmlLayout(source);
   const result: Control[] = [];
   const androidNodes = new Map<XmlElement, Control>();
   for (const n of Array.from(doc.getElementsByTagName('*'))) {
@@ -139,6 +153,7 @@ export function xmlControls(
       role,
       bounds: b,
       enabled: a('enabled') !== 'false',
+      clickable: ios ? iosClickable(role, a('hittable')) : booleanAttribute(a('clickable')),
       focused: a('focused') === 'true',
       editable,
       secret,

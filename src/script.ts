@@ -1,46 +1,28 @@
 import type { Progress } from './run.js';
-import { executeStep, parseStep, type CommandStep, type StepDevice } from './steps.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { isTargetUnavailable, isTransientObservation, reason } from './observation.js';
+import {
+  compileCommandStep,
+  executeStep,
+  guardObservation,
+  matchingControls,
+  screenAvailable,
+  type CommandStep,
+  type Control,
+  type StepDevice,
+  type View,
+} from './steps.js';
 import { parseScript } from './navigation.js';
 import type { Platform } from './host.js';
 
+export { reason };
 export function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-export function reason(error: unknown) {
-  return /^[A-Z][A-Z_0-9]*(?=:|$)/.exec((error as Error)?.message)?.[0] || 'DEVICE_ERROR';
-}
-const numbers: Record<string, string> = {
-  x: 'x',
-  y: 'y',
-  fromX: 'from-x',
-  fromY: 'from-y',
-  toX: 'to-x',
-  toY: 'to-y',
-  durationMs: 'duration-ms',
-  timeoutMs: 'timeout-ms',
-  cardX: 'card-x',
-  cardY: 'card-y',
-};
-const strings = ['app', 'id', 'label', 'role', 'within', 'text', 'state', 'module', 'ability', 'observation'];
 export async function compileStep(raw: unknown, platform: Platform) {
   if (!object(raw) || typeof raw.action !== 'string') throw new Error('INVALID_STEP');
-  const kind = raw.action === 'launchApp' ? 'launch' : raw.action;
-  if (!['launch', 'tap', 'swipe', 'input', 'waitFor', 'back', 'goHome'].includes(kind))
-    throw new Error('UNKNOWN_STEP');
-  const args = ['--device', platform + ':script'];
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'action') continue;
-    if (key === 'replace' && typeof value === 'boolean' && kind === 'input') {
-      if (value) args.push('--replace');
-    } else if (Object.hasOwn(numbers, key) && typeof value === 'number' && Number.isFinite(value)) {
-      args.push('--' + numbers[key] + '=' + value);
-    } else if (strings.includes(key) && typeof value === 'string') {
-      args.push('--' + key + '=' + value);
-    } else throw new Error('INVALID_STEP_ARGUMENT');
-  }
-  return parseStep(kind, args, async () => {
-    throw new Error('INVALID_STEP_ARGUMENT');
-  });
+  const { action, ...options } = raw;
+  return compileCommandStep(action, options, platform);
 }
 type Compiled = { index?: number; step: CommandStep; observation?: string };
 export async function readScript(raw: unknown, platform: Platform) {
@@ -98,6 +80,49 @@ export async function readScript(raw: unknown, platform: Platform) {
   if (!steps.length) throw new Error('EMPTY_PLATFORM_SCRIPT');
   return { kind: 'general' as const, steps };
 }
+
+async function executeScriptStep(
+  device: StepDevice,
+  identity: string,
+  command: Compiled,
+  signal: AbortSignal,
+) {
+  const { step, observation } = command;
+  const selector = 'selector' in step && step.selector;
+  if (observation || step.kind === 'waitFor' || !selector || !(selector.id || selector.label))
+    return executeStep(device, identity, step, observation, signal);
+
+  let samePage: ((view: View) => void) | undefined;
+  let original: Control | undefined;
+  const validate = (view: View) => {
+    if (samePage) samePage(view);
+    else samePage = guardObservation(identity, view, { kind: 'check' }, screenAvailable);
+    const hits = matchingControls(view, selector);
+    if (hits.length !== 1) return;
+    const [target] = hits;
+    if (
+      original &&
+      (target.id !== original.id ||
+        target.role !== original.role ||
+        target.checked !== original.checked ||
+        (original.labels[0] && !target.labels.includes(original.labels[0])) ||
+        (step.kind === 'input' && target.value !== original.value))
+    )
+      throw Error('STALE_OBSERVATION');
+    original ??= target;
+  };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await executeStep(device, identity, step, validate, signal);
+    } catch (error) {
+      const code = reason(error);
+      if (!samePage || attempt === 3 || (!isTargetUnavailable(code) && !isTransientObservation(code)))
+        throw error;
+      await sleep(200, undefined, { signal });
+    }
+  }
+}
+
 export async function runScript(
   device: StepDevice,
   identity: string,
@@ -116,7 +141,7 @@ export async function runScript(
       durationMs: 0,
     };
     try {
-      await executeStep(device, identity, command.step, command.observation, signal);
+      await executeScriptStep(device, identity, command, signal);
     } catch (e) {
       const error =
         reason(e) === 'ACTION_OUTCOME_UNKNOWN'
