@@ -127,6 +127,7 @@ export async function runConversation(
   hasSpace: () => boolean,
   activity?: (description: string) => void,
   useImages = false,
+  preview?: (image?: Buffer) => Promise<void>,
 ) {
   const deadline = Date.now() + timeLimitMs;
   const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeLimitMs)]);
@@ -247,6 +248,7 @@ export async function runConversation(
         : undefined;
       let frame: Buffer | undefined;
       let frameUrl: string | undefined;
+      let ocrImage: Buffer | undefined;
       const useNativeView = captureIssue !== undefined;
       if (useNativeView) {
         textStatus = captureIssue;
@@ -260,6 +262,7 @@ export async function runConversation(
           }
           if (localOCR && (!sendImage || visualPoint)) {
             const scan = await readScreenText(device, identity, view, bounded, frame);
+            ocrImage = scan.image;
             for (const { text, x, y } of scan.targets.slice(0, observationItemLimit)) {
               screenText.set('v' + (screenText.size + 1), {
                 text,
@@ -287,6 +290,7 @@ export async function runConversation(
         textStatus =
           'Screenshot sharing is off. For a drawn target, ask the user to enable 允许模型按需查看手机截图 in 工作台设置 or select the target in the preview.';
       }
+      await preview?.(frame ?? ocrImage);
       const swipe = tool(
         token,
         'swipe',

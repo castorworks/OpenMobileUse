@@ -559,7 +559,7 @@ function renderFrame() {
     p.style.top = 100 * s.point.y + '%';
   }
   $('manual-hint').textContent = s.active
-    ? '任务运行中，画面随设备动作更新。'
+    ? '任务运行中，显示最近一次采集的手机画面。'
     : mode === 'swipe'
       ? '在画面上拖动并松开以执行滑动。'
       : control

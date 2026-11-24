@@ -58,6 +58,7 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
         role: a.type,
         bounds: b,
         enabled: a.enabled !== 'false',
+        clickable: a.clickable === 'true' ? true : a.clickable === 'false' ? false : undefined,
         focused: a.focused === 'true' || (searchFocused && a.type === 'SearchField'),
         editable,
         secret,

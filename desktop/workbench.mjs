@@ -406,32 +406,45 @@ export class Workbench {
           controller.signal,
           conversational || playback || script?.kind === 'general' ? 'foreground' : 'settings',
           async (device) => {
-            const showFrame = async () => {
-              if (controller.signal.aborted) return;
+            let screenshotAt;
+            const screenshot = async () => {
+              const image = await device.screenshot();
+              screenshotAt = new Date().toISOString();
+              return image;
+            };
+            const showFrame = async (captured) => {
+              if (controller.signal.aborted) return false;
               try {
+                const image = captured ?? await screenshot();
+                if (controller.signal.aborted) return false;
                 this.emit({
                   type: 'frame',
                   device: id,
                   runId: record.id,
                   frame: {
-                    image: imageUrl(await device.screenshot()),
-                    observedAt: new Date().toISOString(),
+                    image: imageUrl(image),
+                    observedAt: screenshotAt,
                     controls: [],
                   },
                 });
+                return true;
               } catch (e) {
                 this.emit({ type: 'frameError', device: id, runId: record.id, error: errorCode(e) });
+                return false;
               }
             };
-            // The task's own session supplies previews, in order, after actual native operations.
-            const watched = {};
-            for (const name of ['snapshot', 'foregroundApp', 'observe', 'screenshot', 'close']) {
+            // Chat publishes at the next observation so navigation has time to settle.
+            // Scripts without a decision loop still publish after each native operation.
+            let previewDue = true;
+            const watched = { screenshot };
+            for (const name of ['snapshot', 'foregroundApp', 'observe', 'close']) {
               watched[name] = device[name].bind(device);
             }
             for (const name of ['move', 'perform', 'launch', 'back']) {
               watched[name] = async (...args) => {
                 const value = await device[name](...args);
-                await showFrame();
+                if (conversational) previewDue = true;
+                else await showFrame();
                 return value;
               };
             }
@@ -444,6 +457,7 @@ export class Workbench {
                 chat.script.steps.push(item);
                 await persist();
                 record.stepCount = chat.script.steps.length;
+                if (item.command.action === 'pause') previewDue = true;
               };
               result = await runConversation(
                 watched,
@@ -460,6 +474,10 @@ export class Workbench {
                   notify();
                 },
                 useImages,
+                async (image) => {
+                  if (!image && !previewDue) return;
+                  previewDue = !(await showFrame(image));
+                },
               );
             } else if (playback) {
               result = await replayRecording(watched, id, playback, controller.signal, progress);

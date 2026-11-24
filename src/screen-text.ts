@@ -58,7 +58,7 @@ export async function readScreenText(
       line.y > 0 &&
       line.y < 1,
   );
-  return { targets, view: fresh };
+  return { targets, view: fresh, image };
 }
 
 export async function executeTextTarget(

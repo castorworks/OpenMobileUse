@@ -12,6 +12,7 @@ export interface Control {
   role: string;
   bounds: Bounds;
   enabled: boolean;
+  clickable?: boolean;
   focused: boolean;
   editable: boolean;
   secret: boolean;
@@ -189,7 +190,26 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
   } else throw new Error(stepHelp);
   return { step, device, observation };
 }
-type ObservationScope = CommandStep | { kind: 'check'; selector?: Selector };
+type ObservationScope =
+  | CommandStep
+  | { kind: 'check'; selector?: Selector }
+  | { kind: 'visualTap'; point: Point };
+
+function visualTapControls(view: View, hits: Control[]) {
+  const button = hits.at(-1);
+  if (
+    !button?.clickable || !button.enabled || !['Image', 'Button'].includes(button.role) ||
+    button.bounds.width > view.width / 4 || button.bounds.height > view.height / 4
+  ) return hits;
+  // A video can expose its changing playback time in a screen-sized accessibility label
+  // behind the toolbar. Keep the entire hit stack, including its order and geometry.
+  return hits.map((node) =>
+    node.role === 'Text' && node.clickable === false && !node.editable && !node.focused &&
+    node.bounds.width >= 0.9 * view.width && node.bounds.height >= 0.9 * view.height
+      ? { ...node, labels: [] }
+      : node,
+  );
+}
 
 function relevantControls(view: View, scope?: ObservationScope) {
   if (!scope) return view.controls;
@@ -208,16 +228,20 @@ function relevantControls(view: View, scope?: ObservationScope) {
     );
     return [states, atTarget.map((c) => [c.role, c.id])];
   }
-  if (scope.kind === 'swipe' || (scope.kind === 'tap' && 'point' in scope)) {
+  if (
+    scope.kind === 'swipe' || scope.kind === 'visualTap' ||
+    (scope.kind === 'tap' && 'point' in scope)
+  ) {
     const a = pointInView(view, scope.kind === 'swipe' ? scope.from : scope.point);
     const b = scope.kind === 'swipe' ? pointInView(view, scope.to) : a;
-    return view.controls.filter(
+    const hits = view.controls.filter(
       ({ bounds: r }) =>
         r.x <= Math.max(a.x, b.x) &&
         r.x + r.width > Math.min(a.x, b.x) &&
         r.y <= Math.max(a.y, b.y) &&
         r.y + r.height > Math.min(a.y, b.y),
     );
+    return scope.kind === 'visualTap' ? visualTapControls(view, hits) : hits;
   }
   return view.controls;
 }
