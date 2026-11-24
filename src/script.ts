@@ -18,8 +18,10 @@ const numbers: Record<string, string> = {
   toY: 'to-y',
   durationMs: 'duration-ms',
   timeoutMs: 'timeout-ms',
+  cardX: 'card-x',
+  cardY: 'card-y',
 };
-const strings = ['app', 'id', 'label', 'role', 'text', 'state', 'module', 'ability', 'observation'];
+const strings = ['app', 'id', 'label', 'role', 'within', 'text', 'state', 'module', 'ability', 'observation'];
 export async function compileStep(raw: unknown, platform: Platform) {
   if (!object(raw) || typeof raw.action !== 'string') throw new Error('INVALID_STEP');
   const kind = raw.action === 'launchApp' ? 'launch' : raw.action;
@@ -82,7 +84,8 @@ export async function readScript(raw: unknown, platform: Platform) {
         const loc = object(variants) ? variants[platform] : undefined;
         if (
           !object(loc) ||
-          Object.keys(loc).some((k) => !['id', 'label', 'role'].includes(k) || Object.hasOwn(action, k))
+          Object.keys(loc).some((k) =>
+            !['id', 'label', 'role', 'within', 'cardX', 'cardY'].includes(k) || Object.hasOwn(action, k))
         )
           throw new Error('INVALID_TARGET');
         Object.assign(action, loc);

@@ -47,7 +47,7 @@ export function recordStep(view: View, command: Record<string, unknown>, node?: 
     const anchors: Selector[] = [];
     for (const c of view.controls) {
       if (c.secret || c.editable || !c.labels.length) continue;
-      const selector = uniqueSelector(view, c);
+      const selector = uniqueSelector(view, c, false);
       if (selector) anchors.push(selector);
       if (anchors.length >= 3) break;
     }

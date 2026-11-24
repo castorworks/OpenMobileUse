@@ -271,16 +271,20 @@ export class Workbench {
       image: imageUrl(image),
       controls: controls
         .filter((c) => !isScreenContainer(view, c))
-        .map((c) => ({
-          id: c.secret ? '' : c.id,
-          labels: c.secret ? [] : c.labels,
-          role: c.role,
-          bounds: c.bounds,
-          enabled: c.enabled,
-          navigation: c.navigation,
-          editable: c.editable && !c.secret,
-          secret: c.secret,
-        })),
+        .map((c) => {
+          const selector = c.card && !c.secret ? uniqueSelector(view, c) : undefined;
+          return {
+            id: c.secret ? '' : c.id,
+            labels: c.secret ? [] : c.labels,
+            role: c.role,
+            cardSelector: selector?.within ? selector : undefined,
+            bounds: c.bounds,
+            enabled: c.enabled,
+            navigation: c.navigation,
+            editable: c.editable && !c.secret,
+            secret: c.secret,
+          };
+        }),
     };
   }
   refresh(id) {

@@ -5,11 +5,13 @@ import type { Screen } from './navigation.js';
 
 export type Point = { x: number; y: number };
 export type Bounds = { x: number; y: number; width: number; height: number };
+export type AndroidCard = { label: string; ancestor: string; bounds: Bounds };
 export interface Control {
   id: string;
   labels: string[];
   role: string;
   bounds: Bounds;
+  card?: AndroidCard;
   enabled: boolean;
   focused: boolean;
   editable: boolean;
@@ -28,7 +30,10 @@ export interface View {
   layout: unknown;
   screen: Screen;
 }
-export type Selector = { id?: string; label?: string; role?: string };
+export type Selector = {
+  id?: string; label?: string; role?: string;
+  within?: string; cardX?: number; cardY?: number;
+};
 
 export function isScreenContainer(view: View, node: Control) {
   if (/^(?:XCUIElementType)?(?:Application|Window)$/.test(node.role)) return true;
@@ -76,6 +81,7 @@ omu input --device <platform:id> [--id <id> | --label <label>] [--role <role>] (
 omu launch --device <platform:id> --app <settings|package-or-bundle-id> [--ability <name>] [--module <name>]
 omu back --device <platform:id> [--id <navigation-control> | --label <name>] [--role <role>]
 omu waitFor --device <platform:id> (--id <id> | --label <name>) [--role <role>] [--state visible|hidden] [--timeout-ms 5000]
+For repeated Android ids, tap and waitFor accept --id <id> --role <role> --within <card label> [--card-x <0..1> --card-y <0..1>].
 --ability and --module are Harmony-only. All commands accept [--observation <observationId>] [--json].`;
 export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
@@ -89,6 +95,9 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       id: str,
       label: str,
       role: str,
+      within: str,
+      'card-x': str,
+      'card-y': str,
       x: str,
       y: str,
       'from-x': str,
@@ -107,10 +116,10 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     },
   });
   const byKind: Record<string, string[]> = {
-    tap: ['id', 'label', 'role', 'x', 'y'],
+    tap: ['id', 'label', 'role', 'x', 'y', 'within', 'card-x', 'card-y'],
     input: ['id', 'label', 'role', 'text', 'stdin', 'replace'],
     swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
-    waitFor: ['id', 'label', 'role', 'state', 'timeout-ms'],
+    waitFor: ['id', 'label', 'role', 'state', 'timeout-ms', 'within', 'card-x', 'card-y'],
     back: ['id', 'label', 'role'],
     launch: ['app', 'ability', 'module'],
   };
@@ -136,6 +145,17 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     if (!raw?.trim() || !Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > 1)
       throw new Error('COORDINATE_OUT_OF_RANGE');
     return Number(raw);
+  }
+  if (v.within !== undefined || v['card-x'] !== undefined || v['card-y'] !== undefined) {
+    if (
+      !device.startsWith('android:') || !v.within?.trim() || !v.id || !v.role ||
+      (v['card-x'] === undefined) !== (v['card-y'] === undefined)
+    ) throw Error('INVALID_SELECTOR');
+    selector.within = v.within;
+    if (v['card-x'] !== undefined) {
+      selector.cardX = coordinate(v['card-x']);
+      selector.cardY = coordinate(v['card-y']);
+    }
   }
   let step: CommandStep;
   if (kind === 'back') {
@@ -189,8 +209,18 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
 }
 type ObservationScope = CommandStep | { kind: 'check'; selector?: Selector };
 
-function containsPoint(r: Bounds, p: Point) {
+export function containsPoint(r: Bounds, p: Point) {
   return r.x <= p.x && p.x < r.x + r.width && r.y <= p.y && p.y < r.y + r.height;
+}
+
+function controlState({ bounds, card, ...state }: Control) {
+  return state;
+}
+
+function observedControl(node: Control) {
+  if (!node.card) return node;
+  const { card, ...control } = node;
+  return control;
 }
 
 function controlsInGestureRegion(view: View, a: Point, b: Point) {
@@ -204,14 +234,14 @@ function controlsInGestureRegion(view: View, a: Point, b: Point) {
 }
 
 function relevantControls(view: View, scope?: ObservationScope) {
-  if (!scope) return view.controls;
+  if (!scope) return view.controls.map(observedControl);
   if (scope.kind === 'launch' || (scope.kind === 'check' && !scope.selector)) return [];
   if (scope.kind === 'back' && !scope.selector)
-    return view.controls.map(({ bounds, ...state }) => state);
+    return view.controls.map(controlState);
   if ('selector' in scope && scope.selector && (scope.selector.id || scope.selector.label)) {
     // Resolve the same unique control in the new tree. The driver uses its current bounds.
     const hits = matchingControls(view, scope.selector);
-    const states = hits.map(({ bounds, ...state }) => state);
+    const states = hits.map(n => n.card ? { ...controlState(n), within: n.card.label } : controlState(n));
     if (hits.length !== 1 || scope.kind === 'check' || scope.kind === 'waitFor') return states;
     const center = visibleCenter(view, hits[0].bounds);
     const atTarget = view.controls.filter((n) => containsPoint(n.bounds, center));
@@ -220,9 +250,9 @@ function relevantControls(view: View, scope?: ObservationScope) {
   if (scope.kind === 'swipe' || (scope.kind === 'tap' && 'point' in scope)) {
     const a = pointInView(view, scope.kind === 'swipe' ? scope.from : scope.point);
     const b = scope.kind === 'swipe' ? pointInView(view, scope.to) : a;
-    return controlsInGestureRegion(view, a, b);
+    return controlsInGestureRegion(view, a, b).map(observedControl);
   }
-  return view.controls;
+  return view.controls.map(observedControl);
 }
 
 function observationHash(device: string, view: View, controls: unknown) {
@@ -242,7 +272,9 @@ export function swipeObservation(identity: string, view: View, step?: Extract<St
   const to = step && pointInView(view, step.to);
   const region = from && to ? controlsInGestureRegion(view, from, to) : view.controls;
   const edges: number[] = [];
-  const controls = region.map(({ bounds, ...state }) => {
+  const controls = region.map((node) => {
+    const { bounds } = node;
+    const state = controlState(node);
     edges.push(bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height);
     return from && to ? [state, containsPoint(bounds, from), containsPoint(bounds, to)] : state;
   });
@@ -280,19 +312,43 @@ export function guardObservation(
     if (observationId(identity, current, scope) !== expected) throw Error('STALE_OBSERVATION');
   };
 }
+function inSelectedCard(node: Control, selector: Selector) {
+  if (!selector.within) return true;
+  if (node.card?.label !== selector.within) return false;
+  const { cardX, cardY } = selector;
+  if (cardX === undefined && cardY === undefined) return true;
+  return cardX !== undefined && cardY !== undefined &&
+    containsPoint(node.bounds, cardPoint(node.card.bounds, cardX, cardY));
+}
+
 export function matchingControls(view: View, selector: Selector) {
   return view.controls.filter(
     (n) =>
       (!selector.id || n.id === selector.id) &&
       (!selector.label || n.labels.includes(selector.label)) &&
-      (!selector.role || n.role === selector.role),
+      (!selector.role || n.role === selector.role) &&
+      inSelectedCard(n, selector),
   );
 }
-export function uniqueSelector(view: View, node: Control) {
+export function cardPoint(bounds: Bounds, x: number, y: number): Point {
+  return { x: bounds.x + x * bounds.width, y: bounds.y + y * bounds.height };
+}
+export function uniqueSelector(view: View, node: Control, allowCard = true) {
   const candidates: Selector[] = [];
   if (node.id) candidates.push({ id: node.id, role: node.role });
+  const card = allowCard && node.card;
+  if (node.id && card) candidates.push({ id: node.id, role: node.role, within: card.label });
   for (const label of node.labels) candidates.push({ label, role: node.role });
-  return candidates.find((s) => matchingControls(view, s).length === 1);
+  const unique = candidates.find((s) => matchingControls(view, s).length === 1);
+  if (unique || !card || !node.id) return unique;
+  const center = visibleCenter(view, node.bounds);
+  if (!containsPoint(card.bounds, center)) return;
+  const relative: Selector = {
+    id: node.id, role: node.role, within: card.label,
+    cardX: (center.x - card.bounds.x) / card.bounds.width,
+    cardY: (center.y - card.bounds.y) / card.bounds.height,
+  };
+  if (matchingControls(view, relative).length === 1) return relative;
 }
 
 export function resolveControl(view: View, selector: Selector, input: boolean) {

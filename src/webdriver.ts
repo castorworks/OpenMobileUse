@@ -3,11 +3,16 @@ import { DOMParser } from '@xmldom/xmldom';
 import { adbPath, run } from './host.js';
 import { nodeXPath, xmlControls } from './native-layout.js';
 import {
+  cardPoint,
+  containsPoint,
   isAppIdentifier,
   inputValue,
   pointInView,
+  visibleCenter,
+  type Bounds,
   type Control,
   type LaunchStep,
+  type Selector,
   type Step,
   type View as StepView,
 } from './steps.js';
@@ -433,10 +438,54 @@ export class WebDriver implements Device {
       }),
     );
   }
-  private async elementURL(locator: Locator) {
+  private async elementURLs(locator: Locator) {
     const hits = await request<Record<string, string>[]>(this.url + '/elements', 'POST', locator);
-    if (hits.length !== 1 || !hits[0][elementKey]) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
-    return this.url + '/element/' + encodeURIComponent(hits[0][elementKey]);
+    return hits.map((hit) => {
+      const id = hit[elementKey];
+      if (typeof id !== 'string' || !id) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+      return this.url + '/element/' + encodeURIComponent(id);
+    });
+  }
+  private async elementURL(locator: Locator) {
+    const hits = await this.elementURLs(locator);
+    if (hits.length !== 1) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    return hits[0];
+  }
+  private async androidTapURL(view: StepView, node: Control, selector: Selector) {
+    const base = nodeXPath('android', view.app, node, selector.label, false);
+    const find = (value: string) => this.elementURLs({ using: 'xpath', value });
+    const hits = await find(base);
+    if (!hits.length) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    if (hits.length === 1 && !selector.within) return hits[0];
+
+    const card = node.card;
+    if (!card || (selector.within && selector.within !== card.label))
+      throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    const scoped = await find(`${base}[${card.ancestor}]`);
+    if (!scoped.length) throw new Error('STALE_OBSERVATION');
+    if (scoped.length === 1 && selector.cardX === undefined) return scoped[0];
+
+    // Recalculate the reference point in the live card; recycled rows can move as a unit.
+    const owners = await find(`${base}/${card.ancestor}`);
+    if (owners.length !== 1) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    const liveCard = await request<Bounds>(owners[0] + '/rect', 'GET');
+    const center = visibleCenter(view, node.bounds);
+    const point = cardPoint(
+      liveCard,
+      selector.cardX ?? (center.x - card.bounds.x) / card.bounds.width,
+      selector.cardY ?? (center.y - card.bounds.y) / card.bounds.height,
+    );
+    const screen = { x: 0, y: 0, width: view.width, height: view.height };
+    if (!containsPoint(liveCard, point) || !containsPoint(screen, point))
+      throw new Error('STALE_OBSERVATION');
+    let match: string | undefined;
+    for (const url of scoped) {
+      if (!containsPoint(await request<Bounds>(url + '/rect', 'GET'), point)) continue;
+      if (match) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+      match = url;
+    }
+    if (!match) throw new Error('AMBIGUOUS_OR_MISSING_ELEMENT');
+    return match;
   }
   async back() {
     if (this.platform !== 'android') throw new Error('NAVIGATION_BUTTON_REQUIRED');
@@ -448,10 +497,11 @@ export class WebDriver implements Device {
       return;
     }
     const field = node!;
-    const url = await this.elementURL({
-      using: 'xpath',
-      value: nodeXPath(this.platform, view.app, field, step.selector.label),
-    });
+    const url = this.platform === 'android' && step.kind === 'tap' && field.id && field.role
+      ? await this.androidTapURL(view, field, step.selector)
+      : await this.elementURL({
+          using: 'xpath', value: nodeXPath(this.platform, view.app, field, step.selector.label),
+        });
     if (step.kind === 'tap') {
       await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
       return;

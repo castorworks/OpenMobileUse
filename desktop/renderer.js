@@ -497,8 +497,12 @@ function renderFrame() {
     else $('shot').removeAttribute('src');
     const list = [new Option('选择控件或在画面上定位', '')];
     for (const [i, c] of (f?.controls || []).entries()) {
-      if (c.enabled && !c.secret && (c.id || c.labels.length))
-        list.push(new Option((c.labels[0] || c.id) + ' · ' + c.role.split('.').pop(), String(i)));
+      if (c.enabled && !c.secret && (c.id || c.labels.length)) {
+        const card = c.cardSelector;
+        const position = card?.cardX === undefined ? '' : `(${Math.round(card.cardX * 100)}%, ${Math.round(card.cardY * 100)}%)`;
+        const title = [c.labels[0] || c.id, card?.within, position, c.role.split('.').pop()];
+        list.push(new Option(title.filter(Boolean).join(' · '), String(i)));
+      }
     }
     $('control').replaceChildren(...list);
   }
@@ -609,6 +613,7 @@ $('swipe-mode').onclick = () => {
 };
 function selector(c) {
   if (!c) return {};
+  if (c.cardSelector?.within) return c.cardSelector;
   const peers = state().frame.controls.filter((node) => node.role === c.role);
   if (c.id && peers.filter((node) => node.id === c.id).length === 1) return { id: c.id, role: c.role };
   const uniqueLabel = c.labels.find(
@@ -634,7 +639,7 @@ async function action(raw) {
         const hits = s.frame.controls.filter(
           (n) => n.role === loc.role && (loc.id ? n.id === loc.id : n.labels.includes(loc.label)),
         );
-        if (hits.length === 1) raw = { action: 'tap', ...loc };
+        if (loc.within || hits.length === 1) raw = { action: 'tap', ...loc };
       }
       r = await api.action(id, raw, observation, chatId || undefined);
       if (chatId) {
