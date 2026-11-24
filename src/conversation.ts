@@ -4,6 +4,7 @@ import { messagesFor, remember, type Decide, type History, type Tool } from './c
 import type { Platform } from './host.js';
 import { recordStep, reading, type RecordedStep } from './recording.js';
 import { executeTextTarget, readScreenText } from './screen-text.js';
+import { pauseVideoCenter, readVideoPlayer } from './video-player.js';
 import {
   imageFrame,
   modelImage,
@@ -37,6 +38,9 @@ For games and custom-drawn views use the screenText refs for visible labels that
 When the native list lacks the target, use inspect_screen or read_screen_text if offered before asking for help.
 When an image is attached, inspect its actual pixels. Use tap_visual on a distinctive label or icon
 at its centre, with coordinates from 0 to 1 relative to the full screenshot, origin at top left.
+If the user explicitly wants to pause by tapping the centre of a playing video, use pause_video_center.
+It taps the verified player region once and reads its playback state. If unavailable, report the blocked step.
+For an ordinary pause request, prefer the native pause control.
 For a feed swipe, verify the new item with finish using its native title, author or other identifying text.
 newLabelRefs are native labels that appeared after the swipe. Use one only if it demonstrates the requested result.
 If only the image proves the result, use finish_visual on a stable, distinctive detail.
@@ -211,6 +215,7 @@ export async function runConversation(
       // Give the new item's native evidence the first look. The model can still request an image.
       if (newLabelRefs.length) inspectTextInApp = '';
       const tappable = refs((n) => n.enabled);
+      const player = platform === 'android' ? readVideoPlayer(view) : undefined;
       const inspectScreen = !tappable.length || inspectTextInApp === view.app;
       const sendImage = useImages && !imageRejected;
       const localOCR = process.platform === 'darwin';
@@ -268,6 +273,8 @@ export async function runConversation(
       ];
       if (platform === 'android' && device.goHome)
         tools.push(tool(token, 'home', 'Press Android Home and verify the default home screen.', {}));
+      if (player)
+        tools.push(tool(token, 'pause_video_center', 'Pause the current work by tapping the visible video centre once. Already paused requires no tap.'));
       if (!inspectScreen && (sendImage || localOCR))
         tools.push(
           tool(
@@ -325,6 +332,7 @@ export async function runConversation(
           .find((n) => n.role === 'XCUIElementTypeApplication')
           ?.labels[0]?.slice(0, 140),
         controls,
+        videoPlayer: player ? { title: player.title.slice(0, 140), state: player.state, evidence: player.evidence } : undefined,
         newLabelRefs: newLabelRefs.length ? newLabelRefs : undefined,
         observationId: token,
         textStatus,
@@ -379,6 +387,7 @@ export async function runConversation(
           ? decode(tools, name, call.function.arguments)
           : 'ONE_ACTION_PER_OBSERVATION';
       let description = name, dispatchKey = 'action';
+      let verifiedPause: { tapped: boolean; evidence: string } | undefined;
       if (!outcome) {
         const a = JSON.parse(call.function.arguments);
         if (name === 'swipe') dispatchKey = a.direction;
@@ -389,6 +398,7 @@ export async function runConversation(
         const visual = screenText.get(a.target || a.evidence);
         if (name === 'swipe' && a.note?.trim()) notes.add(a.note.trim());
         if (name === 'inspect_screen') description = '查看手机画面';
+        else if (name === 'pause_video_center') description = '点击视频中央并核对暂停状态';
         else if (name === 'tap_visual')
           description = '点击画面上的「' + a.label.trim().slice(0, 48) + '」';
         else if (name === 'finish_visual') description = '核对手机画面';
@@ -414,6 +424,11 @@ export async function runConversation(
           if (name === 'read_screen_text' || name === 'inspect_screen') {
             inspectTextInApp = view.app;
             outcome = 'observed';
+          } else if (name === 'pause_video_center' && player) {
+            verifiedPause = await pauseVideoCenter(device, identity, view, player.key, bounded);
+            await record(recordStep(view, { action: 'pauseVideoCenter', item: player.key }));
+            description = (verifiedPause.tapped ? '已点击视频中央一次' : '视频已暂停，无需点击') + '，已读到「' + verifiedPause.evidence + '」';
+            outcome = verifiedPause.tapped ? 'dispatched' : 'observed';
           } else if (frame && (name === 'tap_visual' || name === 'finish_visual')) {
             const tap = name === 'tap_visual';
             const label = (tap ? a.label : a.message).trim();
@@ -546,6 +561,16 @@ export async function runConversation(
           }
         } catch (e) {
           const code = reason(e);
+          if (name === 'pause_video_center' &&
+            ['VIDEO_PAUSE_UNCONFIRMED', 'STALE_OBSERVATION', 'SCREENSHOT_GEOMETRY_MISMATCH', 'INVALID_PNG', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes(code)) {
+            progress(description, code);
+            return {
+              status: 'needs_review', reason: code, modelCalls,
+              answer: code === 'VIDEO_PAUSE_UNCONFIRMED'
+                ? '已点击视频中央一次，暂停状态未能确认。'
+                : '未能核对当前作品和播放器区域，未点击视频中央。',
+            };
+          }
           if (
             ![
               'STALE_OBSERVATION',
@@ -574,7 +599,7 @@ export async function runConversation(
         history,
         observation,
         reply,
-        reply.tool_calls.map(() => JSON.stringify({ outcome })),
+        reply.tool_calls.map(() => JSON.stringify({ outcome, verifiedPause })),
       );
       if (wrappingUp) return partial(blocker?.outcome ?? 'DECISION_BUDGET');
       if (outcome === 'dispatched' && name !== 'wait') {

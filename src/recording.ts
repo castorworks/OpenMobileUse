@@ -4,6 +4,7 @@ import type { Progress } from './run.js';
 import { compileStep, object, reason } from './script.js';
 import { executeTextTarget } from './screen-text.js';
 import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
+import { pauseVideoCenter } from './video-player.js';
 import {
   executeStep,
   guardObservation,
@@ -64,6 +65,7 @@ type PlaybackStep = {
   selector?: Selector;
   screenText?: string;
   image?: ImageTarget;
+  videoItem?: string;
 };
 
 export async function compileRecording(data: unknown, platform: Platform): Promise<PlaybackStep[]> {
@@ -125,6 +127,12 @@ export async function compileRecording(data: unknown, platform: Platform): Promi
       parsed.push({ source, screenText: command.text });
       continue;
     }
+    if (command.action === 'pauseVideoCenter') {
+      if (platform !== 'android' || Object.keys(command).length !== 2 || typeof command.item !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(command.item) || source.reading || source.screen) throw Error('INVALID_RECORDING');
+      parsed.push({ source, videoItem: command.item });
+      continue;
+    }
     if (command.action === 'tapImage' || command.action === 'checkImage') {
       if (
         Object.keys(command).length !== 3 ||
@@ -170,7 +178,7 @@ export async function replayRecording(
   signal: AbortSignal,
   progress: Progress,
 ) {
-  for (const [index, { source, step, selector, screenText, image }] of steps.entries()) {
+  for (const [index, { source, step, selector, screenText, image, videoItem }] of steps.entries()) {
     const name = String(source.command.action);
     try {
       const deadline = Date.now() + 8000;
@@ -201,7 +209,9 @@ export async function replayRecording(
               (source.reading?.value === undefined || node.value === source.reading.value)))
         ) {
           try {
-            if (image) {
+            if (videoItem) {
+              await pauseVideoCenter(device, identity, view, videoItem, signal);
+            } else if (image) {
               await executeImageTarget(device, identity, view, image, name === 'tapImage', signal);
             } else if (screenText) {
               await executeTextTarget(
