@@ -107,3 +107,38 @@ test('previously recorded RGB patches still use their original colour and unique
   await assert.rejects(dispatch(legacy, changed, taps), /VISUAL_TARGET_UNCLEAR/);
   assert.equal(taps.length, 1);
 });
+
+test('a repeated visual control requires both its unique row landmark and the control at playback', async () => {
+  const topY = 92, bottomY = 205;
+  const channels = '<path d="M0 -5 L8 4 L18 -6 M3 -4 L11 4" fill="none" stroke="black" stroke-width="2"/>';
+  const programs = '<circle cx="7" r="6" fill="navy"/>';
+  function rows(first, second, buttonX = icon.x) {
+    const headers = [first, second].map((shape, index) =>
+      `<g transform="translate(36 ${index ? bottomY : topY})">${shape}</g>`);
+    const buttons = [{ x: icon.x, y: topY }];
+    if (buttonX !== null) buttons.push({ x: buttonX, y: bottomY });
+    return screenshot(buttons, '#65788a', headers.join(''));
+  }
+  const button = { x: point.x, y: bottomY / (height - 1) };
+  const original = await rows(programs, channels);
+  const anchor = await imageTarget(original, button);
+  assert.ok(anchor.row);
+  assert.ok(isImageTarget(anchor));
+  for (const row of [null, {}, { ...anchor.row, offsetX: 0 }, { ...anchor.row, rgb: '!' }])
+    assert.equal(isImageTarget({ ...anchor, row }), false);
+  assert.equal(isImageTarget({ ...anchor, match: 'contour' }), false);
+
+  const taps = [];
+  await dispatch(anchor, await rows(channels, programs), taps);
+  assert.deepEqual(taps, [{ x: point.x, y: topY / (height - 1) }]);
+  for (const changed of [
+    await rows(channels, channels),
+    await rows(programs, ''),
+    await rows(programs, channels, null),
+    await rows(programs, channels, icon.x - 20),
+  ]) {
+    await assert.rejects(dispatch(anchor, changed, taps), /VISUAL_TARGET_UNCLEAR/);
+  }
+  await assert.rejects(imageTarget(await rows(channels, channels), button), /VISUAL_TARGET_UNCLEAR/);
+  assert.equal(taps.length, 1);
+});

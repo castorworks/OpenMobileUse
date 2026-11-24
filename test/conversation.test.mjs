@@ -239,6 +239,33 @@ test('an unclear visual tap can recover a native target beyond the control limit
   );
 });
 
+for (const screenChanges of [false, true]) {
+  test('repeated visual misses replan from the current screen, changed=' + screenChanges, async () => {
+    const device = phone();
+    const initial = await frame('#eeeeee');
+    const changed = await frame('#222222');
+    let attempted = 0;
+    device.screenshot = async () => screenChanges && attempted === 2 ? changed : initial;
+    device.perform = async step => {
+      assert.equal(step.kind, 'swipe');
+      device.view.controls = [control('channels', 'Text')];
+    };
+    const { result, records, events } = await run(device, (obs, tools) => {
+      if (obs.controls.length) return ['finish', { evidence: obs.controls[0].ref, message: '已找到视频号。' }];
+      if (attempted < 2) {
+        attempted++;
+        return ['tap_visual', { x: 0.88, y: 0.47, label: '视频号的更多' }];
+      }
+      assert.equal(tools.includes('tap_visual'), screenChanges);
+      assert.ok(!tools.includes('report_partial'));
+      return ['swipe', { direction: 'up' }];
+    }, true);
+    assert.equal(result.status, 'succeeded');
+    assert.deepEqual(events, ['VISUAL_TARGET_UNCLEAR', 'VISUAL_TARGET_UNCLEAR', 'dispatched', 'observed']);
+    assert.deepEqual(records.map(s => s.command.action), ['swipe', 'check']);
+  });
+}
+
 test('the 1000th decision is reserved for reporting the result', async () => {
   const device = phone([control('open', 'Button')]);
   const picture = await frame('#202020');
@@ -329,8 +356,27 @@ test('an unchanged feed gets a bounded recovery and reports partial findings', a
   assert.equal(dispatched, 1);
   assert.equal(result.status, 'needs_review');
   assert.equal(result.reason, 'NO_PROGRESS');
+  assert.equal(result.replyRequested, false);
   assert.match(result.answer, /只读到第一条/);
   assert.match(result.answer, /上滑动/);
+});
+
+test('the final decision can report saved findings without asking the user to continue', async () => {
+  const device = phone();
+  const blank = await frame('#202020');
+  device.screenshot = async () => blank;
+  device.perform = async () => {};
+  const { result, records } = await run(device, (obs, tools) => {
+    if (tools.includes('report_partial'))
+      return ['report_partial', { message: '页面没有显示更多结果。' }];
+    return ['swipe', { direction: 'up', note: '已读到第一条。' }];
+  }, true);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'NO_PROGRESS');
+  assert.equal(result.replyRequested, false);
+  assert.match(result.answer, /已读到第一条。/);
+  assert.match(result.answer, /页面没有显示更多结果。/);
+  assert.deepEqual(records.map(s => s.command.action), ['swipe']);
 });
 
 test('reused native ids with changing captions support consecutive swipes without images', async () => {

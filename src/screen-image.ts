@@ -9,22 +9,39 @@ import {
   type View,
 } from './steps.js';
 
-// Store only a small RGB patch around the selected point. All frames use the same working scale.
+// Target and optional same-row landmark patches use the same working scale on every host.
 const side = 480,
   width = 25,
   height = 17,
   bytes = width * height * 3;
-export type ImageTarget = { rgb: string; dx: number; dy: number; match?: 'contour' };
+type RowLandmark = { rgb: string; offsetX: number };
+export type ImageTarget = { rgb: string; dx: number; dy: number; match?: 'contour'; row?: RowLandmark };
 type Pixels = { data: Buffer; info: { width: number; height: number } };
+
+function isPatch(value: unknown): value is string {
+  return typeof value === 'string' && value.length === (bytes / 3) * 4 &&
+    /^[A-Za-z0-9+/]+$/.test(value);
+}
+
+function isRowLandmark(value: unknown): value is RowLandmark {
+  return (
+    object(value) &&
+    Object.keys(value).every((key) => ['rgb', 'offsetX'].includes(key)) &&
+    isPatch(value.rgb) &&
+    typeof value.offsetX === 'number' &&
+    Number.isInteger(value.offsetX) &&
+    Math.abs(value.offsetX) >= width &&
+    Math.abs(value.offsetX) <= side - width
+  );
+}
 
 export function isImageTarget(value: unknown): value is ImageTarget {
   return (
     object(value) &&
-    Object.keys(value).every((key) => ['rgb', 'dx', 'dy', 'match'].includes(key)) &&
+    Object.keys(value).every((key) => ['rgb', 'dx', 'dy', 'match', 'row'].includes(key)) &&
     (value.match === undefined || value.match === 'contour') &&
-    typeof value.rgb === 'string' &&
-    value.rgb.length === (bytes / 3) * 4 &&
-    /^[A-Za-z0-9+/]+$/.test(value.rgb) &&
+    isPatch(value.rgb) &&
+    (value.row === undefined || (value.match === undefined && isRowLandmark(value.row))) &&
     typeof value.dx === 'number' &&
     Number.isInteger(value.dx) &&
     value.dx >= 0 &&
@@ -93,6 +110,15 @@ export function swipePreviewChanged(before: Buffer | undefined, after: Buffer) {
   return difference > after.length * 3;
 }
 
+function patchAt(frame: Pixels, left: number, top: number) {
+  const rgb = Buffer.alloc(bytes);
+  for (let row = 0; row < height; row++) {
+    const start = ((top + row) * frame.info.width + left) * 3;
+    frame.data.copy(rgb, row * width * 3, start, start + width * 3);
+  }
+  return rgb.toString('base64');
+}
+
 export async function imageTarget(png: Buffer, point: Point): Promise<ImageTarget> {
   const frame = await pixels(png);
   const w = frame.info.width,
@@ -102,17 +128,24 @@ export async function imageTarget(png: Buffer, point: Point): Promise<ImageTarge
     y = Math.round(point.y * (h - 1));
   const left = Math.min(w - width, Math.max(0, x - (width >> 1)));
   const top = Math.min(h - height, Math.max(0, y - (height >> 1)));
-  const rgb = Buffer.alloc(bytes);
-  for (let row = 0; row < height; row++) {
-    const start = ((top + row) * w + left) * 3;
-    frame.data.copy(rgb, row * width * 3, start, start + width * 3);
-  }
-  const target = { rgb: rgb.toString('base64'), dx: x - left, dy: y - top };
+  const target = { rgb: patchAt(frame, left, top), dx: x - left, dy: y - top };
   // Select a matcher only if it uniquely identifies this point on the original screen.
   // Replay must use that same evidence, even if another matcher happens to find a candidate.
   if (locateContour(frame, target)) return { ...target, match: 'contour' };
-  locateRgb(frame, target);
-  return target;
+  if (locateRgb(frame, target.rgb)) return target;
+  // A repeated button can be identified by a different title on its row. First require
+  // the button itself to have visible detail, then look for a non-overlapping landmark.
+  if (locateRgb(frame, target.rgb, { x: left, y: top })) {
+    for (let distance = width; distance <= w - width; distance += width >> 1) {
+      for (const offsetX of [-distance, distance]) {
+        const contextLeft = left + offsetX;
+        if (contextLeft < 0 || contextLeft + width > w) continue;
+        const rgb = patchAt(frame, contextLeft, top);
+        if (locateRgb(frame, rgb)) return { ...target, row: { rgb, offsetX } };
+      }
+    }
+  }
+  throw Error('VISUAL_TARGET_UNCLEAR');
 }
 
 // The signed high-pass response keeps a thin icon's strokes when the video under it
@@ -219,8 +252,9 @@ function locateContour(frame: Pixels, target: ImageTarget): Point | undefined {
   if (best) return { x: (best.x + target.dx) / (w - 1), y: (best.y + target.dy) / (h - 1) };
 }
 
-function locateRgb(frame: Pixels, target: ImageTarget): Point {
-  const patch = Buffer.from(target.rgb, 'base64');
+// Returns the top-left pixel of the unique match. With an origin, verify only that placement.
+function locateRgb(frame: Pixels, rgb: string, origin?: Point): Point | undefined {
+  const patch = Buffer.from(rgb, 'base64');
   const stride = frame.info.width * 3;
   // Use the strongest horizontal colour edge to discard unlikely positions before matching the patch.
   let edge = 0,
@@ -235,15 +269,18 @@ function locateRgb(frame: Pixels, target: ImageTarget): Point {
       channel = i % 3;
     }
   }
-  if (strength < 30) throw Error('VISUAL_TARGET_UNCLEAR');
+  if (strength < 30) return;
   const probe = Math.floor(edge / width) * stride + (edge % width) * 3 + channel;
   const colour = patch[edge * 3 + channel],
     adjacent = patch[edge * 3 + channel + 3];
   let best: Point | undefined,
     near: Point | undefined,
     bestError = Infinity;
-  for (let y = 0; y <= frame.info.height - height; y++) {
-    for (let x = 0; x <= frame.info.width - width; x++) {
+  const maxX = frame.info.width - width;
+  const maxY = frame.info.height - height;
+  if (origin && (origin.x < 0 || origin.x > maxX || origin.y < 0 || origin.y > maxY)) return;
+  for (let y = origin?.y ?? 0; y <= (origin?.y ?? maxY); y++) {
+    for (let x = origin?.x ?? 0; x <= (origin?.x ?? maxX); x++) {
       const start = y * stride + x * 3,
         probeAt = start + probe;
       if (
@@ -251,6 +288,12 @@ function locateRgb(frame: Pixels, target: ImageTarget): Point {
         Math.abs(frame.data[probeAt + 3] - adjacent) > 60
       )
         continue;
+      // A landmark fixes the expected position, but a missing faint button can still
+      // match a mostly white patch. Require its strongest stroke to remain there.
+      if (origin) {
+        const edgeDelta = frame.data[probeAt] - frame.data[probeAt + 3];
+        if (edgeDelta * (colour - adjacent) < strength ** 2 * 0.5) continue;
+      }
       let error = 0,
         outliers = 0;
       for (let row = 0; row < height && error <= bytes * 9 && outliers <= bytes * 0.08; row++) {
@@ -263,8 +306,7 @@ function locateRgb(frame: Pixels, target: ImageTarget): Point {
       }
       if (error > bytes * 9 || outliers > bytes * 0.08) continue;
       // Even a weaker second match makes the target ambiguous. Allow neighbouring alignments.
-      if (near && (Math.abs(near.x - x) > 4 || Math.abs(near.y - y) > 4))
-        throw Error('VISUAL_TARGET_UNCLEAR');
+      if (near && (Math.abs(near.x - x) > 4 || Math.abs(near.y - y) > 4)) return;
       near ??= { x, y };
       if (error > bytes * 5 || outliers > bytes * 0.025) continue;
       if (error < bestError) {
@@ -273,10 +315,21 @@ function locateRgb(frame: Pixels, target: ImageTarget): Point {
       }
     }
   }
-  if (!best) throw Error('VISUAL_TARGET_UNCLEAR');
-  return {
-    x: (best.x + target.dx) / (frame.info.width - 1),
-    y: (best.y + target.dy) / (frame.info.height - 1),
+  return best;
+}
+
+function locateImage(frame: Pixels, target: ImageTarget) {
+  if (target.match === 'contour') return locateContour(frame, target);
+  let origin: Point | undefined;
+  if (target.row) {
+    const landmark = locateRgb(frame, target.row.rgb);
+    if (!landmark) return;
+    origin = { x: landmark.x - target.row.offsetX, y: landmark.y };
+  }
+  const hit = locateRgb(frame, target.rgb, origin);
+  if (hit) return {
+    x: (hit.x + target.dx) / (frame.info.width - 1),
+    y: (hit.y + target.dy) / (frame.info.height - 1),
   };
 }
 
@@ -290,7 +343,7 @@ export async function executeImageTarget(
 ) {
   const png = await imageFrame(device, identity, view, signal);
   const frame = await pixels(png);
-  const point = target.match === 'contour' ? locateContour(frame, target) : locateRgb(frame, target);
+  const point = locateImage(frame, target);
   if (!point) throw Error('VISUAL_TARGET_UNCLEAR');
   signal.throwIfAborted();
   if (tap) {

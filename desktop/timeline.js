@@ -67,7 +67,9 @@ function updateTurn(row, turn, hasFollowingTurn) {
       cancelled: '已停止',
       interrupted: '已中断',
       failed: '执行失败',
-      needs_review: turn.replyRequested ? (hasFollowingTurn ? '已回复' : '等待你回复') : '待核实',
+      needs_review: turn.replyRequested
+        ? (hasFollowingTurn ? '已回复' : '等待你回复')
+        : (turn.replyRequested === false ? '本轮未完成' : '待核实'),
     }[turn.status] || '';
   const phase = turn.activity ? nice(turn.activity) : events.length ? '' : '正在连接设备';
   if (row.dataset.status !== turn.status) details.open = running;
