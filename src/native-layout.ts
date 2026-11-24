@@ -1,4 +1,4 @@
-import { DOMParser } from '@xmldom/xmldom';
+import { DOMParser, onErrorStopParsing } from '@xmldom/xmldom';
 import type { Bounds, Control, View } from './steps.js';
 export type HarmonyNode = { attributes: Record<string, string>; children?: HarmonyNode[] };
 export function bounds(s: string | null | undefined): Bounds | undefined {
@@ -70,14 +70,13 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
     );
   }
   collect(win);
+  const { hostWindowId, abilityName, pagePath } = win.attributes;
+  const owner = [hostWindowId, abilityName, pagePath];
   return {
     app: win.attributes.bundleName,
-    window: [
-      win.attributes.hostWindowId,
-      win.attributes.abilityName,
-      win.attributes.pagePath,
-      win.attributes.bounds,
-    ].join('/'),
+    window: [...owner, win.attributes.bounds].join('/'),
+    // The keyboard can resize the same app window between text injection and readback.
+    windowIdentity: hostWindowId && (abilityName || pagePath) ? JSON.stringify(owner) : undefined,
     width,
     height,
     rotation,
@@ -86,6 +85,13 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
     screen: { page: 'other' },
   };
 }
+export function parseXmlLayout(source: string) {
+  try {
+    return new DOMParser({ onError: onErrorStopParsing }).parseFromString(source, 'application/xml');
+  } catch {
+    throw Error('LAYOUT_UNAVAILABLE');
+  }
+}
 export function xmlControls(
   platform: 'android' | 'ios',
   source: string,
@@ -93,7 +99,7 @@ export function xmlControls(
   width: number,
   height: number,
 ): Control[] {
-  const doc = new DOMParser().parseFromString(source, 'application/xml');
+  const doc = parseXmlLayout(source);
   const result: Control[] = [];
   for (const n of Array.from(doc.getElementsByTagName('*'))) {
     const a = (k: string) => n.getAttribute(k) ?? '';

@@ -1,7 +1,6 @@
 import { bluetoothDefinition } from './bluetooth-task.js';
-import { DOMParser } from '@xmldom/xmldom';
 import { adbPath, run } from './host.js';
-import { nodeXPath, xmlControls } from './native-layout.js';
+import { nodeXPath, parseXmlLayout, xmlControls } from './native-layout.js';
 import { isTransientObservation, reason } from './observation.js';
 import {
   isAppIdentifier,
@@ -50,7 +49,7 @@ const navigationLabels = new Set([
 ]);
 
 export function classifyXml(platform: Family, source: string): View {
-  const document = new DOMParser().parseFromString(source, 'application/xml');
+  const document = parseXmlLayout(source);
   const nodes = Array.from(document.getElementsByTagName('*'));
   const geometry = (node: (typeof nodes)[number]) =>
     ['x', 'y', 'width', 'height', 'bounds'].map((k) => node.getAttribute(k) || '').join(',');
@@ -204,31 +203,51 @@ class AppiumError extends Error {
     super('Appium: ' + detail);
   }
 }
+class IncompleteAppiumReply extends Error {}
 function lostElement(error: unknown) {
   return (
     error instanceof AppiumError &&
     (error.code === 'stale element reference' || error.code === 'no such element')
   );
 }
-// Only observational requests may expose a stale target as safe to re-observe.
+// Only reads may turn a timeout or lost target into a request for a fresh observation.
 async function observed<T>(response: Promise<T>): Promise<T> {
   try {
     return await response;
   } catch (error) {
     if (lostElement(error)) throw new Error('STALE_OBSERVATION');
+    if (error instanceof IncompleteAppiumReply) throw new Error('OBSERVATION_INCOMPLETE');
     if (error instanceof AppiumError && error.code === 'no such window')
       throw new Error('FOREGROUND_APP_UNAVAILABLE');
+    if (error instanceof AppiumError && error.code === 'unable to capture screen')
+      throw new Error('SCREENSHOT_UNAVAILABLE');
+    if (
+      (error instanceof AppiumError && error.code === 'timeout') ||
+      (error instanceof DOMException && error.name === 'TimeoutError')
+    )
+      throw new Error('OBSERVATION_TIMEOUT');
     throw error;
   }
 }
 async function request<T>(url: string, method: string, data?: unknown, timeout = 20000): Promise<T> {
+  const signal = AbortSignal.timeout(timeout);
   const res = await fetch(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: data === undefined ? undefined : JSON.stringify(data),
-    signal: AbortSignal.timeout(timeout),
+    signal,
   });
-  const { value } = (await res.json()) as { value: T & { message?: string; error?: string } };
+  let reply: { value: T & { message?: string; error?: string } } | undefined;
+  try {
+    reply = await res.json();
+  } catch {
+    if (res.ok) signal.throwIfAborted();
+  }
+  if (!reply || typeof reply !== 'object' || !Object.hasOwn(reply, 'value')) {
+    if (!res.ok) throw new AppiumError(undefined, String(res.status));
+    throw new IncompleteAppiumReply('Appium: incomplete response');
+  }
+  const { value } = reply;
   if (!res.ok || value?.error)
     throw new AppiumError(
       value?.error,
@@ -314,12 +333,13 @@ export class WebDriver implements Device {
   private async settingsActive() {
     return (await this.foregroundApp()) === (this.platform === 'ios' ? iosSettings : androidSettings);
   }
-  async launch(step: LaunchStep) {
+  async launch(step: LaunchStep, guard?: (targetApp: string) => void) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     if (this.platform === 'ios') {
       const app = step.app === 'settings' ? iosSettings : step.app;
       if (!(await this.mobile<boolean>('isAppInstalled', { bundleId: app })))
         throw new Error('APP_NOT_INSTALLED');
+      guard?.(app);
       // WDA launches a stopped app and activates an already running one.
       await this.dispatch('launch', () => this.mobile('launchApp', { bundleId: app }));
       return app;
@@ -348,6 +368,7 @@ export class WebDriver implements Device {
       }
       throw new Error('APP_NOT_LAUNCHABLE');
     }
+    guard?.(app);
     let rejected = false;
     await this.dispatch('launch', async () => {
       const response = await shell(
@@ -374,20 +395,25 @@ export class WebDriver implements Device {
   }
   private async readSnapshot(): Promise<StepView> {
     const app = await this.foregroundApp();
-    const rotation = async () => (await request<{ z: number }>(this.url + '/rotation', 'GET')).z;
+    const rotation = async () => {
+      const current = await request<{ z: number } | null>(this.url + '/rotation', 'GET');
+      if (!current || !Number.isFinite(current.z)) throw new Error('DISPLAY_ROTATION_UNAVAILABLE');
+      return current.z;
+    };
     const angle = await rotation();
-    const { width, height } = await request<{ width: number; height: number }>(
+    const rect = await request<{ width: number; height: number } | null>(
       this.url + '/window/rect',
       'GET',
     );
     if (
-      !Number.isInteger(width) ||
-      width <= 0 ||
-      !Number.isInteger(height) ||
-      height <= 0 ||
-      !Number.isFinite(angle)
+      !rect ||
+      !Number.isInteger(rect.width) ||
+      rect.width <= 0 ||
+      !Number.isInteger(rect.height) ||
+      rect.height <= 0
     )
       throw new Error('DISPLAY_GEOMETRY_UNAVAILABLE');
+    const { width, height } = rect;
     const layout = await request<string>(this.url + '/source', 'GET');
     if (app !== (await this.foregroundApp()) || angle !== (await rotation()))
       throw new Error('STALE_OBSERVATION');
@@ -439,7 +465,9 @@ export class WebDriver implements Device {
     };
   }
   async screenshot() {
-    return Buffer.from(await observed(request<string>(this.url + '/screenshot', 'GET')), 'base64');
+    const image = await observed(request<string>(this.url + '/screenshot', 'GET'));
+    if (typeof image !== 'string' || !image) throw new Error('SCREENSHOT_UNAVAILABLE');
+    return Buffer.from(image, 'base64');
   }
   private async touch(step: Extract<Step, { kind: 'swipe' } | { point: unknown }>, view: StepView) {
     const swipe = step.kind === 'swipe';

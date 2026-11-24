@@ -7,6 +7,7 @@ import { hdc, run } from './host.js';
 import { isTransientObservation, reason } from './observation.js';
 import { focusedHarmonyWindow, harmonyView } from './native-layout.js';
 import {
+  hasWrittenValue,
   isAppIdentifier,
   inputValue,
   pointInView,
@@ -24,6 +25,14 @@ const bluetoothTitle = 'bluetooth_entry.title';
 const bluetoothToggle = 'Setting.Fusion.BluetoothSwitchGroup.BluetoothSwitchItem.result';
 type Attr = Record<string, string>;
 type Node = { attributes: Attr; children: Node[] };
+function isLayoutNode(node: Node | null): boolean {
+  return (
+    !!node &&
+    !!node.attributes &&
+    typeof node.attributes === 'object' &&
+    (node.children == null || (Array.isArray(node.children) && node.children.every(isLayoutNode)))
+  );
+}
 interface HapModule {
   moduleName: string;
   mainElementName?: string;
@@ -34,16 +43,28 @@ export function harmonyEntry(output: string, app: string, step: LaunchStep) {
   if (output.startsWith('error: failed to get information')) throw new Error('APP_NOT_INSTALLED');
   const start = output.indexOf('{');
   if (start < 0) throw new Error('BUNDLE_INFO_UNAVAILABLE');
-  const info = JSON.parse(output.slice(start)) as {
+  let info: {
     name: string;
     entryModuleName?: string;
     hapModuleInfos: HapModule[];
   };
+  try {
+    info = JSON.parse(output.slice(start));
+  } catch {
+    throw new Error('BUNDLE_INFO_UNAVAILABLE');
+  }
   if (info.name !== app || !Array.isArray(info.hapModuleInfos))
     throw new Error('BUNDLE_INFO_UNAVAILABLE');
   const moduleName = step.module ?? (step.ability ? undefined : info.entryModuleName);
   const entries: { module: string; ability: string }[] = [];
   for (const mod of info.hapModuleInfos) {
+    if (
+      !mod ||
+      typeof mod.moduleName !== 'string' ||
+      (mod.abilityInfos != null &&
+        (!Array.isArray(mod.abilityInfos) || mod.abilityInfos.some((a) => typeof a?.name !== 'string')))
+    )
+      throw new Error('BUNDLE_INFO_UNAVAILABLE');
     if (moduleName && mod.moduleName !== moduleName) continue;
     const main = mod.mainElementName || mod.mainAbility;
     const name = step.ability ?? main;
@@ -116,7 +137,15 @@ export class Harmony implements Device {
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
         const out = await this.shell('uitest', 'dumpLayout', '-p', path);
-        if (out.includes(path)) return JSON.parse(await this.shell('cat', path));
+        if (out.includes(path)) {
+          const data = await this.shell('cat', path);
+          try {
+            const root: Node = JSON.parse(data);
+            if (isLayoutNode(root)) return root;
+          } catch (error) {
+            if (!(error instanceof SyntaxError)) throw error;
+          }
+        }
         if (attempt === 0) await sleep(120);
       }
       throw new Error('HDC_LAYOUT_UNAVAILABLE');
@@ -133,10 +162,11 @@ export class Harmony implements Device {
   async foregroundApp() {
     return focusedHarmonyWindow(await this.layout())?.attributes.bundleName ?? '';
   }
-  async launch(step: LaunchStep) {
+  async launch(step: LaunchStep, guard?: (targetApp: string) => void) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     const app = step.app === 'settings' ? bundle : step.app;
     const entry = harmonyEntry(await this.shell('bm', 'dump', '-n', app), app, step);
+    guard?.(app);
     let rejected = false;
     await this.dispatch('launch', async () => {
       const response = await this.shell(
@@ -174,7 +204,12 @@ export class Harmony implements Device {
       if (!out.includes(path)) throw new Error('SCREENSHOT_UNAVAILABLE');
       const local = join(dir, 'screen.png');
       await run(hdc, ['-t', this.id, 'file', 'recv', path, local]);
-      return await readFile(local);
+      try {
+        return await readFile(local);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw Error('SCREENSHOT_UNAVAILABLE');
+        throw error;
+      }
     } finally {
       try {
         await this.shell('rm', '-f', path);
@@ -210,7 +245,7 @@ export class Harmony implements Device {
       return;
     }
     const field = node!;
-    const checkValue = async (expected: string | undefined) => {
+    const checkValue = async (expected: string | undefined, written: boolean) => {
       let current: View;
       try {
         current = await this.snapshot();
@@ -219,6 +254,14 @@ export class Harmony implements Device {
         if (code === 'FOREGROUND_WINDOW_AMBIGUOUS') return 'INPUT_FOCUS_UNCONFIRMED';
         if (isTransientObservation(code)) return code;
         throw e;
+      }
+      if (written) {
+        if (
+          expected !== undefined &&
+          hasWrittenValue(view, current, field, step.selector.label, expected)
+        )
+          return;
+        return 'INPUT_NOT_VERIFIED';
       }
       if (current.app !== view.app || current.window !== view.window) return 'INPUT_TARGET_CHANGED';
       const hits = current.controls.filter(
@@ -231,10 +274,13 @@ export class Harmony implements Device {
         return 'INPUT_TARGET_CHANGED';
       if (hits[0].value !== expected) return 'INPUT_TARGET_CHANGED';
     };
-    const confirmValue = async (value: string | undefined, failure?: string) => {
+    const confirmValue = async (
+      value: string | undefined,
+      failure?: 'FIELD_NOT_CLEARED' | 'INPUT_NOT_VERIFIED',
+    ) => {
       for (let attempt = 1; ; attempt++) {
         signal?.throwIfAborted();
-        const issue = await checkValue(value);
+        const issue = await checkValue(value, failure === 'INPUT_NOT_VERIFIED');
         signal?.throwIfAborted();
         if (!issue) return;
         if (attempt === 3) throw new Error(failure ?? issue);

@@ -3,6 +3,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
 import { compileRecording } from '../dist/recording.js';
+import { Harmony } from '../dist/harmony.js';
 
 function control(id, role = 'Stack', bounds = { x: 0, y: 0, width: 10, height: 10 }) {
   return { id, role, bounds, labels: [], enabled: true, editable: false, focused: false, secret: false };
@@ -67,6 +68,119 @@ async function run(device, choose, useImages = false) {
   );
   return { result, records, events };
 }
+
+// Skip the 10 s foreground poll while exercising the actual launch timeout branch.
+function expireLaunchPoll(t) {
+  let time = 0;
+  t.mock.method(performance, 'now', () => (time += 10001));
+}
+
+test('a delayed settings launch is recorded once after its resolved app is observed', async (t) => {
+  expireLaunchPoll(t);
+  const device = phone([control('heading', 'Text')]);
+  const targetApp = 'vendor.oem.settings';
+  const launches = [];
+  device.launch = async (step, guard) => {
+    assert.equal(step.app, 'settings');
+    guard(targetApp);
+    launches.push(step.app);
+    device.view.app = targetApp;
+    return targetApp;
+  };
+  device.foregroundApp = async () => 'vendor.transition';
+  const { result, records, events } = await run(device, (obs) =>
+    obs.app === targetApp
+      ? ['finish', { evidence: 'foreground', message: '设置已打开。' }]
+      : ['launch_app', { app: 'settings' }],
+  );
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(launches, ['settings']);
+  assert.deepEqual(events, ['APP_NOT_FOREGROUND', 'observed', 'observed']);
+  assert.deepEqual(records.map((s) => [s.inApp, s.command.action]), [
+    ['example.feed', 'launchApp'], [targetApp, 'check'],
+  ]);
+});
+
+for (const firstRequest of ['settings', 'vendor.oem.settings']) {
+  test('an unconfirmed launch via ' + firstRequest + ' can continue through the visible chooser', async (t) => {
+    expireLaunchPoll(t);
+    const targetApp = 'vendor.oem.settings';
+    const device = phone([control('open', 'Button')]);
+    let launches = 0;
+    device.launch = async (step, guard) => {
+      guard(targetApp);
+      launches++;
+      device.view.app = 'vendor.chooser';
+      return targetApp;
+    };
+    device.foregroundApp = async () => device.view.app;
+    device.perform = async (step, view, node) => {
+      assert.equal(step.kind, 'tap');
+      assert.equal(node.id, 'open');
+      view.app = targetApp;
+    };
+    const { result, records, events } = await run(device, (obs) => {
+      if (obs.app === targetApp) return ['finish', { evidence: 'foreground', message: '设置已打开。' }];
+      if (!obs.lastBlocker) return ['launch_app', { app: firstRequest }];
+      if (obs.lastBlocker.outcome === 'APP_NOT_FOREGROUND')
+        return ['launch_app', { app: firstRequest === 'settings' ? targetApp : 'settings' }];
+      assert.equal(obs.lastBlocker.outcome, 'APP_LAUNCH_ALREADY_ATTEMPTED');
+      return ['tap', { target: obs.controls[0].ref }];
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(launches, 1);
+    assert.deepEqual(events, ['APP_NOT_FOREGROUND', 'APP_LAUNCH_ALREADY_ATTEMPTED', 'dispatched', 'observed']);
+    assert.deepEqual(records.map((s) => [s.inApp, s.command.action]), [
+      ['vendor.chooser', 'tap'], [targetApp, 'check'],
+    ]);
+  });
+}
+
+test('ordinary foreground launches and later intentional returns still dispatch', async (t) => {
+  expireLaunchPoll(t);
+  const targetApp = 'example.feed';
+  const device = phone([control('leave', 'Button')]);
+  let launches = 0;
+  device.launch = async (step, guard) => {
+    guard(targetApp);
+    launches++;
+    device.view.app = targetApp;
+    return targetApp;
+  };
+  device.foregroundApp = async () => 'example.transition';
+  device.perform = async () => { device.view.app = 'example.launcher'; };
+  let turn = 0;
+  const { result, events, records } = await run(device, (obs) => {
+    turn++;
+    if (turn === 1 || turn === 2 || turn === 4) return ['launch_app', { app: targetApp }];
+    if (turn === 3) return ['tap', { target: obs.controls[0].ref }];
+    return ['finish', { evidence: 'foreground', message: '已返回应用。' }];
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.ok(events.includes('APP_LAUNCH_ALREADY_ATTEMPTED'));
+  assert.equal(launches, 2);
+  assert.deepEqual(records.map((s) => s.command.action), ['launchApp', 'tap', 'launchApp', 'check']);
+});
+
+test('malformed Harmony launch metadata allows another route without dispatching a launch', async () => {
+  const device = phone([control('shortcut', 'Button')]);
+  const targetApp = 'example.browser';
+  const harmony = new Harmony('test', () => assert.fail('Unexpected launch dispatch'));
+  harmony.shell = async () => '{"name":"example.browser","hapModuleInfos":[';
+  device.launch = (step, guard) => harmony.launch(step, guard);
+  device.perform = async (step, view, node) => {
+    assert.equal(node.id, 'shortcut');
+    view.app = targetApp;
+  };
+  const { result, records } = await run(device, (obs) => {
+    if (obs.app === targetApp) return ['finish', { evidence: 'foreground', message: '浏览器已打开。' }];
+    if (!obs.lastBlocker) return ['launch_app', { app: targetApp }];
+    assert.equal(obs.lastBlocker.outcome, 'BUNDLE_INFO_UNAVAILABLE');
+    return ['tap', { target: obs.controls[0].ref }];
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(records.map((s) => s.command.action), ['tap', 'check']);
+});
 
 test('a late toolbar icon is offered ahead of layout wrappers', async () => {
   const controls = Array.from({ length: 90 }, (_, i) => control('layout' + i));
@@ -263,14 +377,178 @@ test('a rejected input is replanned from the current field and only verified ste
   assert.equal(records[0].reading.value, 'suggestion');
 });
 
-test('an unverified text write pauses for review without a second input', async () => {
-  const device = phone([{ ...control('query', 'TextInput'), editable: true }]);
-  device.perform = async () => { throw Error('INPUT_NOT_VERIFIED'); };
-  const { result, records } = await run(device, (obs) => [
-    'input_text', { target: obs.controls[0].ref, text: 'hello' },
-  ]);
+const query = 'deepseek';
+function field(id, value = '', labels = []) {
+  return { ...control(id, 'TextInput'), editable: true, focused: true, labels, value };
+}
+function typeQuery(control) {
+  return ['input_text', { target: control.ref, text: query }];
+}
+
+for (const confirmed of [true, false]) {
+  test(
+    confirmed
+      ? 'a fresh field reading confirms the original input before tapping the result'
+      : 'a same-text suggestion lets the task continue without recording an unverified input',
+    async () => {
+      const device = phone([field('query', 'previous')]);
+      const performed = [];
+      device.snapshot = async () => structuredClone(device.view);
+      device.perform = async (step, current, node) => {
+        performed.push([step.kind, node.id]);
+        if (step.kind === 'input') {
+          device.view.controls = [
+            field('query', confirmed ? query : ''),
+            { ...control('suggestion', 'Text'), labels: [query] },
+          ];
+          throw Error('INPUT_NOT_VERIFIED');
+        }
+        device.view.controls = [control('detail', 'Text')];
+      };
+      const { result, records, events } = await run(device, (obs) => {
+        const detail = obs.controls.find((c) => c.id === 'detail');
+        if (detail) return ['finish', { evidence: detail.ref, message: '已打开结果。' }];
+        const suggestion = obs.controls.find((c) => c.id === 'suggestion');
+        if (suggestion) return ['tap', { target: suggestion.ref }];
+        return typeQuery(obs.controls[0]);
+      });
+      assert.equal(result.status, 'succeeded');
+      assert.deepEqual(performed, [['input', 'query'], ['tap', 'suggestion']]);
+      assert.deepEqual(
+        records.map((s) => s.command.action),
+        confirmed ? ['input', 'tap', 'check'] : ['tap', 'check'],
+      );
+      if (confirmed) {
+        assert.equal(records[0].command.id, 'query');
+        assert.equal(records[0].command.text, query);
+        assert.equal(records[0].reading.value, 'previous');
+      } else assert.ok(events.includes('INPUT_NOT_VERIFIED'));
+    },
+  );
+}
+
+test('late input verification compares the full field value beyond the model preview', async () => {
+  const prefix = 'a'.repeat(160);
+  const device = phone([field('query')]);
+  let writes = 0;
+  device.perform = async () => {
+    writes++;
+    device.view.controls = [field('query', prefix + 'B'), control('result', 'Text')];
+    throw Error('INPUT_NOT_VERIFIED');
+  };
+  const { result, records, events } = await run(device, (obs) => {
+    const target = obs.controls.find((c) => c.id === 'query');
+    if (target.value === '')
+      return ['input_text', { target: target.ref, text: prefix + 'A' }];
+    assert.equal(target.value, prefix);
+    return ['ask_user', { message: '还需核实最后一个字符。' }];
+  });
+  assert.equal(result.replyRequested, true);
+  assert.equal(writes, 1);
+  assert.ok(events.includes('INPUT_NOT_VERIFIED'));
+  assert.deepEqual(records, []);
+});
+
+test('an unresolved edit survives navigation and changed refs while another app remains editable', async () => {
+  const device = phone([field('', '', ['搜索']), control('leave', 'Button')]);
+  device.snapshot = async () => structuredClone(device.view);
+  const writes = [];
+  const originalApp = device.view.app;
+  device.perform = async (step, current, node) => {
+    if (step.kind === 'input') {
+      writes.push(current.app);
+      if (current.app === originalApp) throw Error('INPUT_NOT_VERIFIED');
+      device.view.controls = [{ ...node, value: step.text }, control('return', 'Button')];
+    } else if (node.id === 'leave') {
+      device.view.app = 'example.notes';
+      device.view.controls = [field('note')];
+    } else {
+      assert.equal(node.id, 'return');
+      device.view.app = originalApp;
+      device.view.controls = [control('heading', 'Button'), field('', '', ['输入关键字'])];
+    }
+  };
+  let firstRef;
+  let decisions = 0;
+  const { result, records, events } = await run(device, (obs) => {
+    const target = obs.controls.find((c) => c.editable);
+    switch (++decisions) {
+      case 1:
+        firstRef = target.ref;
+        return typeQuery(target);
+      case 2:
+        return ['tap', { target: obs.controls.find((c) => c.id === 'leave').ref }];
+      case 3:
+        return typeQuery(target);
+      case 4:
+        return ['tap', { target: obs.controls.find((c) => c.id === 'return').ref }];
+      case 5:
+        assert.notEqual(target.ref, firstRef);
+        return typeQuery(target);
+      case 6:
+        return ['ask_user', { message: '已返回搜索页，请核对搜索框。' }];
+      default:
+        assert.fail('Expected the model to finish after the suppressed repeat');
+    }
+  });
+  assert.equal(result.replyRequested, true);
+  assert.deepEqual(writes, [originalApp, 'example.notes']);
+  assert.ok(events.includes('INPUT_ALREADY_ATTEMPTED'));
+  assert.deepEqual(records.filter((s) => s.command.action === 'input').map((s) => s.command.id), ['note']);
+});
+
+test('a distinct named field in the same app remains editable after an unverified write', async () => {
+  const device = phone([field('first'), field('second')]);
+  const writes = [];
+  device.perform = async (step, current, node) => {
+    writes.push(node.id);
+    if (node.id === 'first') throw Error('INPUT_NOT_VERIFIED');
+    device.view.controls = [{ ...node, value: step.text }];
+  };
+  const { result, records } = await run(device, (obs) => {
+    const target = obs.controls.find((c) => c.id === (writes.length ? 'second' : 'first'));
+    return target.value === query
+      ? ['finish', { evidence: target.ref, message: '第二个字段已填写。' }]
+      : typeQuery(target);
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(writes, ['first', 'second']);
+  assert.deepEqual(records.filter((s) => s.command.action === 'input').map((s) => s.command.id), ['second']);
+});
+
+test('a model repeating an unverified edit gets bounded attempts with only one device write', async () => {
+  const device = phone([field('query')]);
+  let writes = 0;
+  device.perform = async () => {
+    writes++;
+    throw Error('INPUT_NOT_VERIFIED');
+  };
+  const { result, records, events } = await run(device, (obs) => typeQuery(obs.controls[0]));
   assert.equal(result.status, 'needs_review');
-  assert.equal(result.reason, 'INPUT_NOT_VERIFIED');
+  assert.ok(result.modelCalls > 1 && result.modelCalls < 10);
+  assert.equal(writes, 1);
+  assert.ok(events.includes('INPUT_ALREADY_ATTEMPTED'));
+  assert.deepEqual(records, []);
+});
+
+test('input already containing the requested value is observed without rewriting it', async () => {
+  const device = phone([field('query', query)]);
+  let decisions = 0;
+  const { result, records, events } = await run(device, (obs) =>
+    ++decisions === 1
+      ? typeQuery(obs.controls[0])
+      : ['finish', { evidence: obs.controls[0].ref, message: '已核对搜索词。' }],
+  );
+  assert.equal(result.status, 'succeeded');
+  assert.equal(events[0], 'observed');
+  assert.ok(records.every((s) => s.command.action === 'check' && s.reading.value === query));
+});
+
+test('an input with an unknown dispatch outcome stops before a second decision', async () => {
+  const device = phone([field('query')]);
+  device.perform = async () => { throw Error('ACTION_OUTCOME_UNKNOWN: TEXT_DRIVER_ERROR'); };
+  const { result, records } = await run(device, (obs) => typeQuery(obs.controls[0]));
+  assert.equal(result.reason, 'ACTION_OUTCOME_UNKNOWN');
   assert.equal(result.modelCalls, 1);
   assert.deepEqual(records, []);
 });
@@ -375,6 +653,67 @@ test('a disabled tap target replans to an enabled native control and records the
   );
 });
 
+for (const opens of [true, false]) {
+  test('a newly appeared route gets one chance at the stall limit, opens=' + opens, async () => {
+    const device = phone([{ ...control('entry', 'Button'), labels: ['加载中'] }]);
+    const blank = await frame('#202020');
+    device.screenshot = async () => blank;
+    let attempts = 0;
+    device.perform = async (step, view, node) => {
+      attempts++;
+      if (attempts === 5) view.controls = [{ ...node, labels: ['视频号'] }];
+      if (attempts === 6) {
+        assert.deepEqual(node.labels, ['视频号']);
+        view.controls = [control(opens ? 'result' : 'another', 'Text')];
+        if (opens) return;
+      }
+      throw Error('ELEMENT_DISABLED');
+    };
+    const { result, records } = await run(device, (obs, tools) => {
+      const [current] = obs.controls;
+      if (current.id === 'result') return ['finish', { evidence: current.ref, message: '已打开视频号。' }];
+      if (current.id === 'another') {
+        assert.ok(!tools.includes('tap'));
+        return ['ask_user', { message: '入口仍无法打开。' }];
+      }
+      assert.ok(tools.includes('tap'));
+      return ['tap', { target: current.ref }];
+    }, true);
+    assert.equal(attempts, 6);
+    assert.equal(result.status, opens ? 'succeeded' : 'needs_review');
+    assert.deepEqual(records.map((s) => s.command.action), opens ? ['tap', 'check'] : []);
+  });
+}
+
+test('a slow window transition after a tap waits for a new view without replaying the tap', async () => {
+  const device = phone([control('open', 'Button')]);
+  let remainingFailures = 0;
+  let taps = 0;
+  device.perform = async (step) => {
+    assert.equal(step.kind, 'tap');
+    taps++;
+    device.view.controls = [control('result', 'Text')];
+    remainingFailures = 3;
+  };
+  device.snapshot = async () => {
+    if (remainingFailures > 0) {
+      remainingFailures--;
+      throw Error('FOREGROUND_WINDOW_AMBIGUOUS');
+    }
+    return device.view;
+  };
+  const { result, records } = await run(device, (obs) => {
+    const [item] = obs.controls;
+    if (item.id === 'open') return ['tap', { target: item.ref }];
+    assert.equal(item.id, 'result');
+    return ['finish', { evidence: item.ref, message: '结果页已打开。' }];
+  });
+  assert.equal(result.status, 'succeeded');
+  assert.equal(taps, 1);
+  assert.equal(result.modelCalls, 2);
+  assert.deepEqual(records.map((r) => r.command.action), ['tap', 'check']);
+});
+
 test('an unreadable initial view returns a partial answer after bounded read attempts', async () => {
   const device = phone();
   let reads = 0;
@@ -383,7 +722,7 @@ test('an unreadable initial view returns a partial answer after bounded read att
     throw Error('DISPLAY_ROTATION_UNAVAILABLE');
   };
   const { result, records } = await run(device, () => assert.fail('there was no view for the model'));
-  assert.equal(reads, 3);
+  assert.equal(reads, 6);
   assert.equal(result.status, 'needs_review');
   assert.equal(result.reason, 'DISPLAY_ROTATION_UNAVAILABLE');
   assert.equal(result.replyRequested, true);

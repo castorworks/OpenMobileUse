@@ -97,12 +97,22 @@ export function remember(history: History, observation: object, reply: Reply, re
   ]);
 }
 function parseReply(
-  data: { choices?: { finish_reason?: string; message?: Partial<Reply> }[] } | null,
+  data: {
+    error?: unknown;
+    choices?: { finish_reason?: string; message?: Partial<Reply> & { refusal?: unknown } }[];
+  } | null,
   allowText: boolean,
 ): Reply {
   const choice = data?.choices?.[0];
-  if (choice?.finish_reason === 'length') throw new Error('MODEL_REPLY_TRUNCATED');
   const msg = choice?.message;
+  if (choice?.finish_reason === 'content_filter') throw new Error('MODEL_CONTENT_FILTERED');
+  if (msg?.refusal) throw new Error('MODEL_REFUSED');
+  if (
+    data?.error ||
+    (choice?.finish_reason && !['length', 'stop', 'tool_calls'].includes(choice.finish_reason))
+  )
+    throw new Error('MODEL_PROVIDER_ERROR');
+  if (choice?.finish_reason === 'length') throw new Error('MODEL_REPLY_TRUNCATED');
   if (
     allowText &&
     choice?.finish_reason === 'stop' &&

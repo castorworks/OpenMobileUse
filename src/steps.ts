@@ -22,6 +22,7 @@ export interface Control {
 export interface View {
   app: string;
   window: string;
+  windowIdentity?: string;
   width: number;
   height: number;
   rotation: number;
@@ -67,7 +68,7 @@ export interface StepDevice {
   screenshot(): Promise<Buffer>;
   perform(step: Step, view: View, node?: Control, signal?: AbortSignal): Promise<void>;
   back(): Promise<void>;
-  launch(step: LaunchStep): Promise<string>;
+  launch(step: LaunchStep, guard?: (targetApp: string) => void): Promise<string>;
   foregroundApp(): Promise<string>;
 }
 export const stepHelp = `omu tap --device <platform:id> (--id <id> | --label <label>) [--role <role>]
@@ -297,6 +298,50 @@ export function visibleCenter(view: View, b: Bounds): Point {
 export function inputValue(before: string, step: Extract<Step, { kind: 'input' }>) {
   return step.replace ? step.text : before + step.text;
 }
+export function hasWrittenValue(
+  before: View,
+  after: View,
+  field: Control,
+  selectorLabel: string | undefined,
+  expected: string,
+) {
+  if (
+    after.app !== before.app ||
+    after.rotation !== before.rotation ||
+    after.width !== before.width ||
+    after.height !== before.height ||
+    (after.window !== before.window &&
+      (!before.windowIdentity || after.windowIdentity !== before.windowIdentity))
+  )
+    return false;
+
+  const peers = (v: View) => v.controls.filter((n) => n.editable && n.role === field.role);
+  const previous = peers(before);
+  const current = peers(after);
+  // Harmony can change the accessibilityId on every dump. An id-less search box can
+  // also replace its placeholder label with the query while suggestions echo the query below it.
+  const { x, y, width, height } = field.bounds;
+  let matches = (n: Control) =>
+    n.bounds.x === x && n.bounds.y === y && n.bounds.width === width && n.bounds.height === height;
+  if (field.id) matches = (n) => n.id === field.id;
+  else if (!current.some(matches) && selectorLabel && selectorLabel !== field.value)
+    matches = (n) => n.labels.includes(selectorLabel);
+  if (previous.filter(matches).length !== 1) return false;
+  const hits = current.filter(matches);
+  if (hits.length !== 1) return false;
+  const [target] = hits;
+  if (target.secret || target.id !== field.id || target.value !== expected) return false;
+  if (field.id) return true;
+  if (target.labels.some((label) => label !== expected && !field.labels.includes(label))) return false;
+  return target.focused || (previous.length === 1 && current.length === 1);
+}
+
+export class AppNotForeground extends Error {
+  constructor(readonly targetApp: string) {
+    super('APP_NOT_FOREGROUND');
+  }
+}
+
 export async function verifyForeground(
   read: () => Promise<string>,
   target: string,
@@ -319,7 +364,7 @@ export async function verifyForeground(
     if (performance.now() >= deadline) break;
     await sleep(Math.min(250, Math.max(0, deadline - performance.now())), undefined, { signal });
   } while (performance.now() <= deadline);
-  throw new Error('APP_NOT_FOREGROUND');
+  throw new AppNotForeground(target);
 }
 
 export async function executeStep(
@@ -328,7 +373,7 @@ export async function executeStep(
   step: CommandStep,
   expected?: string | ((view: View) => void),
   signal?: AbortSignal,
-  guardWait?: (view: View) => void,
+  guard?: ((view: View) => void) | { launch: (targetApp: string) => void },
 ) {
   signal?.throwIfAborted();
   function validate(view: View) {
@@ -340,7 +385,7 @@ export async function executeStep(
   if (step.kind === 'launch') {
     const id = expected ? validate(await readObservation(() => device.snapshot(), signal)) : undefined;
     signal?.throwIfAborted();
-    const targetApp = await device.launch(step);
+    const targetApp = await device.launch(step, typeof guard === 'object' ? guard.launch : undefined);
     const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp, 10000, signal);
     return {
       action: step.kind,
@@ -367,7 +412,7 @@ export async function executeStep(
       }
       signal?.throwIfAborted();
       if (current) {
-        guardWait?.(current);
+        if (typeof guard === 'function') guard(current);
         const token = first ? validate(current) : observationId(identity, current);
         first = false;
         const hits = matchingControls(current, step.selector);

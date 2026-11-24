@@ -10,6 +10,9 @@ export function isTransientObservation(code: string) {
     'FOREGROUND_WINDOW_AMBIGUOUS',
     'FOREGROUND_APP_UNAVAILABLE',
     'HDC_LAYOUT_UNAVAILABLE',
+    'LAYOUT_UNAVAILABLE',
+    'OBSERVATION_TIMEOUT',
+    'OBSERVATION_INCOMPLETE',
     'DISPLAY_GEOMETRY_UNAVAILABLE',
     'DISPLAY_ROTATION_UNAVAILABLE',
     'SCREENSHOT_UNAVAILABLE',
@@ -36,8 +39,12 @@ export function isTargetUnavailable(code: string) {
 }
 
 // Retry reads only. Callers validate the returned observation before acting on it.
-export async function readObservation<T>(read: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
+export async function readObservation<T>(
+  read: () => Promise<T>,
+  signal?: AbortSignal,
+  retryDelays: readonly number[] = [200, 200],
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
     signal?.throwIfAborted();
     try {
       const observation = await read();
@@ -45,8 +52,8 @@ export async function readObservation<T>(read: () => Promise<T>, signal?: AbortS
       return observation;
     } catch (error) {
       signal?.throwIfAborted();
-      if (attempt === 3 || !isTransientObservation(reason(error))) throw error;
-      await sleep(200, undefined, { signal });
+      if (attempt >= retryDelays.length || !isTransientObservation(reason(error))) throw error;
+      await sleep(retryDelays[attempt], undefined, { signal });
     }
   }
 }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { Harmony } from '../dist/harmony.js';
+import { harmonyView } from '../dist/native-layout.js';
 import { pending, withDevice } from '../dist/session.js';
 
 const previousDir = process.env.OMU_STATE_DIR;
@@ -34,7 +35,11 @@ function view(value, focused = true, app = 'example.editor') {
   return { app, window: 'main', rotation: 0, width: 100, height: 100, controls: [control] };
 }
 
-function input(initial, snapshots, { replace = false, reply = 'No Error', selector = { id: 'query' } } = {}) {
+function input(
+  initial,
+  snapshots,
+  { replace = false, reply = 'No Error', selector = { id: 'query' }, text = 'X' } = {},
+) {
   const target = { platform: 'harmony', id: randomUUID() };
   const commands = [];
   let reads = 0;
@@ -51,7 +56,7 @@ function input(initial, snapshots, { replace = false, reply = 'No Error', select
       return reply;
     };
     await phone.perform(
-      { kind: 'input', selector, text: 'X', replace },
+      { kind: 'input', selector, text, replace },
       initial,
       initial.controls[0],
     );
@@ -142,3 +147,79 @@ test('a permanent foreground change after replacing ends verification without re
   await assert.rejects(attempt.result, { message: 'INPUT_NOT_VERIFIED' });
   assert.deepEqual(attempt.commands, [selectAll, deleteSelection, typeX]);
 });
+
+// The label of this id-less field changes from the placeholder to the query, and the
+// suggestion below it repeats the query. Both reflect nodes seen in a Harmony search UI.
+function searchView(value, options = {}) {
+  const {
+    handle = '38', focused = true, field = {}, window = {}, duplicate = false, rotation = 0,
+  } = options;
+  const hostWindowId = window.hostWindowId ?? '66';
+  const input = {
+    attributes: {
+      type: 'TextInput', id: '', hostWindowId, bounds: '[24,120][900,204]',
+      ...(handle ? { accessibilityId: handle, hashcode: handle } : {}),
+      text: value, hint: value ? '' : '搜索', focused: String(focused), ...field,
+    },
+  };
+  const suggestion = { attributes: { type: 'Text', bounds: '[24,250][900,334]', text: 'deepseek' } };
+  const fields = [input];
+  if (duplicate)
+    fields.push({ attributes: { ...input.attributes, hint: '收件人', focused: 'false' } });
+  return harmonyView({
+    attributes: { bounds: '[0,0][1216,2688]' },
+    children: [{
+      attributes: {
+        bundleName: 'example.chat', hostWindowId, focused: 'true', abilityName: 'EntryAbility',
+        pagePath: 'pages/WechatAppPage', bounds: '[0,107][1216,2688]', ...window,
+      },
+      children: [...fields, suggestion],
+    }],
+  }, rotation);
+}
+
+const searchOptions = { text: 'deepseek', replace: true, selector: { label: '搜索', role: 'TextInput' } };
+const typeQuery = ["uitest uiInput text 'deepseek'"];
+for (const [description, initialOptions, finalOptions] of [
+  ['placeholder disappears', {}, {}],
+  ['unique field loses focus and its dump handles change', {}, { handle: '40', focused: false }],
+  ['keyboard resizes the window', {}, { window: { bounds: '[0,107][1216,1667]' } }],
+  ['bounds identify a field without a handle', { handle: '' }, { handle: '', focused: false }],
+]) {
+  test('verifies the original search field (' + description + ')', async () => {
+    const original = searchView('', initialOptions);
+    const beforeWrite = searchView('', { handle: '39', ...initialOptions });
+    const attempt = input(original, [beforeWrite, searchView('deepseek', finalOptions)], searchOptions);
+    await attempt.result;
+    assert.deepEqual(attempt.commands, [typeQuery]);
+  });
+}
+
+for (const [description, initialOptions, value, finalOptions] of [
+  ['a different window handle', {}, 'deepseek', { window: { hostWindowId: '67' } }],
+  ['a different page in the same window', {}, 'deepseek', { window: { pagePath: 'pages/Other' } }],
+  ['changed orientation', {}, 'deepseek', { rotation: 90 }],
+  [
+    'a different description at the same bounds',
+    { field: { description: 'Find contacts' } },
+    'deepseek',
+    { focused: false, field: { description: 'Find files' } },
+  ],
+  [
+    'a different resource id at the same bounds',
+    { field: { id: 'contacts' } },
+    'deepseek',
+    { field: { id: 'files' } },
+  ],
+  ['changed letter case', {}, 'DeepSeek', {}],
+  ['a noneditable suggestion alone', {}, '', {}],
+  ['duplicate fields at the same bounds', { handle: '' }, 'deepseek', { handle: '', duplicate: true }],
+  ['bounds shared by two original fields', { duplicate: true }, 'deepseek', { focused: false }],
+]) {
+  test('search verification rejects ' + description + ' without resending text', async () => {
+    const original = searchView('', initialOptions);
+    const attempt = input(original, [original, searchView(value, finalOptions)], searchOptions);
+    await assert.rejects(attempt.result, { message: 'INPUT_NOT_VERIFIED' });
+    assert.deepEqual(attempt.commands, [typeQuery]);
+  });
+}

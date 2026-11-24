@@ -15,8 +15,10 @@ import {
 import { compileStep, reason } from './script.js';
 import { isTargetUnavailable, isTransientObservation, readObservation } from './observation.js';
 import {
+  AppNotForeground,
   executeStep,
   guardObservation,
+  hasWrittenValue,
   isScreenContainer,
   observationId,
   screenAvailable,
@@ -39,6 +41,10 @@ Use finish_visual with a distinctive visible detail on the new screen to verify 
 Prefer a matching native control, including an icon identified by its id. After a failed action use
 the fresh observation to try another route toward the same goal. INPUT_TARGET_CHANGED or INPUT_FOCUS_UNCONFIRMED
 means no text was entered. Check the current app, target and field value before deciding whether to type.
+INPUT_NOT_VERIFIED means the text command was sent. Read the new screen before choosing another action.
+Use a visible matching result, suggestion or navigation control when it advances the user's goal.
+Do not retype the same text or ask for confirmation solely because the driver could not read it back.
+APP_NOT_FOREGROUND means the launch command was sent. Use the current app and visible controls to proceed.
 Controls marked atVisualTarget
 overlap the previous visual point; choose one only if its identity fits. For a moving background
 prefer a native ref, readable text, or a different stable entry. Never guess a position.
@@ -72,9 +78,20 @@ function observe(device: StepDevice, signal: AbortSignal) {
 }
 
 type Dialogue = { user: string; assistant?: string };
+type PendingInput = {
+  before: View;
+  field: Control;
+  selector: Selector;
+  text: string;
+  recording: RecordedStep;
+  description: string;
+};
 const turnLimit = 1000;
 const observationItemLimit = 1000;
+const stallLimit = 5;
 const timeLimitMs = 10 * 60_000;
+// Between decisions an app switch or animation can leave the foreground unreadable for seconds.
+const screenTransitionDelays = [200, 400, 800, 1600, 2000];
 
 // Dense trees often list layout wrappers before the toolbar and its controls.
 function rankedControls(view: View, visualPoint?: Point) {
@@ -119,8 +136,15 @@ export async function runConversation(
   let visualMiss: { page: string; point: Point } | undefined;
   let lastSwipePreview: Buffer | undefined;
   let blocker: { action: string; outcome: string } | undefined;
+  let pendingInput: PendingInput | undefined;
+  const unverifiedInputs: { app: string; fieldId: string; text: string }[] = [];
+  let pendingLaunch: { targetApp: string; recording: RecordedStep; description: string } | undefined;
+  const attemptedLaunches = new Set<string>();
+  let recoveredForeground: string | undefined;
   let imageRejected = false;
   let captureIssue: string | undefined;
+  let invalidReplies = 0;
+  let routesAtStallLimit: Set<string> | undefined;
   while (context.length > 1 && Buffer.byteLength(JSON.stringify(context)) > 18000) context.shift();
   let modelCalls = 0,
     inspectTextInApp = '',
@@ -132,8 +156,10 @@ export async function runConversation(
         ? '本轮执行时间已用完。'
         : reason === 'DECISION_BUDGET'
           ? '本轮已到决策次数上限。'
-          : '当前画面仍无法确认下一步。';
-    const detail = blocker
+          : reason.startsWith('MODEL_')
+            ? '模型未能返回可执行的操作。'
+            : '当前画面仍无法确认下一步。';
+    const detail = blocker && !reason.startsWith('MODEL_')
       ? '上次尝试的操作是「' + blocker.action + '」。请把手机停在要继续的页面，然后回复“继续”。'
       : '回复“继续”可接着执行。';
     const findings = notes.size
@@ -152,8 +178,39 @@ export async function runConversation(
       bounded.throwIfAborted();
       if (!hasSpace()) throw Error('RECORDING_FULL');
       activity?.(blocker ? '正在重新观察手机界面，寻找其他操作路径' : '正在读取手机界面');
-      const view = await observe(device, bounded);
+      const view = await readObservation(() => device.snapshot(), bounded, screenTransitionDelays);
       screenAvailable(view);
+      if (pendingLaunch) {
+        if (view.app === pendingLaunch.targetApp) {
+          await record(pendingLaunch.recording);
+          progress(pendingLaunch.description + '（已核对前台）', 'observed');
+          blocker = undefined;
+          stalls = 0;
+          if (!hasSpace()) throw Error('RECORDING_FULL');
+        }
+        // After the next decision, retroactively recording a launch could reorder the script.
+        pendingLaunch = undefined;
+      }
+      // A later launch is legitimate once we've seen the target and then left it.
+      if (recoveredForeground && view.app !== recoveredForeground)
+        attemptedLaunches.delete(recoveredForeground);
+      recoveredForeground = attemptedLaunches.has(view.app) ? view.app : undefined;
+      let verifiedInput: string | undefined;
+      if (pendingInput) {
+        const { before, field, selector, text, recording, description } = pendingInput;
+        if (hasWrittenValue(before, view, field, selector.label, text)) {
+          await record(recording);
+          progress(description + '（已核对）', 'observed');
+          verifiedInput = description;
+          blocker = undefined;
+          stalls = 0;
+          if (!hasSpace()) throw Error('RECORDING_FULL');
+        } else {
+          // Keep this guard across navigation and model history pruning for the rest of the turn.
+          unverifiedInputs.push({ app: before.app, fieldId: field.id, text });
+        }
+        pendingInput = undefined;
+      }
       const page = observationId(identity, view, { kind: 'check' });
       const visualPoint = visualMiss?.page === page ? visualMiss.point : undefined;
       const token = 't' + (turn + 1);
@@ -301,6 +358,7 @@ export async function runConversation(
         );
       const observation = {
         app: view.app,
+        verifiedInput,
         appTitle: view.controls
           .find((n) => n.role === 'XCUIElementTypeApplication')
           ?.labels[0]?.slice(0, 140),
@@ -309,7 +367,22 @@ export async function runConversation(
         textStatus,
         screenText: [...screenText].map(([ref, line]) => ({ ref, ...line })),
       };
-      const wrappingUp = stalls >= 5 || turn === turnLimit - 1;
+      // Capture only routes the model can use. Ref numbers, moving pixels and coordinates
+      // change during animations even when the same choices are still on screen.
+      const availableRoutes = () =>
+        new Set([
+          JSON.stringify([view.app, view.windowIdentity ?? view.window]),
+          ...observation.controls
+            .filter((c) => c.enabled)
+            .map((c) => JSON.stringify([targets.get(c.ref)!.selector, c.label])),
+          ...[...screenText.values()].map((line) => 'text:' + line.text),
+          ...(frame ? ['tap_visual'] : []),
+        ]);
+      const previousRoutes = routesAtStallLimit;
+      const newRoute =
+        stalls === stallLimit && previousRoutes &&
+        [...availableRoutes()].some((route) => !previousRoutes.has(route));
+      const wrappingUp = turn === turnLimit - 1 || (stalls >= stallLimit && !newRoute);
       if (wrappingUp)
         tools = tools.filter((t) => ['ask_user', 'finish', 'finish_visual'].includes(t.function.name));
       const obs = {
@@ -318,11 +391,16 @@ export async function runConversation(
         ...observation,
         savedNotes: [...notes],
         lastBlocker: blocker,
+        modelReplyHint: invalidReplies
+          ? 'Your previous reply could not be used. Choose one offered tool with a short, complete set of arguments for this observation.'
+          : undefined,
         nextDecision: wrappingUp
           ? 'Report verified results. If incomplete, give the partial findings and ask for specific help.'
-          : blocker
-            ? 'Check what changed. Choose a different evidenced route toward the original goal.'
-            : undefined,
+          : blocker?.outcome === 'INPUT_NOT_VERIFIED' || blocker?.outcome === 'INPUT_ALREADY_ATTEMPTED'
+            ? 'The text command was sent. Use current field values and visible results to continue without repeating it.'
+            : blocker
+              ? 'Check what changed. Choose a different evidenced route toward the original goal.'
+              : undefined,
       };
       const messages = messagesFor(instruction, history, obs, tools, { historyBytes: 64000 });
       if (frameUrl) {
@@ -340,7 +418,22 @@ export async function runConversation(
       try {
         reply = await decide(messages, tools, deadline, () => modelCalls++);
       } catch (error) {
-        if (!frame || !['MODEL_HTTP_400', 'MODEL_HTTP_415', 'MODEL_HTTP_422'].includes(reason(error)))
+        bounded.throwIfAborted();
+        const code = reason(error);
+        if (
+          [
+            'MODEL_INVALID_JSON',
+            'MODEL_REPLY_TRUNCATED',
+            'MODEL_TOOL_CALL_REQUIRED',
+            'MODEL_INVALID_TOOL_CALL',
+          ].includes(code)
+        ) {
+          progress('读取模型回复', code);
+          invalidReplies++;
+          if (invalidReplies >= 3 || turn === turnLimit - 1) return partial(code);
+          continue;
+        }
+        if (!frame || !['MODEL_HTTP_400', 'MODEL_HTTP_415', 'MODEL_HTTP_422'].includes(code))
           throw error;
         imageRejected = true;
         progress(
@@ -349,6 +442,7 @@ export async function runConversation(
         );
         continue;
       }
+      invalidReplies = 0;
       bounded.throwIfAborted();
       if (!reply.tool_calls.length) return { status: 'needs_review', answer: reply.content, modelCalls };
       const call = reply.tool_calls[0],
@@ -488,23 +582,59 @@ export async function runConversation(
                 : view.controls.map((c) => c.id || c.labels[0]);
             const signature = JSON.stringify([observationId(identity, view, step), landmarks, command]);
             const preview = name === 'swipe' && frame ? await swipePreview(frame) : undefined;
+            const validate = guardObservation(identity, view, step, screenAvailable);
             if (
               signature === lastDispatch &&
               !(preview && swipePreviewChanged(lastSwipePreview, preview))
             )
               outcome = 'NO_PROGRESS';
-            else {
-              await executeStep(
-                device,
-                identity,
-                step,
-                guardObservation(identity, view, step, screenAvailable),
-                bounded,
-              );
+            else if (step.kind === 'input' && target!.node.value === step.text) {
+              validate(await observe(device, bounded));
+              await record(recordStep(view, { action: 'check', ...target!.selector }, target!.node));
+              description = '核对已有输入';
               lastDispatch = signature;
-              lastSwipePreview = preview;
-              await record(recordStep(view, command, target?.node));
-              outcome = 'dispatched';
+              outcome = 'observed';
+            } else if (
+              step.kind === 'input' &&
+              unverifiedInputs.some(
+                (previous) =>
+                  previous.app === view.app &&
+                  previous.text === step.text &&
+                  (!previous.fieldId || !target!.node.id || previous.fieldId === target!.node.id),
+              )
+            ) {
+              outcome = 'INPUT_ALREADY_ATTEMPTED';
+            } else {
+              const recording = recordStep(view, command, target?.node);
+              try {
+                await executeStep(device, identity, step, validate, bounded, {
+                  launch(targetApp) {
+                    if (attemptedLaunches.has(targetApp)) throw Error('APP_LAUNCH_ALREADY_ATTEMPTED');
+                  },
+                });
+              } catch (error) {
+                if (step.kind === 'launch' && error instanceof AppNotForeground) {
+                  pendingLaunch = { targetApp: error.targetApp, recording, description };
+                  attemptedLaunches.add(error.targetApp);
+                  outcome = 'APP_NOT_FOREGROUND';
+                } else if (step.kind === 'input' && reason(error) === 'INPUT_NOT_VERIFIED') {
+                  pendingInput = {
+                    before: view,
+                    field: target!.node,
+                    selector: step.selector,
+                    text: step.text,
+                    recording,
+                    description,
+                  };
+                  outcome = 'INPUT_NOT_VERIFIED';
+                } else throw error;
+              }
+              if (!outcome) {
+                lastDispatch = signature;
+                lastSwipePreview = preview;
+                await record(recording);
+                outcome = 'dispatched';
+              }
             }
           }
         } catch (e) {
@@ -519,7 +649,10 @@ export async function runConversation(
               'APP_NOT_INSTALLED',
               'APP_NOT_LAUNCHABLE',
               'AMBIGUOUS_APP_ENTRY',
+              'BUNDLE_INFO_UNAVAILABLE',
+              'INVALID_HARMONY_ENTRY',
               'APP_LAUNCH_REJECTED',
+              'APP_LAUNCH_ALREADY_ATTEMPTED',
               'INVALID_APP_ID',
             ].includes(code)
           ) {
@@ -551,6 +684,7 @@ export async function runConversation(
         )
           inspectTextInApp = view.app;
       } else if (blocker) stalls++;
+      routesAtStallLimit = stalls === stallLimit ? availableRoutes() : undefined;
     }
     return partial('DECISION_BUDGET');
   } catch (e) {
@@ -564,9 +698,7 @@ export async function runConversation(
             : reason(e);
     if (code === 'TIME_BUDGET' || isTransientObservation(code)) return partial(code);
     return {
-      status: ['SENSITIVE_OR_BLOCKED_SCREEN', 'INPUT_NOT_VERIFIED'].includes(code)
-        ? 'needs_review'
-        : 'failed',
+      status: code === 'SENSITIVE_OR_BLOCKED_SCREEN' ? 'needs_review' : 'failed',
       reason: code,
       modelCalls,
     };
