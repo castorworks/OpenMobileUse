@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import type { Screen } from './navigation.js';
+import type { Platform } from './host.js';
 import { isTransientObservation, readObservation, reason } from './observation.js';
 
 export type Point = { x: number; y: number };
@@ -29,7 +29,6 @@ export interface View {
   rotation: number;
   controls: Control[];
   layout: unknown;
-  screen: Screen;
 }
 export type Selector = { id?: string; label?: string; role?: string };
 
@@ -80,10 +79,158 @@ omu launch --device <platform:id> --app <settings|package-or-bundle-id> [--abili
 omu back --device <platform:id> [--id <navigation-control> | --label <name>] [--role <role>]
 omu waitFor --device <platform:id> (--id <id> | --label <name>) [--role <role>] [--state visible|hidden] [--timeout-ms 5000]
 --ability and --module are Harmony-only. All commands accept [--observation <observationId>] [--json].`;
+const stepArgumentTypes = {
+  id: 'string',
+  label: 'string',
+  role: 'string',
+  app: 'string',
+  ability: 'string',
+  module: 'string',
+  text: 'string',
+  state: 'string',
+  observation: 'string',
+  replace: 'boolean',
+  x: 'number',
+  y: 'number',
+  fromX: 'number',
+  fromY: 'number',
+  toX: 'number',
+  toY: 'number',
+  durationMs: 'number',
+  timeoutMs: 'number',
+} as const;
+type ArgumentTypes = { string: string; boolean: boolean; number: number };
+type StepArgument = keyof typeof stepArgumentTypes;
+type StepArguments = {
+  [K in StepArgument]?: ArgumentTypes[(typeof stepArgumentTypes)[K]];
+};
+const stepArguments: Record<CommandStep['kind'], readonly StepArgument[]> = {
+  tap: ['id', 'label', 'role', 'x', 'y'],
+  input: ['id', 'label', 'role', 'text', 'replace'],
+  swipe: ['fromX', 'fromY', 'toX', 'toY', 'durationMs'],
+  waitFor: ['id', 'label', 'role', 'state', 'timeoutMs'],
+  back: ['id', 'label', 'role'],
+  launch: ['app', 'ability', 'module'],
+};
+type StepKind = CommandStep['kind'];
+
+function isStepKind(kind: string): kind is StepKind {
+  return Object.hasOwn(stepArguments, kind);
+}
+
+function checkStepArguments(kind: StepKind, options: Record<string, unknown>) {
+  const allowed: readonly string[] = stepArguments[kind];
+  if (Object.keys(options).some((key) => key !== 'observation' && !allowed.includes(key)))
+    throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
+}
+
+export function compileCommandStep(action: string, options: Record<string, unknown>, platform: Platform) {
+  const kind = action === 'launchApp' ? 'launch' : action;
+  if (!isStepKind(kind)) throw new Error('UNKNOWN_STEP');
+  for (const [key, value] of Object.entries(options)) {
+    if (
+      !Object.hasOwn(stepArgumentTypes, key) ||
+      typeof value !== stepArgumentTypes[key as StepArgument] ||
+      (typeof value === 'number' && !Number.isFinite(value)) ||
+      (key === 'replace' && kind !== 'input')
+    )
+      throw new Error('INVALID_STEP_ARGUMENT');
+  }
+  checkStepArguments(kind, options);
+  return validateStep(kind, options, platform);
+}
+
+function validateStep(
+  kind: StepKind,
+  v: StepArguments,
+  platform: string | undefined,
+): { step: CommandStep; observation?: string } {
+  const observation = v.observation;
+  if (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation))
+    throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (kind === 'launch') {
+    if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
+    for (const name of [v.ability, v.module]) {
+      if (name !== undefined && (platform !== 'harmony' || !isAppIdentifier(name)))
+        throw new Error('INVALID_HARMONY_ENTRY');
+    }
+    const step: LaunchStep = { kind, app: v.app, ability: v.ability, module: v.module };
+    return { step, observation };
+  }
+  const selector: Selector = { id: v.id, label: v.label, role: v.role };
+  if ([v.id, v.label, v.role].includes('') || (v.id !== undefined && v.label !== undefined))
+    throw new Error('INVALID_SELECTOR');
+  function coordinate(value: number | undefined) {
+    if (value === undefined || !Number.isFinite(value) || value < 0 || value > 1)
+      throw new Error('COORDINATE_OUT_OF_RANGE');
+    return value;
+  }
+  let step: CommandStep;
+  if (kind === 'back') {
+    const specified = !!(selector.id || selector.label);
+    if (platform === 'ios' ? !specified : specified || selector.role)
+      throw new Error('BACK_REQUIRES_IOS_NAVIGATION_SELECTOR_ONLY');
+    step = { kind, selector: specified ? selector : undefined };
+    return { step, observation };
+  }
+  if (kind === 'waitFor') {
+    const state = v.state ?? 'visible',
+      timeoutMs = v.timeoutMs ?? 5000;
+    if (
+      (!selector.id && !selector.label) ||
+      (state !== 'visible' && state !== 'hidden') ||
+      !Number.isInteger(timeoutMs) ||
+      timeoutMs < 1 ||
+      timeoutMs > 60000
+    )
+      throw new Error('INVALID_WAIT');
+    step = { kind, selector, state, timeoutMs };
+    return { step, observation };
+  }
+  if (kind === 'swipe') {
+    const from = { x: coordinate(v.fromX), y: coordinate(v.fromY) },
+      to = { x: coordinate(v.toX), y: coordinate(v.toY) };
+    const duration = v.durationMs ?? 400;
+    if (
+      !Number.isInteger(duration) ||
+      duration < 1 ||
+      duration > 10000 ||
+      (from.x === to.x && from.y === to.y)
+    )
+      throw new Error('INVALID_SWIPE');
+    step = { kind, from, to, duration };
+  } else if (kind === 'tap') {
+    if (v.x !== undefined || v.y !== undefined) {
+      if (v.id || v.label || v.role) throw new Error('MIXED_TAP_TARGET');
+      step = { kind, point: { x: coordinate(v.x), y: coordinate(v.y) } };
+    } else {
+      if (!v.id && !v.label) throw new Error('MISSING_TAP_TARGET');
+      step = { kind, selector };
+    }
+  } else if (kind === 'input') {
+    if (v.text === undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
+    const text = v.text;
+    if (text.includes('\0') || (!text && !v.replace)) throw new Error('INVALID_INPUT_TEXT');
+    step = { kind, selector, text, replace: !!v.replace };
+  } else throw new Error(stepHelp);
+  return { step, observation };
+}
+
+const cliArgumentNames: Partial<Record<string, StepArgument>> = {
+  'from-x': 'fromX',
+  'from-y': 'fromY',
+  'to-x': 'toX',
+  'to-y': 'toY',
+  'duration-ms': 'durationMs',
+  'timeout-ms': 'timeoutMs',
+};
+
 export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
     flag = { type: 'boolean' } as const;
-  const { values: v } = parseArgs({
+  const {
+    values: { device, stdin: useStdin, json: _json, ...values },
+  } = parseArgs({
     args,
     options: {
       device: str,
@@ -109,86 +256,26 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
       'timeout-ms': str,
     },
   });
-  const byKind: Record<string, string[]> = {
-    tap: ['id', 'label', 'role', 'x', 'y'],
-    input: ['id', 'label', 'role', 'text', 'stdin', 'replace'],
-    swipe: ['from-x', 'from-y', 'to-x', 'to-y', 'duration-ms'],
-    waitFor: ['id', 'label', 'role', 'state', 'timeout-ms'],
-    back: ['id', 'label', 'role'],
-    launch: ['app', 'ability', 'module'],
-  };
-  const allowed = ['device', 'observation', 'json', ...(byKind[kind] ?? [])];
-  if (Object.keys(v).some((k) => !allowed.includes(k))) throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
-  const device = v.device,
-    observation = v.observation;
-  if (!device || (observation !== undefined && !/^[a-f0-9]{64}$/.test(observation)))
-    throw new Error('INVALID_DEVICE_OR_OBSERVATION');
-  if (kind === 'launch') {
-    if (!v.app || !isAppIdentifier(v.app)) throw new Error('INVALID_APP_ID');
-    for (const name of [v.ability, v.module]) {
-      if (name !== undefined && (!device.startsWith('harmony:') || !isAppIdentifier(name)))
-        throw new Error('INVALID_HARMONY_ENTRY');
-    }
-    const step: LaunchStep = { kind, app: v.app, ability: v.ability, module: v.module };
-    return { step, device, observation };
+  if (!isStepKind(kind)) throw new Error(stepHelp);
+  if (useStdin !== undefined && kind !== 'input') throw new Error('OPTION_NOT_SUPPORTED_FOR_STEP');
+  const options = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => {
+      const key = cliArgumentNames[name] ?? name;
+      const type = stepArgumentTypes[key as StepArgument];
+      if (type === 'number' && typeof value === 'string')
+        return [key, value.trim() ? Number(value) : NaN];
+      return [key, value];
+    }),
+  );
+  checkStepArguments(kind, options);
+  if (!device) throw new Error('INVALID_DEVICE_OR_OBSERVATION');
+  if (useStdin) {
+    if (values.text !== undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
+    options.text = await stdin();
   }
-  const selector: Selector = { id: v.id, label: v.label, role: v.role };
-  if ([v.id, v.label, v.role].includes('') || (v.id !== undefined && v.label !== undefined))
-    throw new Error('INVALID_SELECTOR');
-  function coordinate(raw: string | undefined) {
-    if (!raw?.trim() || !Number.isFinite(Number(raw)) || Number(raw) < 0 || Number(raw) > 1)
-      throw new Error('COORDINATE_OUT_OF_RANGE');
-    return Number(raw);
-  }
-  let step: CommandStep;
-  if (kind === 'back') {
-    const specified = !!(selector.id || selector.label);
-    if (device.startsWith('ios:') ? !specified : specified || selector.role)
-      throw new Error('BACK_REQUIRES_IOS_NAVIGATION_SELECTOR_ONLY');
-    step = { kind, selector: specified ? selector : undefined };
-    return { step, device, observation };
-  }
-  if (kind === 'waitFor') {
-    const state = v.state ?? 'visible',
-      timeoutMs = Number(v['timeout-ms'] ?? 5000);
-    if (
-      (!selector.id && !selector.label) ||
-      !['visible', 'hidden'].includes(state) ||
-      !Number.isInteger(timeoutMs) ||
-      timeoutMs < 1 ||
-      timeoutMs > 60000
-    )
-      throw new Error('INVALID_WAIT');
-    step = { kind, selector, state: state as WaitStep['state'], timeoutMs };
-    return { step, device, observation };
-  }
-  if (kind === 'swipe') {
-    const from = { x: coordinate(v['from-x']), y: coordinate(v['from-y']) },
-      to = { x: coordinate(v['to-x']), y: coordinate(v['to-y']) };
-    const duration = Number(v['duration-ms'] ?? 400);
-    if (
-      !Number.isInteger(duration) ||
-      duration < 1 ||
-      duration > 10000 ||
-      (from.x === to.x && from.y === to.y)
-    )
-      throw new Error('INVALID_SWIPE');
-    step = { kind, from, to, duration };
-  } else if (kind === 'tap') {
-    if (v.x !== undefined || v.y !== undefined) {
-      if (v.id || v.label || v.role) throw new Error('MIXED_TAP_TARGET');
-      step = { kind, point: { x: coordinate(v.x), y: coordinate(v.y) } };
-    } else {
-      if (!v.id && !v.label) throw new Error('MISSING_TAP_TARGET');
-      step = { kind, selector };
-    }
-  } else if (kind === 'input') {
-    if ((v.text !== undefined) === Boolean(v.stdin)) throw new Error('SPECIFY_TEXT_OR_STDIN');
-    const text = v.stdin ? await stdin() : v.text!;
-    if (text.includes('\0') || (!text && !v.replace)) throw new Error('INVALID_INPUT_TEXT');
-    step = { kind, selector, text, replace: !!v.replace };
-  } else throw new Error(stepHelp);
-  return { step, device, observation };
+  const prefix = device.indexOf(':');
+  const platform = prefix === -1 ? undefined : device.slice(0, prefix);
+  return { ...validateStep(kind, options, platform), device };
 }
 type ObservationScope =
   | CommandStep
@@ -196,14 +283,24 @@ type ObservationScope =
   | { kind: 'visualTap'; point: Point };
 
 function isPassiveScreenText(view: View, node: Control) {
-  return node.role === 'Text' && node.clickable === false && !node.editable && !node.focused &&
+  return /^(?:Text|TextView|StaticText)$/.test(controlType(node)) &&
+    node.clickable === false && !node.editable && !node.focused &&
     node.bounds.width >= 0.9 * view.width && node.bounds.height >= 0.9 * view.height;
+}
+
+function controlType(node: Control) {
+  return node.role.slice(node.role.lastIndexOf('.') + 1).replace(/^XCUIElementType/, '');
+}
+
+export function isIconControl(node: Control) {
+  return node.clickable === true && node.enabled && !node.editable && !node.secret &&
+    /^(?:Button|Icon|Image|ImageButton|ImageView)$/.test(controlType(node));
 }
 
 function visualTapControls(view: View, hits: Control[]) {
   const button = hits.at(-1);
   if (
-    !button?.clickable || !button.enabled || !['Image', 'Button'].includes(button.role) ||
+    !button || !isIconControl(button) ||
     button.bounds.width > view.width / 4 || button.bounds.height > view.height / 4
   ) return hits;
   // A video can expose its changing playback time in a screen-sized accessibility label

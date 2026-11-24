@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { agentToolchain, list, type Platform } from './host.js';
 import { openDevice, doctor, diagnose, connectionError } from './doctor.js';
 import { parseTask } from './task.js';
-import { readScript } from './script.js';
-import { executeRound } from './run.js';
+import { compileScript, executeRound } from './run.js';
 import { pending, withDevice } from './session.js';
 import { saveCapture } from './inspect.js';
 import { executeStep, parseStep, stepHelp } from './steps.js';
 import { text as streamText } from 'node:stream/consumers';
 import { bluetoothTask } from './agent.js';
 import { chatClient, modelConfig } from './chat.js';
+import { runConversation } from './conversation.js';
+import { maxRecordingSteps, type RecordedStep } from './recording.js';
 
 const platforms: Platform[] = ['harmony', 'ios', 'android'];
 const json = (v: unknown) => console.log(JSON.stringify(v, null, 2));
@@ -22,6 +23,7 @@ omu devices --json
 omu doctor --device <platform:id> --json
 omu inspect --device <platform:id> --output <dir>
 omu run --device <platform:id> --script examples/settings-bluetooth.json [--repeat 5] [--output <dir>] --json
+omu chat --device <platform:id> --message <request> [--vision] [--model <id>] [--base-url <url>] [--api-key-env <name>] [--output <recording.json>] --json
 omu agent --device <platform:id> --task <settings.bluetoothRoundTrip|task.json> [--vision] [--model <id>] [--base-url <url>] [--api-key-env <name>] [--repeat 5] [--output <dir>] --json`;
 function commonArgs(args: string[]) {
   return parseArgs({
@@ -30,6 +32,7 @@ function commonArgs(args: string[]) {
       device: { type: 'string' },
       script: { type: 'string' },
       task: { type: 'string' },
+      message: { type: 'string' },
       vision: { type: 'boolean' },
       model: { type: 'string' },
       'base-url': { type: 'string' },
@@ -66,23 +69,39 @@ async function main() {
   if (
     !platforms.includes(platform as Platform) ||
     !id ||
-    (!single && !['doctor', 'inspect', 'run', 'agent'].includes(command))
+    (!single && !['doctor', 'inspect', 'run', 'agent', 'chat'].includes(command))
   )
     throw new Error(help);
   if (command === 'inspect' && !values.output) throw new Error('--output is required for inspect');
   if (command === 'run' && !values.script) throw new Error('--script is required');
   if (command === 'agent' && (!values.task || values.script))
     throw new Error('agent requires --task <registered ID or task.json>');
-  if (values.vision && (command !== 'agent' || values.task === bluetoothTask))
-    throw new Error('--vision requires a task with permitted visual controls');
+  const message = values.message?.trim();
+  if (command === 'chat') {
+    if (!message || message.length > 2000)
+      throw new Error('chat requires --message (1–2000 characters)');
+    if (values.task !== undefined || values.script !== undefined || values.repeat !== undefined)
+      throw new Error('chat does not accept --task, --script or --repeat');
+    if (values.output !== undefined) {
+      if (!values.output.trim()) throw new Error('chat requires a recording file path for --output');
+      const existing = await lstat(values.output).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      if (existing) throw new Error('Recording output already exists');
+    }
+  } else {
+    if (values.message !== undefined) throw new Error('--message is only available for chat');
+    if (values.vision && (command !== 'agent' || values.task === bluetoothTask))
+      throw new Error('--vision requires a task with permitted visual controls');
+  }
   const task =
     command === 'agent' && values.task !== bluetoothTask
       ? await parseTask(JSON.parse(await readFile(values.task!, 'utf8')), platform as Platform)
       : undefined;
-  if (values.vision && !task?.actions.some((a) => a.visual))
+  if (command === 'agent' && values.vision && !task?.actions.some((a) => a.visual))
     throw new Error('TASK_HAS_NO_VISUAL_ACTIONS');
   const config =
-    command === 'agent'
+    command === 'agent' || command === 'chat'
       ? modelConfig({
           model: values.model,
           baseURL: values['base-url'],
@@ -94,10 +113,11 @@ async function main() {
   if (config?.keyEnv) delete process.env[config.keyEnv];
   const cancellation = new AbortController();
   const cancel = () => cancellation.abort(new Error('CANCELLED'));
-  const decide = config && chatClient(config, fetch, (id) => servedModels.add(id), cancellation.signal);
+  const decide =
+    config && chatClient(config, fetch, (id) => servedModels.add(id), cancellation.signal, command === 'chat');
   const script =
     command === 'run'
-      ? await readScript(JSON.parse(await readFile(values.script!, 'utf8')), platform as Platform)
+      ? await compileScript(JSON.parse(await readFile(values.script!, 'utf8')), platform as Platform)
       : undefined;
   const count = Number(values.repeat || 1);
   if (!Number.isInteger(count) || count < 1 || count > 100) throw new Error('--repeat must be 1..100');
@@ -127,6 +147,87 @@ async function main() {
   }
   if (!target?.available) {
     json({ runId, platform, status: 'failed', error: connectionError(target) });
+    return;
+  }
+  if (command === 'chat' && message && decide) {
+    const started = Date.now();
+    const { signal } = cancellation;
+    const steps: RecordedStep[] = [];
+    const events: { name: string; status: string }[] = [];
+    let cleanupError: string | undefined;
+    let result: Awaited<ReturnType<typeof runConversation>>;
+    process.once('SIGINT', cancel);
+    process.once('SIGTERM', cancel);
+    try {
+      result = await withDevice(target, runId, async (dispatch) => {
+        signal.throwIfAborted();
+        const device = await openDevice(target, (kind, perform) => {
+          signal.throwIfAborted();
+          return dispatch(kind, perform);
+        });
+        try {
+          return await runConversation(
+            device,
+            values.device!,
+            target.platform,
+            [{ user: message }],
+            decide,
+            signal,
+            async (step) => {
+              steps.push(step);
+            },
+            (name, status) => events.push({ name, status }),
+            () => steps.length < maxRecordingSteps,
+            undefined,
+            !!values.vision,
+          );
+        } finally {
+          try {
+            await device.close();
+          } catch {
+            cleanupError = 'DEVICE_SESSION_CLOSE_FAILED';
+          }
+        }
+      });
+    } catch (error) {
+      result = {
+        status: 'failed',
+        reason: signal.aborted ? 'CANCELLED' : (error as Error).message,
+        modelCalls: 0,
+      };
+    } finally {
+      process.off('SIGINT', cancel);
+      process.off('SIGTERM', cancel);
+    }
+    let recordingFile: string | undefined;
+    let recordingError: string | undefined;
+    if (values.output && steps.length) {
+      try {
+        const recording = { schemaVersion: 2, platform: target.platform, steps };
+        await writeFile(values.output, JSON.stringify(recording, null, 2) + '\n', {
+          flag: 'wx',
+          mode: 0o600,
+          flush: true,
+        });
+        recordingFile = values.output;
+      } catch (error) {
+        recordingError = (error as NodeJS.ErrnoException).code || 'RECORDING_WRITE_FAILED';
+      }
+    }
+    json({
+      ...result,
+      runId,
+      platform,
+      durationMs: Date.now() - started,
+      modelId: config?.model,
+      servedModels: [...servedModels],
+      stepCount: steps.length,
+      events,
+      recordingFile,
+      recordingError,
+      cleanupError,
+    });
+    if (result.status === 'succeeded' && !recordingError) process.exitCode = 0;
     return;
   }
   if (single || command === 'inspect') {
@@ -202,7 +303,7 @@ async function main() {
           cancellation.signal.throwIfAborted();
           return dispatch(kind, perform);
         },
-        script?.kind === 'general' || task ? 'foreground' : 'settings',
+        script?.mode ?? (task ? 'foreground' : 'settings'),
       );
       try {
         for (let i = 0; i < count; i++) {

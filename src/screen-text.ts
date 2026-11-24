@@ -1,9 +1,17 @@
 import { execFile } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { screenshotSize } from './inspect.js';
 import { executeStep, guardObservation, screenAvailable, type StepDevice, type View } from './steps.js';
 
-type Line = { text: string; confidence: number; x: number; y: number };
+export type ScreenTextLine = { text: string; confidence: number; x: number; y: number };
+export type ScreenTextRecognizer = (
+  image: Buffer,
+  size: { width: number; height: number },
+  signal: AbortSignal,
+) => Promise<ScreenTextLine[]>;
 const helper = fileURLToPath(new URL('./recognize-text', import.meta.url));
 const key = (text: string) =>
   text
@@ -12,7 +20,7 @@ const key = (text: string) =>
     .replace(/\s+/gu, ' ')
     .replace(/(?<=\p{Script=Han}) (?=\p{Script=Han})/gu, '');
 
-function recognize(image: Buffer, signal: AbortSignal): Promise<Line[]> {
+function recognizeAppleText(image: Buffer, signal: AbortSignal): Promise<ScreenTextLine[]> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = execFile(helper, [], { timeout: 8000, signal, maxBuffer: 1024 * 1024 }, (err, out) => {
@@ -28,19 +36,54 @@ function recognize(image: Buffer, signal: AbortSignal): Promise<Line[]> {
   });
 }
 
+export const recognizePortableText: ScreenTextRecognizer = async (image, size, signal) => {
+  signal.throwIfAborted();
+  // Keep the WASM engine and its worker off the main thread, with explicit cancellation.
+  let worker: Worker | undefined;
+  try {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(12_000)]);
+    worker = new Worker(new URL('./screen-text-worker.js', import.meta.url), {
+      workerData: { image, ...size },
+      execArgv: [],
+      stdout: true,
+      stderr: true,
+    });
+    worker.stdout.resume();
+    worker.stderr.resume();
+    const [lines] = await once(worker, 'message', { signal: deadline });
+    return lines;
+  } catch {
+    signal.throwIfAborted();
+    throw Error('SCREEN_TEXT_UNAVAILABLE');
+  } finally {
+    await worker?.terminate();
+  }
+};
+
+const recognizeScreenText: ScreenTextRecognizer = async (image, size, signal) => {
+  if (process.platform === 'darwin' && existsSync(helper)) {
+    try {
+      return await recognizeAppleText(image, signal);
+    } catch {
+      signal.throwIfAborted();
+    }
+  }
+  return recognizePortableText(image, size, signal);
+};
+
 export async function readScreenText(
   device: StepDevice,
   identity: string,
   before: View,
   signal: AbortSignal,
   captured?: Buffer,
+  recognize: ScreenTextRecognizer = recognizeScreenText,
 ) {
   screenAvailable(before);
   signal.throwIfAborted();
-  if (process.platform !== 'darwin') throw Error('SCREEN_TEXT_UNAVAILABLE');
   const image = captured ?? (await device.screenshot());
-  screenshotSize(image, before);
-  const lines = await recognize(image, signal);
+  const size = screenshotSize(image, before);
+  const lines = await recognize(image, size, signal);
   const fresh = await device.snapshot();
   signal.throwIfAborted();
   guardObservation(identity, before, { kind: 'check' }, screenAvailable)(fresh);
@@ -68,8 +111,9 @@ export async function executeTextTarget(
   text: string,
   action: 'tap' | 'check',
   signal: AbortSignal,
+  recognize?: ScreenTextRecognizer,
 ) {
-  const { view, targets } = await readScreenText(device, identity, before, signal);
+  const { view, targets } = await readScreenText(device, identity, before, signal, undefined, recognize);
   const hit = targets.find((line) => key(line.text) === key(text));
   if (!hit) throw Error('SCREEN_TEXT_NOT_UNIQUE_OR_MISSING');
   if (action === 'tap') {

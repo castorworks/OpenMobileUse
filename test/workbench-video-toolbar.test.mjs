@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
-import { harmonyView } from '../dist/native-layout.js';
+import { harmonyView, xmlControls } from '../dist/native-layout.js';
 import { compileRecording, replayRecording } from '../dist/recording.js';
 
 const width = 240;
 const height = 480;
 const bounds = '[0,0][240,480]';
+const app = 'example.channels';
 const searchCenter = { x: 200, y: 32 };
 const normalized = (x, y) => ({ x: x / (width - 1), y: y / (height - 1) });
 const toPixels = ({ x, y }) => ({ x: Math.round(x * (width - 1)), y: Math.round(y * (height - 1)) });
@@ -22,22 +23,56 @@ function videoFrame(background, sceneX) {
   </svg>`)).png().toBuffer();
 }
 
-function phone(frames, searchFrame, playing) {
+function view(platform, query, clock) {
+  if (platform === 'harmony') {
+    const controls = query !== undefined
+      ? [{ type: 'SearchField', id: 'query', bounds: '[10,15][226,50]', text: query }]
+      : [
+          { type: 'Text', bounds, text: '播放时间 ' + clock, clickable: 'false' },
+          { type: 'Image', bounds: '[188,20][212,44]', clickable: 'true' },
+        ];
+    return harmonyView({
+      attributes: { bundleName: app, bounds, focused: 'true', hostWindowId: '1' },
+      children: controls.map(attributes => ({ attributes })),
+    }, 0);
+  }
+  let source;
+  if (platform === 'android') {
+    const controls = query !== undefined
+      ? `<node class="android.widget.EditText" resource-id="query" text="${query}"
+           bounds="[10,15][226,50]" package="${app}"/>`
+      : `<node class="android.widget.TextView" text="播放时间 ${clock}" clickable="false"
+           bounds="${bounds}" package="${app}"/>
+         <node class="android.widget.ImageButton" clickable="true" bounds="[188,20][212,44]" package="${app}"/>
+         <node class="android.widget.ImageView" clickable="false" bounds="[20,20][44,44]" package="${app}"/>`;
+    source = `<hierarchy>${controls}</hierarchy>`;
+  } else {
+    const controls = query !== undefined
+      ? `<XCUIElementTypeSearchField type="XCUIElementTypeSearchField" visible="true" name="query"
+           value="${query}" x="10" y="15" width="216" height="35"/>`
+      : `<XCUIElementTypeStaticText type="XCUIElementTypeStaticText" visible="true" hittable="false"
+           label="播放时间 ${clock}" x="0" y="0" width="240" height="480"/>
+         <XCUIElementTypeButton type="XCUIElementTypeButton" visible="true" hittable="true"
+           x="188" y="20" width="24" height="24"/>
+         <XCUIElementTypeButton type="XCUIElementTypeButton" visible="true" hittable="false"
+           x="20" y="20" width="24" height="24"/>
+         <XCUIElementTypeImage type="XCUIElementTypeImage" visible="true" hittable="true"
+           x="120" y="20" width="24" height="24"/>`;
+    source = `<XCUIElementTypeApplication>${controls}</XCUIElementTypeApplication>`;
+  }
+  return {
+    app, window: 'main', width, height, rotation: 0,
+    controls: xmlControls(platform, source, app, width, height),
+  };
+}
+
+function phone(platform, frames, searchFrame, playing) {
   let searchOpen = false, query = '', clock = 0, captures = 0;
   const taps = [];
   return {
     taps,
     snapshot() {
-      const controls = searchOpen
-        ? [{ type: 'SearchField', id: 'query', bounds: '[10,15][226,50]', text: query }]
-        : [
-            { type: 'Text', bounds, text: '播放时间 ' + (playing ? ++clock : 0), clickable: 'false' },
-            { type: 'Image', bounds: '[188,20][212,44]', clickable: 'true' },
-          ];
-      return harmonyView({
-        attributes: { bundleName: 'example.channels', bounds, focused: 'true', hostWindowId: '1' },
-        children: controls.map(attributes => ({ attributes })),
-      }, 0);
+      return view(platform, searchOpen ? query : undefined, playing ? ++clock : 0);
     },
     screenshot() {
       if (searchOpen) return searchFrame;
@@ -57,13 +92,13 @@ function phone(frames, searchFrame, playing) {
   };
 }
 
-test('video search centers an imprecise visual tap on the anonymous toolbar icon and replays the search', async () => {
+async function checkToolbar(platform) {
   const [frame1, frame2, searchFrame] = await Promise.all([
     videoFrame('#293246', 65), videoFrame('#53413e', 125),
     sharp({ create: { width, height, channels: 3, background: 'white' } }).png().toBuffer(),
   ]);
-  const live = phone([frame1, frame2], searchFrame, true);
-  const identity = 'harmony:toolbar';
+  const live = phone(platform, [frame1, frame2], searchFrame, true);
+  const identity = platform + ':toolbar';
   const signal = new AbortController().signal;
   const records = [], actions = [];
   let centers;
@@ -98,7 +133,7 @@ test('video search centers an imprecise visual tap on the anonymous toolbar icon
     }] };
   };
   const result = await runConversation(
-    live, identity, 'harmony', [{ user: '打开视频号搜索框并输入 deepseek。' }], decide,
+    live, identity, platform, [{ user: '打开视频号搜索框并输入 deepseek。' }], decide,
     signal, async step => records.push(step), () => {}, () => true, undefined, true,
   );
   assert.equal(result.status, 'succeeded', result.reason || result.answer);
@@ -106,10 +141,14 @@ test('video search centers an imprecise visual tap on the anonymous toolbar icon
   assert.deepEqual(live.taps, [searchCenter]);
   assert.deepEqual(centers?.map(toPixels), [searchCenter]);
   assert.deepEqual(records.map(s => s.command.action), ['tapImage', 'input', 'check']);
-  const script = JSON.parse(JSON.stringify({ schemaVersion: 2, platform: 'harmony', steps: records }));
-  const playback = await compileRecording(script, 'harmony');
-  const paused = phone([frame2], searchFrame, false);
+  const script = JSON.parse(JSON.stringify({ schemaVersion: 2, platform, steps: records }));
+  const playback = await compileRecording(script, platform);
+  const paused = phone(platform, [frame2], searchFrame, false);
   const replay = await replayRecording(paused, identity, playback, signal, () => {});
   assert.equal(replay.status, 'succeeded');
   assert.deepEqual(paused.taps, [searchCenter]);
-});
+}
+
+for (const platform of ['harmony', 'android', 'ios']) {
+  test(`${platform} centers an imprecise visual tap on the toolbar icon and replays the search`, () => checkToolbar(platform));
+}

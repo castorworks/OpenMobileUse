@@ -5,7 +5,7 @@
 项目提供两种入口：
 
 - **桌面工作台**：Electron 应用，包含对话、手机画面、单步操作和脚本库。
-- **CLI**：`node dist/cli.js`，用于单步操作、JSON 脚本和 Agent 任务，结果以 JSON 输出，适合自动化和批量验证。
+- **CLI**：`node dist/cli.js`，支持自由对话、单步操作、JSON 脚本和预定义 Agent 任务，结果以 JSON 输出。
 
 ## 平台支持
 
@@ -17,7 +17,7 @@
 | Android 真机 | 支持，工作台可补齐 SDK 和 Java | 支持，工作台可补齐 SDK 和 Java |
 | Android 模拟器 | 工作台可创建并启动 API 35 模拟器 | 用 Android Studio 设备管理器启动 |
 | iPhone 真机 | 支持，需要 Xcode 和开发者签名 | 不支持 |
-| 本机识别画面文字 | 支持（Apple Vision） | 不支持，可改用模型识图 |
+| 本机识别画面文字 | 支持（Apple Vision 或 Tesseract） | 支持（Tesseract） |
 | 模型识图 | 支持 | 支持 |
 
 ## 快速开始

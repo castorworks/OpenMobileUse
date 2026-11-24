@@ -10,6 +10,14 @@ export function bounds(s: string | null | undefined): Bounds | undefined {
 const labels = (...xs: (string | null | undefined)[]) => [
   ...new Set(xs.filter((s): s is string => !!s)),
 ];
+function booleanAttribute(value: string | undefined) {
+  return value === 'true' ? true : value === 'false' ? false : undefined;
+}
+function iosClickable(role: string, hittable: string) {
+  if (role === 'XCUIElementTypeButton') return booleanAttribute(hittable);
+  // Hittable images and labels can be decorative. Only a non-hittable text backdrop is passive.
+  if (role === 'XCUIElementTypeStaticText' && hittable === 'false') return false;
+}
 function onScreen(b: Bounds | undefined, w: number, h: number): b is Bounds {
   return (
     !!b &&
@@ -58,7 +66,7 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
         role: a.type,
         bounds: b,
         enabled: a.enabled !== 'false',
-        clickable: a.clickable === 'true' ? true : a.clickable === 'false' ? false : undefined,
+        clickable: booleanAttribute(a.clickable),
         focused: a.focused === 'true' || (searchFocused && a.type === 'SearchField'),
         editable,
         secret,
@@ -83,7 +91,6 @@ export function harmonyView(root: HarmonyNode, rotation: number): View {
     rotation,
     controls,
     layout: root,
-    screen: { page: 'other' },
   };
 }
 export function parseXmlLayout(source: string) {
@@ -145,6 +152,7 @@ export function xmlControls(
       role,
       bounds: b,
       enabled: a('enabled') !== 'false',
+      clickable: ios ? iosClickable(role, a('hittable')) : booleanAttribute(a('clickable')),
       focused: a('focused') === 'true',
       editable,
       secret,

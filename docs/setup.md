@@ -32,7 +32,7 @@ npm run package:desktop
 
 ### 鸿蒙
 
-安装 DevEco Studio，在手机上开启开发者模式和 USB 调试，连接电脑并完成授权。工作台自动定位 DevEco Studio 内置的 HDC。CLI 在 macOS 上默认使用 DevEco Studio 内置的 HDC，在 Windows 上调用 `PATH` 中的 `hdc.exe`，也可以用 `HDC_PATH` 指定其绝对路径。鸿蒙不需要 Appium，可以单独运行。
+安装 DevEco Studio，在手机上开启开发者模式和 USB 调试，连接电脑并完成授权。工作台和 CLI 都会查找默认安装目录和 `PATH` 中的 HDC。也可以用 `HDC_PATH` 指定其绝对路径。鸿蒙无需 Appium。
 
 ### iPhone（仅 macOS）
 

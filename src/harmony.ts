@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { hdc, run } from './host.js';
+import { hdcToolchain, run } from './host.js';
 import { isTransientObservation, reason } from './observation.js';
 import { focusedHarmonyWindow, harmonyView } from './native-layout.js';
 import {
@@ -125,12 +125,14 @@ export function classifyHarmony(attrs: Attr[]): Screen {
   return { page: 'other' };
 }
 export class Harmony implements Device {
+  private readonly hdc = hdcToolchain().executable;
+
   constructor(
     readonly id: string,
     private dispatch: Dispatch,
   ) {}
   private async shell(...args: string[]) {
-    return run(hdc, ['-t', this.id, 'shell', ...args]);
+    return run(this.hdc, ['-t', this.id, 'shell', ...args]);
   }
   private async layout(): Promise<Node> {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.json';
@@ -192,9 +194,12 @@ export class Harmony implements Device {
     const match = /^\s*ScreenRotation:\s*(0|1|2|3|90|180|270)\s*$/m.exec(display);
     if (!match) throw new Error('DISPLAY_ROTATION_UNAVAILABLE');
     const raw = Number(match[1]);
-    const view = harmonyView(layout, raw <= 3 ? raw * 90 : raw);
-    view.screen = classifyHarmony(settingsNodes(layout));
-    return view;
+    return harmonyView(layout, raw <= 3 ? raw * 90 : raw);
+  }
+  settingsScreen(view: View): Screen {
+    return view.app === bundle
+      ? classifyHarmony(settingsNodes(view.layout as Node))
+      : { page: 'other' };
   }
   async screenshot() {
     const path = '/data/local/tmp/omu-' + randomUUID() + '.png';
@@ -203,7 +208,7 @@ export class Harmony implements Device {
       const out = await this.shell('uitest', 'screenCap', '-p', path);
       if (!out.includes(path)) throw new Error('SCREENSHOT_UNAVAILABLE');
       const local = join(dir, 'screen.png');
-      await run(hdc, ['-t', this.id, 'file', 'recv', path, local]);
+      await run(this.hdc, ['-t', this.id, 'file', 'recv', path, local]);
       try {
         return await readFile(local);
       } catch (error) {

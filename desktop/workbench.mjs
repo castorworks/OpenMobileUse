@@ -5,7 +5,7 @@ import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
-import { compileStep, readScript, reason } from '../dist/script.js';
+import { compileStep, reason } from '../dist/script.js';
 import {
   executeStep,
   guardObservation,
@@ -13,7 +13,7 @@ import {
   resolveControl,
   uniqueSelector,
 } from '../dist/steps.js';
-import { executeRound } from '../dist/run.js';
+import { compileScript, executeRound } from '../dist/run.js';
 import {
   listScripts,
   importScript,
@@ -28,13 +28,7 @@ import { LocalAppium } from './appium.mjs';
 import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
 
 import { runConversation } from '../dist/conversation.js';
-import {
-  compileRecording,
-  maxRecordingSteps,
-  recordStep,
-  replayRecording,
-  screenAvailable,
-} from '../dist/recording.js';
+import { maxRecordingSteps, recordStep, screenAvailable } from '../dist/recording.js';
 import {
   conversations,
   deviceDir,
@@ -344,9 +338,7 @@ export class Workbench {
       throw Error('INVALID_MESSAGE');
     const entry = conversational ? undefined : await scriptEntry(imported);
     if (entry && !entry.platforms.includes(t.platform)) throw Error('SCRIPT_PLATFORM_MISMATCH');
-    const playback =
-      entry?.script.schemaVersion === 2 ? await compileRecording(entry.script, t.platform) : null;
-    const script = entry && !playback ? await readScript(entry.script, t.platform) : undefined;
+    const script = entry ? await compileScript(entry.script, t.platform) : undefined;
     const controller = new AbortController();
     const config = conversational ? this.preferences.clientConfig() : undefined;
     const useImages = conversational && this.preferences.useImages === true;
@@ -404,7 +396,7 @@ export class Workbench {
           target,
           record.id,
           controller.signal,
-          conversational || playback || script?.kind === 'general' ? 'foreground' : 'settings',
+          script?.mode ?? 'foreground',
           async (device) => {
             let screenshotAt;
             const screenshot = async () => {
@@ -479,8 +471,6 @@ export class Workbench {
                   previewDue = !(await showFrame(image));
                 },
               );
-            } else if (playback) {
-              result = await replayRecording(watched, id, playback, controller.signal, progress);
             } else {
               result = await executeRound(watched, id, { script }, controller.signal, progress);
             }

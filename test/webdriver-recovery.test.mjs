@@ -77,6 +77,22 @@ test('foreground reads distinguish missing windows from invalid sessions', async
   await assert.rejects(d.phone.snapshot(), { message: 'Appium: Remote response' });
 });
 
+test('iOS requests explicit hit testing for foreground snapshots', async (t) => {
+  const d = await device(t, 'ios', (command, data) => {
+    if (command.endsWith('/session')) {
+      assert.equal(data.capabilities.alwaysMatch['appium:settings'].includeHittableInPageSource, true);
+      return { sessionId: 'test' };
+    }
+    if (command === '/rotation') return { z: 0 };
+    if (command === '/window/rect') return { width: 100, height: 200 };
+    if (command === '/source') return `<XCUIElementTypeButton type="XCUIElementTypeButton"
+      x="5" y="5" width="10" height="10" enabled="true" visible="true" hittable="true"/>`;
+  });
+  const [button] = (await d.phone.snapshot()).controls;
+  assert.equal(button.role, 'XCUIElementTypeButton');
+  assert.equal(button.clickable, true);
+});
+
 test('Android rechecks autofill after the confirmed focus tap', async (t) => {
   let text = '';
   const d = await device(t, 'android', (command) => {

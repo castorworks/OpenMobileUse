@@ -3,6 +3,10 @@ import { join } from 'node:path';
 import { readObservation } from './observation.js';
 import { observationId, visibleCenter, type StepDevice, type View } from './steps.js';
 
+type CaptureDevice = StepDevice & {
+  settingsScreen?(view: View): { page: string; marker?: string };
+};
+
 function sameWindow(a: View, b: View) {
   return (
     a.app === b.app &&
@@ -27,7 +31,7 @@ export function screenshotSize(image: Buffer, view: View) {
   return { width, height };
 }
 
-export async function captureView(device: StepDevice, identity: string) {
+export async function captureView(device: CaptureDevice, identity: string) {
   return readObservation(async () => {
     const before = await device.snapshot();
     const image = await device.screenshot();
@@ -35,6 +39,8 @@ export async function captureView(device: StepDevice, identity: string) {
     if (!sameWindow(before, view)) throw Error('STALE_OBSERVATION');
     const { width, height } = screenshotSize(image, view);
     const token = observationId(identity, view);
+    // Keep the CLI diagnostics fields without making Settings classification part of every snapshot.
+    const settings = device.settingsScreen?.(view);
     const metadata = {
       observationId: token,
       controlsChangedDuringCapture: observationId(identity, before) !== token,
@@ -45,8 +51,8 @@ export async function captureView(device: StepDevice, identity: string) {
       height,
       actionWidth: view.width,
       actionHeight: view.height,
-      page: view.screen.page,
-      marker: view.screen.marker,
+      page: settings?.page ?? 'other',
+      marker: settings?.marker,
     };
     const controls = view.controls.map((n) => {
       const center = visibleCenter(view, n.bounds);
@@ -62,7 +68,7 @@ export async function captureView(device: StepDevice, identity: string) {
   });
 }
 
-export async function saveCapture(dir: string, device: StepDevice, identity: string) {
+export async function saveCapture(dir: string, device: CaptureDevice, identity: string) {
   const { metadata, controls, image, layout } = await captureView(device, identity);
   const staging = await mkdtemp(dir + '.');
   try {

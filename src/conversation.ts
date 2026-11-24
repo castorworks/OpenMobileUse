@@ -3,7 +3,7 @@ import { tool, decode } from './agent-tools.js';
 import { messagesFor, remember, type Decide, type History, type Tool } from './chat.js';
 import type { Platform } from './host.js';
 import { recordStep, reading, type RecordedStep } from './recording.js';
-import { executeTextTarget, readScreenText } from './screen-text.js';
+import { executeTextTarget, readScreenText, type ScreenTextRecognizer } from './screen-text.js';
 import {
   imageFrame,
   modelImage,
@@ -19,6 +19,7 @@ import {
   executeStep,
   guardObservation,
   hasWrittenValue,
+  isIconControl,
   isScreenContainer,
   observationId,
   screenAvailable,
@@ -116,9 +117,7 @@ function visualIcons(view: View) {
   const icons = new Map<Control, Point>();
   const maxSide = Math.min(view.width, view.height) / 6;
   for (const node of view.controls) {
-    if (!node.clickable || !node.enabled || node.editable || node.secret || node.id || node.labels.length)
-      continue;
-    if (!/(?:Image|Icon|Button|ImageView)$/.test(node.role)) continue;
+    if (!isIconControl(node) || node.id || node.labels.length) continue;
     const b = node.bounds;
     if (b.x < 0 || b.y < 0 || b.x + b.width > view.width || b.y + b.height > view.height) continue;
     const longest = Math.max(b.width, b.height);
@@ -166,6 +165,7 @@ export async function runConversation(
   activity?: (description: string) => void,
   useImages = false,
   preview?: (image?: Buffer) => Promise<void>,
+  recognizeText?: ScreenTextRecognizer,
 ) {
   const deadline = Date.now() + timeLimitMs;
   const bounded = AbortSignal.any([signal, AbortSignal.timeout(timeLimitMs)]);
@@ -279,7 +279,6 @@ export async function runConversation(
       const tappable = refs((n) => n.enabled);
       const inspectScreen = !tappable.length || inspectTextInApp === view.app;
       const sendImage = useImages && !imageRejected;
-      const localOCR = process.platform === 'darwin';
       const screenText = new Map<string, { text: string; x: number; y: number }>();
       let textStatus: string | undefined = imageRejected
         ? 'The endpoint rejected image input.'
@@ -293,15 +292,15 @@ export async function runConversation(
       if (useNativeView) {
         textStatus = captureIssue;
         captureIssue = undefined;
-      } else if (inspectScreen && (sendImage || localOCR)) {
+      } else if (inspectScreen) {
         activity?.(sendImage ? '正在读取手机截图' : '正在识别画面文字');
         try {
           if (sendImage) {
             frame = await imageFrame(device, identity, view, bounded);
             frameUrl = await modelImage(frame);
           }
-          if (localOCR && (!sendImage || visualPoint)) {
-            const scan = await readScreenText(device, identity, view, bounded, frame);
+          if (!sendImage || visualPoint) {
+            const scan = await readScreenText(device, identity, view, bounded, frame, recognizeText);
             ocrImage = scan.image;
             for (const { text, x, y } of scan.targets.slice(0, observationItemLimit)) {
               screenText.set('v' + (screenText.size + 1), {
@@ -331,9 +330,6 @@ export async function runConversation(
           if (code !== 'SCREEN_TEXT_UNAVAILABLE') throw e;
           textStatus = code;
         }
-      } else if (inspectScreen && !imageRejected) {
-        textStatus =
-          'Screenshot sharing is off. Continue with visible controls and navigation. If the remaining task requires reading the image, the user can enable 允许模型按需查看手机截图 in 工作台设置.';
       }
       await preview?.(frame ?? ocrImage);
       const swipe = tool(
@@ -354,7 +350,7 @@ export async function runConversation(
           evidence: ['foreground', ...targets.keys(), ...screenText.keys()],
         }),
       ];
-      if ((!inspectScreen || useNativeView) && (sendImage || localOCR))
+      if (!inspectScreen || useNativeView)
         tools.push(
           tool(
             token,
@@ -504,10 +500,7 @@ export async function runConversation(
         if (!frame || !['MODEL_HTTP_400', 'MODEL_HTTP_415', 'MODEL_HTTP_422'].includes(code))
           throw error;
         imageRejected = true;
-        progress(
-          localOCR ? '模型未接受截图，改用控件和本机文字识别' : '模型未接受截图，改用原生控件',
-          'observed',
-        );
+        progress('模型未接受截图，改用控件和本机文字识别', 'observed');
         continue;
       }
       invalidReplies = 0;
@@ -597,7 +590,7 @@ export async function runConversation(
             else {
               const fresh = await observe(device, bounded);
               guardObservation(identity, view, { kind: 'check' }, screenAvailable)(fresh);
-              await executeTextTarget(device, identity, fresh, visual.text, 'tap', bounded);
+              await executeTextTarget(device, identity, fresh, visual.text, 'tap', bounded, recognizeText);
               await record(recordStep(fresh, command));
               lastDispatch = signature;
               outcome = 'dispatched';
@@ -619,7 +612,7 @@ export async function runConversation(
             else {
               if (name === 'finish') {
                 if (visual)
-                  await executeTextTarget(device, identity, fresh, visual.text, 'check', bounded);
+                  await executeTextTarget(device, identity, fresh, visual.text, 'check', bounded, recognizeText);
                 await record({
                   inApp: fresh.app,
                   command: visual
@@ -785,7 +778,7 @@ export async function runConversation(
             : reason(e);
     if (code === 'TIME_BUDGET') return partial(code);
     if (isTransientObservation(code))
-      return partial(code, '工作台多次读取后仍未取得稳定的手机画面。请确认手机已解锁并停在目标应用后回复。', true);
+      return partial(code, '多次读取后仍未取得稳定的手机画面。请确认手机已解锁并停在目标应用后回复。', true);
     return {
       status: code === 'SENSITIVE_OR_BLOCKED_SCREEN' ? 'needs_review' : 'failed',
       reason: code,

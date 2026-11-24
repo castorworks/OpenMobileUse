@@ -2,7 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import type { Platform } from './host.js';
 import type { Progress } from './run.js';
 import { compileStep, object, reason } from './script.js';
-import { executeTextTarget } from './screen-text.js';
+import { executeTextTarget, type ScreenTextRecognizer } from './screen-text.js';
 import { executeImageTarget, isImageTarget, type ImageTarget } from './screen-image.js';
 import { isTargetUnavailable, isTransientObservation } from './observation.js';
 import {
@@ -170,6 +170,7 @@ export async function replayRecording(
   steps: PlaybackStep[],
   signal: AbortSignal,
   progress: Progress,
+  recognizeText?: ScreenTextRecognizer,
 ) {
   for (const [index, { source, step, selector, screenText, image }] of steps.entries()) {
     const name = String(source.command.action);
@@ -219,6 +220,7 @@ export async function replayRecording(
                 screenText,
                 name === 'tapScreenText' ? 'tap' : 'check',
                 signal,
+                recognizeText,
               );
             } else if (step) {
               const validate = guardObservation(identity, view, step, (fresh) => {

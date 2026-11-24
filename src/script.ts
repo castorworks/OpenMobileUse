@@ -2,10 +2,10 @@ import type { Progress } from './run.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { isTargetUnavailable, isTransientObservation, reason } from './observation.js';
 import {
+  compileCommandStep,
   executeStep,
   guardObservation,
   matchingControls,
-  parseStep,
   screenAvailable,
   type CommandStep,
   type Control,
@@ -19,36 +19,10 @@ export { reason };
 export function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
-const numbers: Record<string, string> = {
-  x: 'x',
-  y: 'y',
-  fromX: 'from-x',
-  fromY: 'from-y',
-  toX: 'to-x',
-  toY: 'to-y',
-  durationMs: 'duration-ms',
-  timeoutMs: 'timeout-ms',
-};
-const strings = ['app', 'id', 'label', 'role', 'text', 'state', 'module', 'ability', 'observation'];
 export async function compileStep(raw: unknown, platform: Platform) {
   if (!object(raw) || typeof raw.action !== 'string') throw new Error('INVALID_STEP');
-  const kind = raw.action === 'launchApp' ? 'launch' : raw.action;
-  if (!['launch', 'tap', 'swipe', 'input', 'waitFor', 'back'].includes(kind))
-    throw new Error('UNKNOWN_STEP');
-  const args = ['--device', platform + ':script'];
-  for (const [key, value] of Object.entries(raw)) {
-    if (key === 'action') continue;
-    if (key === 'replace' && typeof value === 'boolean' && kind === 'input') {
-      if (value) args.push('--replace');
-    } else if (Object.hasOwn(numbers, key) && typeof value === 'number' && Number.isFinite(value)) {
-      args.push('--' + numbers[key] + '=' + value);
-    } else if (strings.includes(key) && typeof value === 'string') {
-      args.push('--' + key + '=' + value);
-    } else throw new Error('INVALID_STEP_ARGUMENT');
-  }
-  return parseStep(kind, args, async () => {
-    throw new Error('INVALID_STEP_ARGUMENT');
-  });
+  const { action, ...options } = raw;
+  return compileCommandStep(action, options, platform);
 }
 type Compiled = { index?: number; step: CommandStep; observation?: string };
 export async function readScript(raw: unknown, platform: Platform) {

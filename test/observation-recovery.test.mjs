@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import sharp from 'sharp';
 import { Harmony } from '../dist/harmony.js';
+import { captureView } from '../dist/inspect.js';
 import { readObservation } from '../dist/observation.js';
 import { WebDriver } from '../dist/webdriver.js';
 
@@ -54,6 +56,30 @@ test('Appium refreshes the native view after a truncated source and read timeout
   const view = await readObservation(() => phone.snapshot(), undefined, [0, 0, 0]);
   assert.equal(view.layout, '<hierarchy />');
   assert.equal(replies.length, 0);
+});
+
+test('Settings diagnostics keep their page and marker outside generic snapshots', async (t) => {
+  const app = 'com.android.settings';
+  const source = `<hierarchy>
+    <node package="${app}" resource-id="${app}:id/homepage_title" bounds="[0,0][100,20]"/>
+    <node package="${app}" resource-id="android:id/title" text="Connected devices" bounds="[0,20][100,40]"/>
+  </hierarchy>`;
+  const screenshot = await sharp({
+    create: { width: 100, height: 200, channels: 3, background: 'black' },
+  }).png().toBuffer();
+  const phone = await appium(t, (command) => {
+    if (command === 'mobile: getCurrentPackage') return app;
+    if (command === 'mobile: getCurrentActivity') return '.Settings';
+    if (command === '/rotation') return { z: 0 };
+    if (command === '/window/rect') return { width: 100, height: 200 };
+    if (command === '/source') return source;
+    if (command === '/screenshot') return screenshot.toString('base64');
+    assert.fail('unexpected Appium command ' + command);
+  });
+  const { metadata, view } = await captureView(phone, 'android:phone');
+  assert.equal(Object.hasOwn(view, 'screen'), false);
+  assert.equal(metadata.page, 'home');
+  assert.equal(metadata.marker, 'android:id/title:Connected devices');
 });
 
 test('Appium retries unavailable and empty screenshots but propagates invalid sessions', async (t) => {

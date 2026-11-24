@@ -300,6 +300,8 @@ export class WebDriver implements Device {
     if (mode === 'foreground') caps['appium:autoLaunch'] = false;
     if (platform === 'ios') {
       if (mode === 'settings') caps['appium:bundleId'] = iosSettings;
+      // Foreground visual taps use positive XCTest hit testing before calibrating an icon.
+      else caps['appium:settings'] = { includeHittableInPageSource: true };
       caps['appium:shouldTerminateApp'] = false;
       if (process.env.OMU_IOS_XCCONFIG) caps['appium:xcodeConfigFile'] = process.env.OMU_IOS_XCCONFIG;
       else if (process.env.OMU_IOS_TEAM_ID) {
@@ -390,6 +392,12 @@ export class WebDriver implements Device {
     if (!(await this.settingsActive())) return other;
     return classifyXml(this.platform, await observed(request<string>(this.url + '/source', 'GET')));
   }
+  settingsScreen(view: StepView): Screen {
+    const settings = this.platform === 'ios' ? iosSettings : androidSettings;
+    return view.app === settings && typeof view.layout === 'string'
+      ? classifyXml(this.platform, view.layout)
+      : other;
+  }
   async snapshot(): Promise<StepView> {
     return observed(this.readSnapshot());
   }
@@ -458,10 +466,6 @@ export class WebDriver implements Device {
       rotation: angle,
       controls,
       layout,
-      screen:
-        app === (this.platform === 'ios' ? iosSettings : androidSettings)
-          ? classifyXml(this.platform, layout)
-          : other,
     };
   }
   async screenshot() {

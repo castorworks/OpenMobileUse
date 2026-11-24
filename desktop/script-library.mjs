@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { compileRecording } from '../dist/recording.js';
-import { readScript } from '../dist/script.js';
+import { compileScript } from '../dist/run.js';
 import { overview, stateRoot, writeJSON } from './library.mjs';
 
 const platforms = ['android', 'ios', 'harmony'];
@@ -107,10 +106,10 @@ export async function importScript(title, text) {
   let supported;
   if (script?.schemaVersion === 2) {
     if (!platforms.includes(script.platform)) throw Error('INVALID_RECORDING');
-    await compileRecording(script, script.platform);
+    await compileScript(script, script.platform);
     supported = [script.platform];
   } else {
-    const checks = await Promise.allSettled(platforms.map((p) => readScript(script, p)));
+    const checks = await Promise.allSettled(platforms.map((p) => compileScript(script, p)));
     supported = platforms.filter((_, i) => checks[i].status === 'fulfilled');
     if (!supported.length) throw checks[0].reason;
   }
