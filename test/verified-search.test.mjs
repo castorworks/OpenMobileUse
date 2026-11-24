@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import { runConversation } from '../dist/conversation.js';
 import { xmlControls } from '../dist/native-layout.js';
 import { compileRecording, replayRecording } from '../dist/recording.js';
-import { firstSearchResult, requestedSearch, searchForm } from '../dist/verified-search.js';
+import { asksToSubmitQuery, firstSearchResult, requestedSearch, searchForm } from '../dist/verified-search.js';
 
 const app = 'example.search', id = 'android:search-test';
 const request = '把搜索框里的「猫咪」改成「橘猫」再搜索，读出实际搜索词和第一条结果。';
@@ -60,6 +60,66 @@ test('only an explicitly requested submit binds a literal target, independently 
   assert.equal(requestedSearch('把搜索框改成「橘猫」，不要点搜索。'), undefined);
   assert.equal(requestedSearch('把搜索框改成「橘猫」，读出框里的词。'), undefined);
   assert.equal(requestedSearch('不要把搜索框里的「咖啡」改成「奶茶」再搜索。'), undefined);
+  assert.equal(asksToSubmitQuery('填入「橘猫」后点击搜索。', '猫'), false);
+  assert.equal(asksToSubmitQuery('填入「橘猫」，不要点击搜索。', '橘猫'), false);
+  assert.equal(asksToSubmitQuery('不要填入「橘猫」再搜索。', '橘猫'), false);
+});
+
+test('equivalent replacement verbs require the same verified submission and respect a request not to submit', () => {
+  for (const verb of ['改成', '改为', '换成', '换为', '替换成', '替换为']) {
+    assert.deepEqual(requestedSearch(request.replace('改成', verb)), { query: '橘猫', firstResult: true });
+    assert.equal(requestedSearch('把搜索词' + verb + '「橘猫」，不要点搜索。'), undefined);
+  }
+});
+
+test('an unverified write to the search box cannot turn into a successful old-query search', async () => {
+  const fallback = '搜索框原来是「猫咪」，请填入「橘猫」后点击搜索，读出第一条结果。';
+  for (const [task, expectedActions] of [[request.replace('改成', '换为'), ['input', 'input']], [fallback, ['input']]]) {
+    const d = phone();
+    const perform = d.perform.bind(d);
+    d.perform = async (step, view, control) => {
+      if (step.kind === 'input') {
+        d.actions.push('input');
+        throw Error('INPUT_NOT_VERIFIED');
+      }
+      return perform(step, view, control);
+    };
+    const { result, records } = await conversation(d, (obs, tools) => {
+      if (tools.includes('verified_search')) return ['verified_search', { next: 'report' }];
+      if (!d.actions.length) return ['input_text', { target: obs.controls.find(c => c.editable).ref, text: '橘猫' }];
+      if (!d.actions.includes('tap')) return ['tap', { target: obs.controls.find(c => c.id.endsWith('/submit')).ref }];
+      return finish();
+    }, task);
+    assert.equal(result.status, 'needs_review');
+    assert.equal(result.reason, 'SEARCH_NOT_SUBMITTED');
+    assert.match(result.answer, /猫咪/);
+    assert.deepEqual(d.actions, expectedActions);
+    assert.deepEqual(records, []);
+  }
+});
+
+test('a failed ordinary edit still allows choosing the requested suggestion and submitting its verified value', async () => {
+  const d = phone();
+  const read = d.snapshot.bind(d), perform = d.perform.bind(d);
+  d.snapshot = async () => {
+    const v = await read();
+    v.controls.push({ ...v.controls.find(c => c.id.endsWith('/submit')), id: 'suggestion', labels: ['橘猫'],
+      bounds: { x: 0, y: 60, width: 150, height: 20 } });
+    return v;
+  };
+  d.perform = async (step, view, node) => {
+    if (step.kind === 'input') { d.actions.push('input'); throw Error('INPUT_NOT_VERIFIED'); }
+    if (node.id === 'suggestion') { d.actions.push('suggestion'); d.query = '橘猫'; return; }
+    await perform(step, view, node);
+  };
+  const { result } = await conversation(d, obs => {
+    if (!d.actions.length) return ['input_text', { target: obs.controls.find(c => c.editable).ref, text: '橘猫' }];
+    if (!d.actions.includes('suggestion')) return ['tap', { target: obs.controls.find(c => c.id === 'suggestion').ref }];
+    if (!d.actions.includes('tap')) return ['tap', { target: obs.controls.find(c => c.id.endsWith('/submit')).ref }];
+    return finish();
+  }, '请选择联想词「橘猫」后点击搜索。');
+  assert.equal(result.status, 'succeeded');
+  assert.deepEqual(d.actions, ['input', 'suggestion', 'tap']);
 });
 
 test('a finish without the requested search cannot mark the old query successful', async () => {
@@ -184,20 +244,43 @@ test('a retry can repair an initial unsuccessful replacement, with one submit', 
   assert.deepEqual(d.actions, ['input', 'input', 'tap']);
 });
 
-test('a stale result read on replay does not resubmit a completed tap', async () => {
-  const d = phone();
-  const read = d.snapshot.bind(d);
-  d.snapshot = async () => {
-    if (d.actions.includes('tap')) throw Error('STALE_OBSERVATION');
-    return read();
-  };
-  const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: [
-    { inApp: app, command: { action: 'verifiedSearch', query: '橘猫', firstResult: true } },
-  ] }, 'android');
-  const result = await replayRecording(d, id, steps, new AbortController().signal, () => {});
-  assert.equal(result.reason, 'SEARCH_RESULTS_UNVERIFIED');
-  assert.deepEqual(d.actions, ['input', 'tap']);
-});
+for (const [code, reads] of [['STALE_OBSERVATION', 5], ['OBSERVATION_TIMEOUT', 5], ['SENSITIVE_OR_BLOCKED_SCREEN', 1]]) {
+  test('persistent ' + code + ' on replay never resubmits a completed tap', async () => {
+    const d = phone();
+    const read = d.snapshot.bind(d);
+    let resultReads = 0;
+    d.snapshot = async () => {
+      if (d.actions.includes('tap')) {
+        resultReads++;
+        throw Error(code);
+      }
+      return read();
+    };
+    const steps = await compileRecording({ schemaVersion: 2, platform: 'android', steps: [
+      { inApp: app, command: { action: 'verifiedSearch', query: '橘猫', firstResult: true } },
+    ] }, 'android');
+    const result = await replayRecording(d, id, steps, new AbortController().signal, () => {});
+    assert.equal(result.reason, 'SEARCH_RESULTS_UNVERIFIED');
+    assert.equal(resultReads, reads);
+    assert.deepEqual(d.actions, ['input', 'tap']);
+  });
+}
+
+for (const code of ['OBSERVATION_TIMEOUT', 'LAYOUT_UNAVAILABLE']) {
+  test('a temporary ' + code + ' after submit only retries the result read', async () => {
+    const d = phone();
+    const read = d.snapshot.bind(d);
+    let resultReads = 0;
+    d.snapshot = async () => {
+      if (d.actions.includes('tap') && ++resultReads === 1) throw Error(code + ': first result read');
+      return read();
+    };
+    const { result } = await conversation(d, search);
+    assert.equal(result.status, 'succeeded');
+    assert.match(result.answer, /左上角的橘猫打哈欠/);
+    assert.deepEqual(d.actions, ['input', 'tap']);
+  });
+}
 
 test('continuing an unsubmitted search keeps the required term; an unrelated turn starts normally', async () => {
   const prior = { user: request, assistant: '搜索框仍为猫咪。', reason: 'SEARCH_NOT_SUBMITTED' };

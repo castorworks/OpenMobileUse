@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DOMParser, type Element as XmlElement } from '@xmldom/xmldom';
 import { bounds } from './native-layout.js';
+import { isTransientObservation, reason } from './observation.js';
 import {
   executeStep, guardObservation, screenAvailable, uniqueSelector,
   type Control, type StepDevice, type View,
@@ -9,16 +10,39 @@ import {
 export type SearchRequest = { query: string; firstResult: boolean };
 export type SearchEvidence = { query: string; first?: string };
 type SearchFailure = { reason: 'SEARCH_NOT_SUBMITTED' | 'SEARCH_RESULTS_UNVERIFIED'; actual?: string };
+const openingQuote: Record<string, string> = { '」': '「', '”': '“', '』': '『', '"': '"', "'": "'" };
+
+function asksToSubmit(after: string) {
+  return /^[\s，,。；;、]*(?:(?:之?后|然后|再|并且|并|接着|随后)\s*)*(?:点(?:击)?|按(?:下)?|执行|发起|提交)?\s*[「“"]?搜(?:索|一下)(?!框|栏|词|结果)/u.test(after) ||
+    /^[\s,;.]*(?:(?:and|then)\s+)*(?:(?:click|press|submit)\s+(?:the\s+)?)?["']?search\b/i.test(after);
+}
+
+function negatedEdit(prefix: string) {
+  const clause = prefix.split(/[，,。；;！？!?\n]/u).at(-1) ?? '';
+  return /不要|不用|禁止|不需要|别(?:把|将|在|去|$)|\b(?:do not|don't|never)\b/i.test(clause);
+}
+
+// An ordinary input tool call also identifies the intended field and literal. A failed write
+// cannot satisfy a subsequent explicit submit even when the edit verb was not recognized.
+export function asksToSubmitQuery(instruction: string, query: string) {
+  if (!query) return false;
+  for (let at = instruction.indexOf(query); at !== -1; at = instruction.indexOf(query, at + query.length)) {
+    if (negatedEdit(instruction.slice(0, at))) continue;
+    const after = instruction.slice(at + query.length);
+    const opening = openingQuote[after.charAt(0)];
+    if (opening && opening !== instruction[at - 1]) continue;
+    if (asksToSubmit(opening ? after.slice(1) : after)) return true;
+  }
+  return false;
+}
 
 // Bind an explicit write-then-search request to the literal in the user's instruction, before tool selection.
 export function requestedSearch(text: string): SearchRequest | undefined {
   if (!/搜|\bsearch\b/i.test(text)) return;
-  const verb = /(?:替换(?:成|为)|改(?:成|为)|换成|输入(?:关键词|搜索词)?|\breplace\b[^\n,;]{1,100}?\bwith\s+|\b(?:enter|type)\s+)/gi;
+  const verb = /(?:(?:替换|改|换)[成为]|输入(?:关键词|搜索词)?|\breplace\b[^\n,;]{1,100}?\bwith\s+|\b(?:enter|type)\s+)/gi;
   const queries = new Set<string>();
   for (const match of text.matchAll(verb)) {
-    const before = text.slice(0, match.index);
-    const clause = before.split(/[，,。；;！？!?\n]/u).at(-1) ?? '';
-    if (/不要|不用|禁止|不需要|别(?:把|将|在|去|$)|\b(?:do not|don't|never)\b/i.test(clause)) continue;
+    if (negatedEdit(text.slice(0, match.index))) continue;
     const rest = text.slice(match.index! + match[0].length).trimStart();
     const quoted = /^(?:「([^」]+)」|“([^”]+)”|『([^』]+)』|"([^"]+)"|'([^']+)')/u.exec(rest);
     const bare = quoted ? null :
@@ -26,10 +50,7 @@ export function requestedSearch(text: string): SearchRequest | undefined {
     const literal = (quoted?.slice(1).find(Boolean) ?? bare?.[1])?.trim();
     if (!literal || literal.length > 200) continue;
     // Merely editing a search box does not authorize submitting its contents.
-    const after = rest.slice((quoted ?? bare)![0].length);
-    if (/^[\s，,。；;、]*(?:(?:之?后|然后|再|并且|并|接着|随后)\s*)*(?:点(?:击)?|按(?:下)?|执行|发起|提交)?\s*[「“"]?搜(?:索|一下)(?!框|栏|词|结果)/u.test(after) ||
-      /^[\s,;.]*(?:(?:and|then)\s+)*(?:(?:click|press|submit)\s+(?:the\s+)?)?["']?search\b/i.test(after))
-      queries.add(literal);
+    if (asksToSubmit(rest.slice((quoted ?? bare)![0].length))) queries.add(literal);
   }
   if (queries.size !== 1) return;
   return { query: [...queries][0], firstResult: /(?:第[一1]|首)(?:条|个|项|条搜索|个搜索).{0,8}结果|\bfirst\s+(?:search\s+)?result\b/i.test(text) };
@@ -209,8 +230,8 @@ export async function executeVerifiedSearch(device: StepDevice, identity: string
       signal.throwIfAborted();
       actual = undefined;
       lastList = undefined;
-      // The submit already has a receipt. Replay may re-read the page but must not retry that tap.
-      if (!['STALE_OBSERVATION', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes((error as Error).message)) break;
+      // Only the result read is retried after the submit receipt, including on replay.
+      if (!isTransientObservation(reason(error))) break;
     }
     if (read < 4) await sleep(300, undefined, { signal });
   }

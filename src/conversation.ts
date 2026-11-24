@@ -6,7 +6,7 @@ import { recordStep, reading, type RecordedStep } from './recording.js';
 import { executeTextTarget, readScreenText, type ScreenTextRecognizer } from './screen-text.js';
 import { pauseVideoCenter, readVideoPlayer } from './video-player.js';
 import {
-  executeVerifiedSearch, firstSearchResult, requestedSearch, searchFailureMessage, searchField, searchForm,
+  asksToSubmitQuery, executeVerifiedSearch, firstSearchResult, requestedSearch, searchFailureMessage, searchField, searchForm,
   searchReport, type SearchEvidence, type SearchRequest,
 } from './verified-search.js';
 import {
@@ -21,6 +21,7 @@ import { compileStep, reason } from './script.js';
 import { isTargetUnavailable, isTransientObservation, readObservation } from './observation.js';
 import {
   AppNotForeground,
+  containsPoint,
   executeStep,
   guardObservation,
   hasWrittenValue,
@@ -197,7 +198,8 @@ export async function runConversation(
   let searchTurn = context.length - 1;
   while (searchTurn > 0 && context[searchTurn - 1].reason === 'SEARCH_NOT_SUBMITTED' &&
     /^(?:继续|重试|再试一次|continue|retry)[。！!.]?$/i.test(context[searchTurn].user.trim())) searchTurn--;
-  const searchRequest = requestedSearch(context[searchTurn]?.user ?? '');
+  const searchInstruction = context[searchTurn]?.user ?? '';
+  const searchRequest = requestedSearch(searchInstruction);
   let searchEvidence: (SearchEvidence & { app: string }) | undefined;
   let requestedFinishTool = false;
   const notes = new Set<string>();
@@ -210,6 +212,7 @@ export async function runConversation(
   let labelsBeforeSwipe: Set<string> | undefined;
   let pendingInput: PendingInput | undefined;
   const unverifiedInputs: { app: string; fieldId: string; text: string }[] = [];
+  let pendingSearchSubmit: { app: string; query: string } | undefined;
   let pendingLaunch: { targetApp: string; recording: RecordedStep; description: string } | undefined;
   const attemptedLaunches = new Set<string>();
   let recoveredForeground: string | undefined;
@@ -259,8 +262,8 @@ export async function runConversation(
         missingDispatches.delete(key);
     }
   }
-  function incompleteSearch(view: View, request: SearchRequest) {
-    const failure = { reason: 'SEARCH_NOT_SUBMITTED' as const, actual: searchField(view)?.value };
+  function incompleteSearch(view: View | undefined, request: SearchRequest) {
+    const failure = { reason: 'SEARCH_NOT_SUBMITTED' as const, actual: view && searchField(view)?.value };
     return { status: 'needs_review', reason: failure.reason, answer: searchFailureMessage(request, failure), modelCalls };
   }
   try {
@@ -297,6 +300,8 @@ export async function runConversation(
           stalls = 0;
           if (!hasSpace()) throw Error('RECORDING_FULL');
         } else {
+          if (searchField(before) === field && asksToSubmitQuery(searchInstruction, text))
+            pendingSearchSubmit = { app: before.app, query: text };
           // Keep this guard across navigation and model history pruning for the rest of the turn.
           unverifiedInputs.push({ app: before.app, fieldId: field.id, text });
         }
@@ -590,6 +595,8 @@ export async function runConversation(
       bounded.throwIfAborted();
       if (!reply.tool_calls.length) {
         if (searchRequest && !searchEvidence) return incompleteSearch(view, searchRequest);
+        if (pendingSearchSubmit) return incompleteSearch(view.app === pendingSearchSubmit.app ? view : undefined,
+          { query: pendingSearchSubmit.query, firstResult: false });
         if (searchEvidence && !requestedFinishTool) {
           requestedFinishTool = true;
           remember(history, observation, reply, []);
@@ -647,6 +654,28 @@ export async function runConversation(
         const hit = name === 'tap_visual' ? topControlAt(view, requestedPoint) : undefined;
         const icon = hit && icons.get(hit);
         const visualTarget = icon ?? requestedPoint;
+        const pending = pendingSearchSubmit;
+        let queryView: View | undefined;
+        let checkTarget = screenAvailable;
+        if (pending) {
+          if (name === 'finish' || name === 'finish_visual') {
+            const fresh = finishView ?? await observe(device, bounded);
+            screenAvailable(fresh);
+            return incompleteSearch(fresh.app === pending.app ? fresh : undefined, { query: pending.query, firstResult: false });
+          }
+          const currentForm = view.app === pending.app && searchForm(view);
+          const submit = currentForm && matchingControls(view, currentForm.submit)[0];
+          const point = name === 'tap_visual' ? visualTarget : name === 'tap' ? visual : undefined;
+          if (submit && ((name === 'tap' && target?.node === submit) ||
+            (point && containsPoint(submit.bounds, pointInView(view, point))))) {
+            // Other controls, including matching suggestions, can still repair the query.
+            checkTarget = fresh => {
+              screenAvailable(fresh);
+              queryView = fresh.app === pending.app ? fresh : undefined;
+              if (!queryView || searchField(queryView)?.value !== pending.query) throw Error('SEARCH_NOT_SUBMITTED');
+            };
+          }
+        }
         if (name === 'swipe' && a.note?.trim()) notes.add(a.note.trim());
         if (name === 'inspect_screen') description = '查看手机画面';
         else if (name === 'pause_video_center') description = '点击视频中央并核对暂停状态';
@@ -688,6 +717,7 @@ export async function runConversation(
             }
             confirmInput(view, form.input, evidence.query);
             searchEvidence = { ...evidence, app: view.app };
+            if (pendingSearchSubmit?.app === view.app && pendingSearchSubmit.query === evidence.query) pendingSearchSubmit = undefined;
             await record(recordStep(view, { action: 'verifiedSearch', ...searchRequest }));
             lastDispatch = JSON.stringify([view.app, 'verifiedSearch', evidence.query]);
             outcome = 'dispatched';
@@ -714,7 +744,7 @@ export async function runConversation(
             else {
               const fresh = finishView ?? await observe(device, bounded);
               const scope = icon ? { kind: 'visualTap' as const, point: icon } : { kind: 'check' as const };
-              guardObservation(identity, view, scope, screenAvailable)(fresh);
+              guardObservation(identity, view, scope, checkTarget)(fresh);
               const livePoint = tap ? { ...visualTarget, bounds: icon ? hit?.bounds : undefined } : undefined;
               await executeImageTarget(device, identity, fresh, anchor, tap, bounded, livePoint);
               await record(
@@ -741,7 +771,7 @@ export async function runConversation(
             if (signature === lastDispatch) outcome = 'NO_PROGRESS';
             else {
               const fresh = await observe(device, bounded);
-              guardObservation(identity, view, { kind: 'check' }, screenAvailable)(fresh);
+              guardObservation(identity, view, { kind: 'check' }, checkTarget)(fresh);
               await executeTextTarget(device, identity, fresh, visual.text, 'tap', bounded, recognizeText);
               await record(recordStep(fresh, command));
               lastDispatch = signature;
@@ -810,7 +840,7 @@ export async function runConversation(
               command,
             ]);
             const preview = name === 'swipe' && frame ? await swipePreview(frame) : undefined;
-            const validate = guardObservation(identity, view, step, screenAvailable);
+            const validate = guardObservation(identity, view, step, checkTarget);
             if (
               signature === lastDispatch &&
               (!swipeView || (lastSwipeView && sameSwipeObservation(lastSwipeView, swipeView))) &&
@@ -872,8 +902,13 @@ export async function runConversation(
               }
             }
           }
+          if (queryView && outcome === 'dispatched') pendingSearchSubmit = undefined;
         } catch (e) {
           const code = reason(e);
+          if (code === 'SEARCH_NOT_SUBMITTED' && pending) {
+            progress(description, code);
+            return incompleteSearch(queryView, { query: pending.query, firstResult: false });
+          }
           if (name === 'pause_video_center' &&
             ['VIDEO_PAUSE_UNCONFIRMED', 'STALE_OBSERVATION', 'SCREENSHOT_GEOMETRY_MISMATCH', 'INVALID_PNG', 'FOREGROUND_WINDOW_AMBIGUOUS'].includes(code)) {
             progress(description, code);
