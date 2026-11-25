@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Platform } from './host.js';
+import type { CommentCloseProof } from './comment-panel.js';
 import { isTransientObservation, readObservation, reason } from './observation.js';
 
 export type Point = { x: number; y: number };
@@ -71,7 +72,8 @@ export type Step =
 export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
-  perform(step: Step, view: View, node?: Control, signal?: AbortSignal): Promise<void>;
+  perform(step: Step, view: View, node?: Control, signal?: AbortSignal):
+    Promise<void | CommentCloseProof>;
   back(): Promise<void>;
   goHome?(): Promise<string>;
   launch(step: LaunchStep, guard?: (targetApp: string) => void): Promise<string>;
@@ -600,7 +602,7 @@ export async function executeStep(
   step: CommandStep,
   expected?: string | ((view: View) => void),
   signal?: AbortSignal,
-  guard?: ((view: View) => void) | { launch: (targetApp: string) => void },
+  guard?: ((view: View) => void) | { launch?: (targetApp: string) => void; commentClosed?: (proof: CommentCloseProof) => void },
 ) {
   signal?.throwIfAborted();
   function validate(view: View) {
@@ -668,11 +670,13 @@ export async function executeStep(
   const node =
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);
-  await device.perform(step, view, node, signal);
+  const verified = await device.perform(step, view, node, signal);
+  if (verified && typeof guard === 'object') guard.commentClosed?.(verified);
   return {
     action: step.kind,
     status: 'succeeded',
     observationId: id,
+    ...(verified && { commentPanelClosed: verified.commentPanelClosed, tapPoint: verified.tapPoint }),
     inputVerified: step.kind === 'input' ? true : undefined,
   };
 }

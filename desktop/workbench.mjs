@@ -5,6 +5,7 @@ import { list } from '../dist/host.js';
 import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
 import { pending, withDevice } from '../dist/session.js';
 import { captureView } from '../dist/inspect.js';
+import { commentCloseState, CommentCloseUnverified } from '../dist/comment-panel.js';
 import { compileStep, maxScriptSteps, readScriptEnvelope, reason } from '../dist/script.js';
 import {
   executeStep,
@@ -247,6 +248,7 @@ export class Workbench {
         t.platform === 'android' ? 1000 : undefined,
       );
       try {
+        if (t.platform === 'android') device.commentOrigin = this.frames.get('android:' + t.id)?.commentOrigin;
         return await work(device);
       } finally {
         try {
@@ -257,13 +259,15 @@ export class Workbench {
       }
     }));
   }
-  async frame(device, identity, initialView) {
+  async frame(device, identity, initialView, onView) {
     const { metadata, controls, image, before, view } = await captureView(device, identity, initialView);
     this.frames.set(identity, {
       token: metadata.observationId,
+      commentOrigin: device.commentOrigin,
       view: { ...view, layout: undefined },
       before: metadata.controlsChangedDuringCapture ? { ...before, layout: undefined } : undefined,
     });
+    onView?.(view);
     return {
       ...metadata,
       image: imageUrl(image),
@@ -309,7 +313,11 @@ export class Workbench {
       const chat = chatId ? await writableConversation(id, chatId, t.platform) : null;
       if (chat && chat.script.steps.length >= maxScriptSteps) throw Error('RECORDING_FULL');
       return this.session(t, randomUUID(), null, 'foreground', async (device) => {
-        let result;
+        let result, verifiedView, proof, preview;
+        const capture = async (initialView, onView) => {
+          try { return { frame: await this.frame(device, id, initialView, onView) }; }
+          catch (e) { return { captureError: errorCode(e) }; }
+        };
         try {
           const frame = this.frames.get(id);
           if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
@@ -328,26 +336,32 @@ export class Workbench {
             }
             item = recordStep(view, raw, node);
           }
-          result = await executeStep(device, id, step, validate);
+          result = await executeStep(device, id, step, validate, undefined, { commentClosed: value => { proof = value; } });
+          if (proof) {
+            let displayed;
+            preview = await capture(proof.view, view => { displayed = view; });
+            if (displayed) {
+              const state = commentCloseState(displayed, proof.view, proof.close, proof.original);
+              if (state !== 'closed') throw new CommentCloseUnverified(state === 'open', displayed);
+            }
+          }
           if (chat) {
             chat.script.steps.push(item);
             chat.updated = new Date().toISOString();
-            await saveConversation(id, chat).catch(() => {
-              throw Error('RECORDING_WRITE_FAILED');
-            });
+            await saveConversation(id, chat).catch(() => { throw Error('RECORDING_WRITE_FAILED'); });
           }
         } catch (error) {
-          if (step.kind !== 'tap' || reason(error) !== 'STALE_OBSERVATION') throw error;
-          this.frames.delete(id);
-          result = { action: 'tap', status: 'cancelled', reason: 'STALE_OBSERVATION' };
+          if (error instanceof CommentCloseUnverified) {
+            verifiedView = error.view;
+            result = { action: 'tap', status: 'needs_review', reason: reason(error) };
+          } else {
+            if (step.kind !== 'tap' || reason(error) !== 'STALE_OBSERVATION') throw error;
+            this.frames.delete(id);
+            result = { action: 'tap', status: 'cancelled', reason: 'STALE_OBSERVATION' };
+          }
         }
         const continuation = chat && chat.id !== chatId && result.status === 'succeeded' ? { chatId: chat.id } : {};
-        // Capture on the open session. A failed preview cannot change the tap outcome.
-        try {
-          return { result, ...continuation, frame: await this.frame(device, id) };
-        } catch (e) {
-          return { result, ...continuation, captureError: errorCode(e) };
-        }
+        return { result, ...continuation, ...(preview ?? await capture(verifiedView)) };
       });
     });
   }

@@ -1,13 +1,17 @@
 import { bluetoothDefinition } from './bluetooth-task.js';
+import { commentCloseTarget, commentTapPoint, commentVideo, verifyCommentClose, type CommentVideo } from './comment-panel.js';
 import { adbPath, run } from './host.js';
 import { nodeXPath, parseXmlLayout, xmlControls } from './native-layout.js';
 import { isTransientObservation, reason } from './observation.js';
 import {
   cardPoint,
   containsPoint,
+  guardObservation,
   isAppIdentifier,
   inputValue,
   pointInView,
+  resolveControl,
+  screenAvailable,
   visibleCenter,
   type Bounds,
   type Control,
@@ -281,6 +285,7 @@ export function appiumEndpoint(value = process.env.OMU_APPIUM_URL || 'http://127
 }
 export class WebDriver implements Device {
   private readonly adb = adbPath();
+  commentOrigin?: CommentVideo;
 
   private constructor(
     readonly platform: Family,
@@ -418,7 +423,9 @@ export class WebDriver implements Device {
       : other;
   }
   async snapshot(): Promise<StepView> {
-    return observed(this.readSnapshot());
+    const view = await observed(this.readSnapshot());
+    if (this.platform === 'android') this.commentOrigin = commentVideo(view, this.commentOrigin);
+    return view;
   }
   private async readSnapshot(): Promise<StepView> {
     const app = await this.foregroundApp();
@@ -567,7 +574,30 @@ export class WebDriver implements Device {
     if (this.platform !== 'android') throw new Error('NAVIGATION_BUTTON_REQUIRED');
     await this.dispatch('back', () => request(this.url + '/back', 'POST', {}));
   }
+  private gestureDisplay() {
+    return run(this.adb, ['-s', this.id, 'shell', 'dumpsys', 'window', 'displays']).catch(() => {
+      throw Error('COMMENT_CLOSE_POINT_UNAVAILABLE');
+    });
+  }
   async perform(step: Step, view: StepView, node?: Control, signal?: AbortSignal) {
+    const close = this.platform === 'android' && commentCloseTarget(view, step, node);
+    if (close && step.kind === 'tap') {
+      const original = this.commentOrigin;
+      const display = await this.gestureDisplay();
+      const fresh = await this.snapshot();
+      guardObservation('android:' + this.id, view, step, screenAvailable)(fresh);
+      const live = commentCloseTarget(fresh, step, 'selector' in step ? resolveControl(fresh, step.selector, false) : undefined);
+      if (!live || live.id !== close.id || live.role !== close.role) throw Error('STALE_OBSERVATION');
+      const point = commentTapPoint(fresh, live.bounds, display);
+      const center = visibleCenter(fresh, live.bounds);
+      if (fresh.controls.some(c => c !== live && c.enabled && c.clickable &&
+        containsPoint(c.bounds, point) && !containsPoint(c.bounds, center)))
+        throw Error('COMMENT_CLOSE_POINT_UNAVAILABLE');
+      signal?.throwIfAborted();
+      await this.touch({ kind: 'tap', point: { x: point.x / (fresh.width - 1), y: point.y / (fresh.height - 1) } }, fresh);
+      const verified = await verifyCommentClose(() => this.snapshot(), fresh, live, original, signal);
+      return { commentPanelClosed: true as const, tapPoint: point, view: verified, close: live, original };
+    }
     if (step.kind === 'swipe' || 'point' in step) {
       await this.touch(step, view);
       return;

@@ -71,6 +71,17 @@ async function run(device, choose, useImages = false, preview) {
   return { result, records, events };
 }
 
+test('a comment close with an unverified outcome ends the turn after one tap', async () => {
+  const device = phone([control('back_btn', 'Button')]);
+  let sends = 0;
+  device.perform = async () => { sends++; throw Error('COMMENT_PANEL_STILL_OPEN'); };
+  const { result, records } = await run(device, obs => ['tap', { target: obs.controls[0].ref }]);
+  assert.equal(result.status, 'needs_review');
+  assert.equal(result.reason, 'COMMENT_PANEL_STILL_OPEN');
+  assert.equal(sends, 1);
+  assert.deepEqual(records, []);
+});
+
 // Skip the 10 s foreground poll while exercising the actual launch timeout branch.
 function expireLaunchPoll(t) {
   let time = 0;

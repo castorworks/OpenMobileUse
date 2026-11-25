@@ -52,6 +52,7 @@ at its centre, with coordinates from 0 to 1 relative to the full screenshot, ori
 visualIconCenters gives the centres of small unnamed native buttons visible in the screenshot. Use
 the centre corresponding to the icon you can see. Screen text coordinates use the same 0 to 1 scale.
 If the user explicitly wants to pause by tapping the centre of a playing video, use pause_video_center.
+When asked to close a video's comments panel, tap its labelled close button once.
 It taps the verified player region once and reads its playback state. If unavailable, report the blocked step.
 For an ordinary pause request, prefer the native pause control.
 For a feed swipe, verify the new item with finish using its native title, author or other identifying text.
@@ -901,6 +902,11 @@ export async function runConversation(
           if (queryView && outcome === 'dispatched') pendingSearchSubmit = undefined;
         } catch (e) {
           const code = reason(e);
+          if (code === 'COMMENT_PANEL_STILL_OPEN' || code === 'COMMENT_CLOSE_UNCONFIRMED') {
+            progress(description, code);
+            return { status: 'needs_review', reason: code, modelCalls, answer: code === 'COMMENT_PANEL_STILL_OPEN'
+              ? '已点击一次，评论面板仍在。' : '已点击一次，未能确认评论面板关闭并回到原作品。' };
+          }
           if (code === 'SEARCH_NOT_SUBMITTED' && pending) {
             progress(description, code);
             return incompleteSearch(queryView, { query: pending.query, firstResult: false });

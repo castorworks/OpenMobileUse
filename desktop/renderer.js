@@ -116,6 +116,9 @@ const issues = {
   SCREEN_TEXT_UNAVAILABLE: '本机暂时无法识别画面文字。可在右侧手机画面上定位，再点击选区。',
   VISUAL_TARGET_UNCLEAR: '画面目标已变化或无法唯一区分，请核对手机画面。',
   VIDEO_PAUSE_UNCONFIRMED: '已点击视频中央一次，暂停状态未能确认。',
+  COMMENT_CLOSE_POINT_UNAVAILABLE: '无法确定关闭按钮内避开系统手势区的落点，尚未点击。',
+  COMMENT_PANEL_STILL_OPEN: '已点击一次，评论面板仍在。',
+  COMMENT_CLOSE_UNCONFIRMED: '已点击一次，未能确认评论面板关闭并回到原作品。',
   SEARCH_NOT_SUBMITTED: '搜索词尚未核对成功，请查看手机搜索框。',
   SEARCH_RESULTS_UNVERIFIED: '搜索已提交，尚未确认本次结果。',
   MODEL_IMAGES_UNSUPPORTED: '此模型不支持截图。可选择 deepseek-flash，或关闭截图选项。',
@@ -684,6 +687,11 @@ async function action(raw) {
         if (loc.within || hits.length === 1) raw = { action: 'tap', ...loc };
       }
       r = await api.action(id, raw, observation, chatId || undefined);
+      if (r.result.status === 'needs_review') {
+        markFrame(id, r.frame || null);
+        message(id, describe(r.result.reason), 'warning');
+        return;
+      }
       if (r.result.status === 'cancelled' && r.result.reason === 'STALE_OBSERVATION') {
         markFrame(id, r.frame || null);
         message(
@@ -714,13 +722,9 @@ async function action(raw) {
     }
     if (raw.action === 'input' && selected === id) $('text').value = '';
     markFrame(id, r.frame || null);
-    message(
-      id,
-      r.captureError
-        ? '操作已执行，刷新画面失败。' + describe(r.captureError)
-        : nice(raw.action) + '已执行。',
-      r.captureError ? 'warning' : 'success',
-    );
+    const confirmed = r.result.commentPanelClosed ? '评论面板已关闭。' : nice(raw.action) + '已执行。';
+    message(id, confirmed + (r.captureError ? '刷新画面失败。' + describe(r.captureError) : ''),
+      r.captureError ? 'warning' : 'success');
   });
 }
 $('tap').onclick = () => {
