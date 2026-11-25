@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 import { RunService } from '../dist/run-service.js';
+import { ActionRejected } from '../dist/session.js';
 
 const actor = { subject: 'fixture' };
 const png = Buffer.alloc(24);
@@ -177,6 +178,19 @@ test('ambiguous dispatch gates device writes until a matching, fresh capture is 
   const second = await accept(service, id, 'script', { script });
   assert.equal((await waitForRun(service, second.id)).status, 'succeeded');
   assert.equal(state.taps, 2);
+});
+
+test('a definite driver rejection reports the failure without blocking a new run', async (t) => {
+  const { service, id, state } = await fixture(t);
+  const script = { steps: [{ action: 'tap', x: 0.3, y: 0.5 }] };
+  state.action = async () => { throw new ActionRejected('STALE_OBSERVATION'); };
+  const rejected = await accept(service, id, 'script', { script });
+  assert.equal((await waitForRun(service, rejected.id)).reason, 'STALE_OBSERVATION');
+  assert.deepEqual(service.listPendingActions(id), []);
+
+  state.action = async () => {};
+  const retried = await accept(service, id, 'script', { script });
+  assert.equal((await waitForRun(service, retried.id)).status, 'succeeded');
 });
 
 test('a cancellation waits for driver acknowledgement and a queued cancellation never dispatches', async (t) => {

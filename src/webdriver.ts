@@ -12,6 +12,7 @@ import {
   pointInView,
   resolveControl,
   screenAvailable,
+  verifyForeground,
   visibleCenter,
   type Bounds,
   type Control,
@@ -22,7 +23,7 @@ import {
 } from './steps.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
-import type { Dispatch } from './session.js';
+import { ActionRejected, type Dispatch } from './session.js';
 
 type Family = 'android' | 'ios';
 type Locator = { using: string; value: string };
@@ -386,19 +387,23 @@ export class WebDriver implements Device {
     ]);
     return resolved.split(/\r?\n/).at(-1) ?? '';
   }
-  async goHome() {
+  private confirmForeground(app: string, signal?: AbortSignal) {
+    return verifyForeground(() => this.foregroundApp(), app, undefined, signal).then(() => true);
+  }
+  async goHome(signal?: AbortSignal) {
     if (this.platform !== 'android') throw new Error('HOME_UNAVAILABLE');
     const component = await this.resolveAndroidActivity([
       '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.HOME',
     ]);
     const [app, activity] = component.split('/');
     if (!isAppIdentifier(app) || !activity || app === 'android') throw new Error('HOME_UNAVAILABLE');
-    await this.dispatch('goHome', () =>
-      run(this.adb, ['-s', this.id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME']),
+    await this.dispatch('goHome',
+      () => run(this.adb, ['-s', this.id, 'shell', 'input', 'keyevent', 'KEYCODE_HOME']),
+      () => this.confirmForeground(app, signal),
     );
     return app;
   }
-  async launch(step: LaunchStep, guard?: (targetApp: string) => void) {
+  async launch(step: LaunchStep, guard?: (targetApp: string) => void, signal?: AbortSignal) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     if (this.platform === 'ios') {
       const app = step.app === 'settings' ? iosSettings : step.app;
@@ -406,7 +411,8 @@ export class WebDriver implements Device {
         throw new Error('APP_NOT_INSTALLED');
       guard?.(app);
       // WDA launches a stopped app and activates an already running one.
-      await this.dispatch('launch', () => this.mobile('launchApp', { bundleId: app }));
+      await this.dispatch('launch', () => this.mobile('launchApp', { bundleId: app }),
+        () => this.confirmForeground(app, signal));
       return app;
     }
     const shell = (...args: string[]) => run(this.adb, ['-s', this.id, 'shell', ...args]);
@@ -425,7 +431,6 @@ export class WebDriver implements Device {
       throw new Error('APP_NOT_LAUNCHABLE');
     }
     guard?.(app);
-    let rejected = false;
     await this.dispatch('launch', async () => {
       const response = await shell(
         'am',
@@ -435,11 +440,16 @@ export class WebDriver implements Device {
         'current',
         ...intent,
         ...(settings ? ['-p', app] : ['-n', component]),
-      );
-      rejected = /^Error:/m.test(response);
-      if (!rejected && !/^Status:\s*ok\s*$/m.test(response)) throw new Error('LAUNCH_REPLY_UNAVAILABLE');
-    });
-    if (rejected) throw new Error('APP_LAUNCH_REJECTED');
+      ).catch((error: { code?: number; stdout?: string; stderr?: string }) => {
+        const output = (error.stdout ?? '') + '\n' + (error.stderr ?? '');
+        if (typeof error.code === 'number' &&
+          /^(?:Error type 3\b|Error: Activity not started, (?:unable to resolve Intent|you do not have permission)\b)/m.test(output))
+          throw new ActionRejected('APP_LAUNCH_REJECTED');
+        throw error;
+      });
+      if (/^Error:/m.test(response)) throw new ActionRejected('APP_LAUNCH_REJECTED');
+      if (!/^Status:\s*ok\s*$/m.test(response)) throw new Error('LAUNCH_REPLY_UNAVAILABLE');
+    }, () => this.confirmForeground(app, signal));
     return app;
   }
   async observe(): Promise<View> {
@@ -529,7 +539,8 @@ export class WebDriver implements Device {
     if (typeof image !== 'string' || !image) throw new Error('SCREENSHOT_UNAVAILABLE');
     return Buffer.from(image, 'base64');
   }
-  private async touch(step: Extract<Step, { kind: 'swipe' } | { point: unknown }>, view: StepView) {
+  private async touch(step: Extract<Step, { kind: 'swipe' } | { point: unknown }>, view: StepView,
+    verify?: () => Promise<boolean>) {
     const swipe = step.kind === 'swipe';
     const a = pointInView(view, swipe ? step.from : step.point);
     const actions: object[] = [
@@ -548,7 +559,7 @@ export class WebDriver implements Device {
     await this.dispatch(step.kind, () =>
       request(this.url + '/actions', 'POST', {
         actions: [{ type: 'pointer', id: 'finger', parameters: { pointerType: 'touch' }, actions }],
-      }),
+      }), verify,
     );
   }
   private async elementURLs(locator: Locator) {
@@ -609,7 +620,15 @@ export class WebDriver implements Device {
       throw Error('COMMENT_CLOSE_POINT_UNAVAILABLE');
     });
   }
-  async perform(step: Step, view: StepView, node?: Control, signal?: AbortSignal) {
+  private async click(url: string) {
+    try {
+      await request(url + '/click', 'POST', {});
+    } catch (error) {
+      if (lostElement(error)) throw new ActionRejected('STALE_OBSERVATION');
+      throw error;
+    }
+  }
+  async perform(step: Step, view: StepView, node?: Control, signal?: AbortSignal, verify?: () => Promise<boolean>) {
     const close = this.platform === 'android' && commentCloseTarget(view, step, node);
     if (close && step.kind === 'tap') {
       const original = this.commentOrigin;
@@ -624,12 +643,15 @@ export class WebDriver implements Device {
         containsPoint(c.bounds, point) && !containsPoint(c.bounds, center)))
         throw Error('COMMENT_CLOSE_POINT_UNAVAILABLE');
       signal?.throwIfAborted();
-      await this.touch({ kind: 'tap', point: { x: point.x / (fresh.width - 1), y: point.y / (fresh.height - 1) } }, fresh);
-      const verified = await verifyCommentClose(() => this.snapshot(), fresh, live, original, signal);
+      let verified: StepView | undefined;
+      const confirmClose = () => verifyCommentClose(() => this.snapshot(), fresh, live, original, signal);
+      await this.touch({ kind: 'tap', point: { x: point.x / (fresh.width - 1), y: point.y / (fresh.height - 1) } }, fresh,
+        async () => !!(verified = await confirmClose()));
+      verified ??= await confirmClose();
       return { commentPanelClosed: true as const, tapPoint: point, view: verified, close: live, original };
     }
     if (step.kind === 'swipe' || 'point' in step) {
-      await this.touch(step, view);
+      await this.touch(step, view, verify);
       return;
     }
     const field = node!;
@@ -640,7 +662,7 @@ export class WebDriver implements Device {
         });
     signal?.throwIfAborted();
     if (step.kind === 'tap') {
-      await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
+      await this.dispatch('tap', () => this.click(url), verify);
       return;
     }
     const expected = inputValue(field.value ?? '', step);
@@ -661,25 +683,9 @@ export class WebDriver implements Device {
     };
     await checkField();
     if (this.platform === 'android' && !field.focused) {
-      await this.dispatch('tap', () => request(url + '/click', 'POST', {}));
+      await this.dispatch('tap', () => this.click(url));
       await checkField();
     }
-    await this.dispatch('input', async () => {
-      try {
-        if (this.platform === 'android') {
-          await this.mobile('replaceElementValue', {
-            elementId: url.slice(url.lastIndexOf('/') + 1),
-            text: expected,
-          });
-        } else {
-          if (field.value || step.replace) await request(url + '/clear', 'POST', {});
-          if (expected)
-            await request(url + '/value', 'POST', { text: expected, value: Array.from(expected) });
-        }
-      } catch {
-        throw new Error('TEXT_DRIVER_ERROR');
-      }
-    });
     const sameId = (n: Control) => n.id === field.id && n.role === field.role;
     let referenceLost = false;
     const verified = async () => {
@@ -707,16 +713,39 @@ export class WebDriver implements Device {
         nodeXPath(this.platform, fresh.app, current) === nodeXPath(this.platform, view.app, field)
       );
     };
-    for (let i = 0; i < 3; i++) {
-      signal?.throwIfAborted();
-      try {
-        if (await observed(verified())) return;
-      } catch (error) {
-        if (!isTransientObservation(reason(error))) throw error;
+    let confirmed = false;
+    const confirmWritten = async () => {
+      for (let i = 0; i < 3; i++) {
+        signal?.throwIfAborted();
+        try {
+          if (await observed(verified())) {
+            confirmed = true;
+            return true;
+          }
+        } catch (error) {
+          if (!isTransientObservation(reason(error))) throw error;
+        }
+        if (i < 2) await sleep(120, undefined, { signal });
       }
-      if (i < 2) await sleep(120, undefined, { signal });
-    }
-    throw new Error('INPUT_NOT_VERIFIED');
+      return false;
+    };
+    await this.dispatch('input', async () => {
+      try {
+        if (this.platform === 'android') {
+          await this.mobile('replaceElementValue', {
+            elementId: url.slice(url.lastIndexOf('/') + 1),
+            text: expected,
+          });
+        } else {
+          if (field.value || step.replace) await request(url + '/clear', 'POST', {});
+          if (expected)
+            await request(url + '/value', 'POST', { text: expected, value: Array.from(expected) });
+        }
+      } catch {
+        throw new Error('TEXT_DRIVER_ERROR');
+      }
+    }, confirmWritten);
+    if (!confirmed && !(await confirmWritten())) throw new Error('INPUT_NOT_VERIFIED');
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {

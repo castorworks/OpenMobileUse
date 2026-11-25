@@ -11,6 +11,7 @@ import {
   isAppIdentifier,
   inputValue,
   pointInView,
+  verifyForeground,
   visibleCenter,
   type Control,
   type LaunchStep,
@@ -19,7 +20,7 @@ import {
 } from './steps.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Device, Move, Screen } from './navigation.js';
-import type { Dispatch } from './session.js';
+import { ActionRejected, type Dispatch } from './session.js';
 const bundle = bluetoothDefinition.apps.harmony;
 const bluetoothTitle = 'bluetooth_entry.title';
 const bluetoothToggle = 'Setting.Fusion.BluetoothSwitchGroup.BluetoothSwitchItem.result';
@@ -164,12 +165,11 @@ export class Harmony implements Device {
   async foregroundApp() {
     return focusedHarmonyWindow(await this.layout())?.attributes.bundleName ?? '';
   }
-  async launch(step: LaunchStep, guard?: (targetApp: string) => void) {
+  async launch(step: LaunchStep, guard?: (targetApp: string) => void, signal?: AbortSignal) {
     if (!isAppIdentifier(step.app)) throw new Error('INVALID_APP_ID');
     const app = step.app === 'settings' ? bundle : step.app;
     const entry = harmonyEntry(await this.shell('bm', 'dump', '-n', app), app, step);
     guard?.(app);
-    let rejected = false;
     await this.dispatch('launch', async () => {
       const response = await this.shell(
         'aa',
@@ -181,11 +181,9 @@ export class Harmony implements Device {
         '-a',
         entry.ability,
       );
-      rejected = /^error:|^failed to start ability/im.test(response);
-      if (!rejected && !response.includes('start ability successfully'))
-        throw new Error('LAUNCH_REPLY_UNAVAILABLE');
-    });
-    if (rejected) throw new Error('APP_LAUNCH_REJECTED');
+      if (/^error:|^failed to start ability/im.test(response)) throw new ActionRejected('APP_LAUNCH_REJECTED');
+      if (!response.includes('start ability successfully')) throw new Error('LAUNCH_REPLY_UNAVAILABLE');
+    }, () => verifyForeground(() => this.foregroundApp(), app, undefined, signal).then(() => true));
     return app;
   }
   async snapshot() {
@@ -230,7 +228,7 @@ export class Harmony implements Device {
   async back() {
     await this.dispatch('back', () => this.inject('keyEvent', 'Back'));
   }
-  async perform(step: Step, view: View, node?: Control, signal?: AbortSignal) {
+  async perform(step: Step, view: View, node?: Control, signal?: AbortSignal, verify?: () => Promise<boolean>) {
     if (step.kind === 'swipe') {
       const a = pointInView(view, step.from),
         b = pointInView(view, step.to);
@@ -238,15 +236,14 @@ export class Harmony implements Device {
         40000,
         Math.max(200, Math.round((1000 * Math.hypot(b.x - a.x, b.y - a.y)) / step.duration)),
       );
-      await this.dispatch('swipe', () =>
-        this.inject('swipe', String(a.x), String(a.y), String(b.x), String(b.y), String(speed)),
-      );
+      await this.dispatch('swipe', () => this.inject('swipe',
+        String(a.x), String(a.y), String(b.x), String(b.y), String(speed)), verify);
       return;
     }
     const at = 'point' in step ? pointInView(view, step.point) : visibleCenter(view, node!.bounds);
     const tap = () => this.inject('click', String(at.x), String(at.y));
     if (step.kind === 'tap') {
-      await this.dispatch('tap', tap);
+      await this.dispatch('tap', tap, verify);
       return;
     }
     const field = node!;
@@ -295,6 +292,12 @@ export class Harmony implements Device {
     // Journal the focus tap independently. A rejected precondition has not edited the field.
     if (!field.focused) await this.dispatch('tap', tap);
     await confirmValue(field.value);
+    let confirmed = false;
+    const confirmWritten = async () => {
+      await confirmValue(inputValue(field.value ?? '', step), 'INPUT_NOT_VERIFIED');
+      confirmed = true;
+      return true;
+    };
     await this.dispatch('input', async () => {
       if (!step.replace && field.value) await this.inject('keyEvent', '2072', '2082'); // Ctrl+End
       if (step.replace && field.value) {
@@ -312,8 +315,8 @@ export class Harmony implements Device {
           throw new Error('TEXT_DRIVER_ERROR');
         }
       }
-    });
-    await confirmValue(inputValue(field.value ?? '', step), 'INPUT_NOT_VERIFIED');
+    }, confirmWritten);
+    if (!confirmed) await confirmWritten();
   }
   async move(action: Move, from: Screen, entryKey?: string) {
     if (action === 'openSettings') {

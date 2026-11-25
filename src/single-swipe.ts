@@ -120,7 +120,7 @@ export async function verifySingleSwipe(device: StepDevice, start: SwipeStart, r
           ' Before the swipe I read ' + describe(start.item) + '. After the swipe I read ' + describe(item) + '.'
         : gesture + (outcome === 'changed' ? '，已换片。' : '，前后读到的作品信息相同。') +
           '上滑前为' + describe(start.item) + '，上滑后为' + describe(item) + '。';
-      return { view, checks, result: outcome === 'same' && request.needsChange
+      return { view, checks, changed: outcome === 'changed', result: outcome === 'same' && request.needsChange
         ? { status: 'needs_review', reason: 'SWIPE_ITEM_UNCHANGED', answer }
         : { status: 'succeeded', answer } };
     } catch (error) {

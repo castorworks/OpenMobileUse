@@ -930,9 +930,12 @@ export class RunService {
         throw error;
       }
     };
-    const guardedDispatch: Dispatch = (kind, perform) => {
+    const guardedDispatch: Dispatch = (kind, perform, verify) => {
       check();
-      return dispatch(kind, perform);
+      return dispatch(kind, perform, verify && (() => {
+        check();
+        return verify();
+      }));
     };
     const script = request.kind === 'script' ? await compileScript(job.script, target.platform) : undefined;
     const task = job.task ? await parseTask(job.task, target.platform) : undefined;
@@ -1040,7 +1043,7 @@ export class RunService {
         perform: (...args: Parameters<ServiceDevice['perform']>) => { lastView = undefined; return device.perform(...args); },
         launch: (...args: Parameters<ServiceDevice['launch']>) => { lastView = undefined; return device.launch(...args); },
         back: () => { lastView = undefined; return device.back(); },
-        goHome: device.goHome && (() => { lastView = undefined; return device.goHome!(); }),
+        goHome: device.goHome && ((signal?: AbortSignal) => { lastView = undefined; return device.goHome!(signal); }),
       } : device;
       const chat = await runConversation(
         watched, platform + ':' + row.deviceId, platform, [...conversation.dialogue, { user: String(input.message) }],

@@ -72,11 +72,11 @@ export type Step =
 export interface StepDevice {
   snapshot(): Promise<View>;
   screenshot(): Promise<Buffer>;
-  perform(step: Step, view: View, node?: Control, signal?: AbortSignal):
+  perform(step: Step, view: View, node?: Control, signal?: AbortSignal, verify?: () => Promise<boolean>):
     Promise<void | CommentCloseProof>;
   back(): Promise<void>;
-  goHome?(): Promise<string>;
-  launch(step: LaunchStep, guard?: (targetApp: string) => void): Promise<string>;
+  goHome?(signal?: AbortSignal): Promise<string>;
+  launch(step: LaunchStep, guard?: (targetApp: string) => void, signal?: AbortSignal): Promise<string>;
   foregroundApp(): Promise<string>;
 }
 export const stepHelp = `omu tap --device <platform:id> (--id <id> | --label <label>) [--role <role>]
@@ -619,6 +619,7 @@ export async function executeStep(
   guard?: ((view: View) => void) | {
     launch?: (targetApp: string) => void; commentClosed?: (proof: CommentCloseProof) => void;
     beforeSwipe?: (view: View) => void;
+    verifyAfterDispatchError?: () => Promise<boolean>;
   },
 ) {
   signal?.throwIfAborted();
@@ -632,8 +633,8 @@ export async function executeStep(
     const id = expected ? validate(await readObservation(() => device.snapshot(), signal)) : undefined;
     signal?.throwIfAborted();
     const targetApp = step.kind === 'launch'
-      ? await device.launch(step, typeof guard === 'object' ? guard.launch : undefined)
-      : await device.goHome?.();
+      ? await device.launch(step, typeof guard === 'object' ? guard.launch : undefined, signal)
+      : await device.goHome?.(signal);
     if (!targetApp) throw new Error('HOME_UNAVAILABLE');
     const foregroundApp = await verifyForeground(() => device.foregroundApp(), targetApp, 10000, signal);
     return {
@@ -688,7 +689,8 @@ export async function executeStep(
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);
   if (step.kind === 'swipe' && typeof guard === 'object') guard.beforeSwipe?.(view);
-  const verified = await device.perform(step, view, node, signal);
+  const verified = await device.perform(step, view, node, signal,
+    typeof guard === 'object' ? guard.verifyAfterDispatchError : undefined);
   if (verified && typeof guard === 'object') guard.commentClosed?.(verified);
   return {
     action: step.kind,

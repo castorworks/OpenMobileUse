@@ -413,10 +413,11 @@ export class Workbench {
       const recovered = await this.recoverConnection(api, signal, error);
       return recovered.waitRun(submitted.id, { signal });
     });
-    const reviewedTap = body.kind === 'step' && body.input.step.action === 'tap' &&
-      ((run.status === 'cancelled' && run.reason === 'STALE_OBSERVATION') ||
-       (run.status === 'needs_review' && ['COMMENT_PANEL_STILL_OPEN', 'COMMENT_CLOSE_UNCONFIRMED'].includes(run.reason)));
-    if (run.status !== 'succeeded' && !reviewedTap) throw Error(run.reason || 'RUN_FAILED');
+    const reviewableStep = body.kind === 'step' && (run.reason === 'ACTION_OUTCOME_UNKNOWN' ||
+      (body.input.step.action === 'tap' &&
+        ((run.status === 'cancelled' && run.reason === 'STALE_OBSERVATION') ||
+         (run.status === 'needs_review' && ['COMMENT_PANEL_STILL_OPEN', 'COMMENT_CLOSE_UNCONFIRMED'].includes(run.reason)))));
+    if (run.status !== 'succeeded' && !reviewableStep) throw Error(run.reason || 'RUN_FAILED');
     return run;
   }
 
@@ -451,7 +452,7 @@ export class Workbench {
     const { api, signal } = this.context();
     const frame = await this.capture(api, signal, id);
     const unconfirmed = await listItems(this.context().api, devicePath(id) + '/pending-actions', { signal }).catch((error) => {
-      if (error.status === 403) return [];
+      if (error.status === 403) return undefined;
       throw error;
     });
     return { frame, unconfirmed };
@@ -481,14 +482,19 @@ export class Workbench {
     try {
       run = await this.invoke(api, signal, { deviceId: id, kind: 'step', input, preview: true });
     } catch (error) {
-      if (step.action !== 'tap' || errorCode(error) !== 'STALE_OBSERVATION') throw error;
-      // An expired observation can be rejected before a run is created.
-      run = { status: 'cancelled', reason: 'STALE_OBSERVATION', artifacts: [] };
+      const reason = errorCode(error);
+      if (reason === 'PENDING_ACTION_REVIEW_REQUIRED') run = { status: 'needs_review', reason, artifacts: [] };
+      else if (step.action === 'tap' && reason === 'STALE_OBSERVATION') {
+        // An expired observation can be rejected before a run is created.
+        run = { status: 'cancelled', reason, artifacts: [] };
+      } else throw error;
     }
     const { frame, captureError, ...receipt } = run.result ?? { action: step.action };
     const result = { ...receipt, status: run.status, ...(run.reason && { reason: run.reason }) };
-    if (captureError) return { result, captureError };
     try {
+      if (['ACTION_OUTCOME_UNKNOWN', 'PENDING_ACTION_REVIEW_REQUIRED'].includes(run.reason))
+        return { result, ...await this.refresh(id) };
+      if (captureError) return { result, captureError };
       return { result, frame: frame
         ? await this.frame(api, signal, run, run.artifacts.findLast(a => a.kind === 'screenshot'), frame)
         : await this.capture(api, signal, id) };

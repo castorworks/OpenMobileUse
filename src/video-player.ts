@@ -89,15 +89,22 @@ export async function pauseVideoCenter(device: StepDevice, identity: string, vie
   const { fresh, player } = await observe();
   if (player.state === 'paused') return { tapped: false, evidence: player.evidence };
   const point = { x: player.center.x / (fresh.width - 1), y: player.center.y / (fresh.height - 1) };
-  await device.perform({ kind: 'tap', point }, fresh);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const after = (await observe()).player;
-      if (after.state === 'paused') return { tapped: true, evidence: after.evidence };
-    } catch {
-      signal.throwIfAborted();
+  async function confirmPause() {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const after = (await observe()).player;
+        if (after.state === 'paused') return after.evidence;
+      } catch {
+        signal.throwIfAborted();
+      }
+      if (attempt < 2) await sleep(250, undefined, { signal });
     }
-    if (attempt < 2) await sleep(250, undefined, { signal });
+    throw Error('VIDEO_PAUSE_UNCONFIRMED');
   }
-  throw Error('VIDEO_PAUSE_UNCONFIRMED');
+  let evidence: string | undefined;
+  await device.perform({ kind: 'tap', point }, fresh, undefined, signal, async () => {
+    evidence = await confirmPause();
+    return true;
+  });
+  return { tapped: true, evidence: evidence ?? await confirmPause() };
 }

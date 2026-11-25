@@ -206,6 +206,7 @@ export async function runConversation(
   const swipeRequest = singleSwipeRequest(context.at(-1)?.user ?? '');
   const single: {
     start?: SwipeStart; report?: { status: string; reason?: string; answer: string }; followed?: boolean;
+    readback?: Awaited<ReturnType<typeof verifySingleSwipe>>;
   } = {};
   let searchEvidence: (SearchEvidence & { app: string }) | undefined;
   let requestedFinishTool = false;
@@ -280,14 +281,15 @@ export async function runConversation(
       activity?.(blocker ? '正在重新观察手机界面，寻找其他操作路径' : '正在读取手机界面');
       let view: View;
       try {
-        view = await readObservation(() => device.snapshot(), bounded, screenTransitionDelays);
+        view = single.readback?.view ?? await readObservation(() => device.snapshot(), bounded, screenTransitionDelays);
       } catch (error) {
         if (swipeRequest && single.start && !single.report && !signal.aborted)
           return { ...unverifiedSwipe(swipeRequest), modelCalls };
         throw error;
       }
       if (swipeRequest && single.start && !single.report) {
-        const checked = await verifySingleSwipe(device, single.start, swipeRequest, view, bounded);
+        const checked = single.readback ?? await verifySingleSwipe(device, single.start, swipeRequest, view, bounded);
+        single.readback = undefined;
         single.report = checked.result;
         for (const check of checked.checks) {
           if (!hasSpace()) throw Error('RECORDING_FULL');
@@ -912,6 +914,13 @@ export async function runConversation(
                   beforeSwipe(fresh) {
                     if (limitedSwipe) single.start = swipeStart(fresh, limitedSwipe.compare);
                   },
+                  verifyAfterDispatchError: limitedSwipe?.compare ? async () => {
+                    const first = await observe(device, bounded);
+                    const checked = await verifySingleSwipe(device, single.start!, limitedSwipe, first, bounded);
+                    if (!checked.changed) return false;
+                    single.readback = checked;
+                    return true;
+                  } : undefined,
                   launch(targetApp) {
                     if (attemptedLaunches.has(targetApp)) throw Error('APP_LAUNCH_ALREADY_ATTEMPTED');
                   },

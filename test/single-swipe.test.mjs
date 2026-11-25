@@ -17,7 +17,8 @@ const card = (title, author, time = '00:01') => ({
 });
 const first = card('作品甲', '@作者甲'), next = card('作品乙', '@作者乙');
 
-async function run({ replies, after = [next], before = first, request = instruction, lost = false, stale = false }) {
+async function run({ replies, after = [next], before = first, request = instruction,
+  lost = false, recoverLost = false, stale = false }) {
   let sends = 0, reads = 0, polls = 0, decisions = 0;
   const records = [], events = [], actions = [];
   const device = {
@@ -30,11 +31,11 @@ async function run({ replies, after = [next], before = first, request = instruct
       if (stale && ++reads === 2) return { ...before, window: 'transition' };
       return structuredClone(before);
     },
-    async perform(step) {
+    async perform(step, _view, _node, _signal, verify) {
       actions.push(step.kind);
       if (step.kind === 'swipe') {
         sends++;
-        if (lost) throw Error('ACTION_OUTCOME_UNKNOWN: driver timeout');
+        if (lost && !(recoverLost && await verify?.())) throw Error('ACTION_OUTCOME_UNKNOWN: driver timeout');
       }
     },
   };
@@ -106,6 +107,18 @@ test('an uncertain dispatch stops for review and a stale pre-dispatch observatio
   const retry = await run({ replies: ['swipe','swipe','text'], stale: true });
   assert.equal(retry.sends, 1);
   assert.equal(retry.result.status, 'succeeded');
+});
+test('a lost swipe reply is resolved only when the new video is verified', async () => {
+  const args = { replies: ['swipe'], lost: true, recoverLost: true };
+  const changed = await run(args);
+  assert.equal(changed.result.status, 'succeeded');
+  assert.match(changed.result.answer, /已换片.*作品甲.*作品乙/);
+  assert.equal(changed.sends, 1);
+
+  const unchanged = await run({ ...args, after: [card('作品甲', '@作者甲', '00:02')] });
+  assert.equal(unchanged.result.reason, 'ACTION_OUTCOME_UNKNOWN');
+  assert.equal(unchanged.sends, 1);
+  assert.deepEqual(unchanged.records, []);
 });
 test('a skipped swipe cannot succeed, and a swipe cannot complete other requested work', async () => {
   const skipped = await run({ replies: ['finish'] });

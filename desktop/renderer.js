@@ -155,7 +155,7 @@ const issues = {
     '配置的本机 HTTPS 服务尚未启动。请检查 TLS 服务，或使用 HTTP 回环地址以自动启动。',
   WDA_SIGNING_FAILED: '请检查 WDA 签名配置和开发者信任。',
   WDA_SESSION_FAILED: '请检查开发者模式及 Xcode 的 WDA 构建日志。',
-  ACTION_OUTCOME_UNKNOWN: '操作已发出，回执丢失。请刷新画面并核对未决动作。',
+  ACTION_OUTCOME_UNKNOWN: '操作结果暂未确认。',
   PORT_IN_USE: '转发端口已占用，请检查 OMU_WDA_PORT。',
   AMBIGUOUS_ELEMENT: '存在同名控件，请缩小选择范围或使用坐标。',
   NO_FOCUSED_FIELD: '请先选中普通输入框。',
@@ -193,7 +193,7 @@ const issues = {
   RUN_SUBMISSION_UNCONFIRMED: '服务尚未确认提交。请核对运行历史，或重试同一请求以找回原运行。',
   INVALID_SETTINGS: '请检查服务地址、访问令牌和模型配置。',
   DEVICE_NEEDS_REVIEW: '设备存在待核对动作。请先刷新画面并打开连接诊断。',
-  PENDING_ACTION_REVIEW_REQUIRED: '设备存在待核对动作。请先刷新画面并打开连接诊断。',
+  PENDING_ACTION_REVIEW_REQUIRED: '设备还有待核对的操作。',
   MODEL_IMAGES_FORBIDDEN: '当前模型配置不允许发送截图。请检查工作台设置。',
   REMOTE_HOST_SETUP: '请在设备服务所在的宿主上设置平台工具。',
   STALE_RESOURCE: '服务中的资源已更新。请刷新后重试。',
@@ -221,6 +221,8 @@ function state(id = selected) {
       active: null,
       current: null,
       notice: '',
+      pendingActions: [],
+      reviewAfterRun: false,
       diagnostic: null,
     });
   return states.get(id);
@@ -429,9 +431,15 @@ function feedback(id, text, tone) {
   node.textContent = text;
 }
 function renderNotice() {
-  const note = selected ? state().notice : '';
+  const s = state();
+  const count = selected ? s.pendingActions.length : 0;
+  const pending = count ? count + ' 条操作结果仍待核对。' + (s.frame?.observationId
+    ? '手机画面已刷新。' : '请在手机画面稳定后刷新。') : '';
+  const note = selected ? s.notice || pending : '';
   $('notice').hidden = !note;
-  feedback('notice', note, state().noticeTone || 'info');
+  $('notice').dataset.tone = (s.notice ? s.noticeTone : count ? 'warning' : 'info') || 'info';
+  $('notice-text').textContent = note;
+  $('review-actions').hidden = !count || !s.frame?.observationId;
 }
 function canAct() {
   const s = state(),
@@ -456,6 +464,7 @@ function renderButtons() {
     stopping = s.stopping || s.active?.status === 'cancelling';
   $('diagnose').disabled = !t || s.busy || !!s.active;
   $('refresh').disabled = !free;
+  $('review-actions').disabled = !free || !s.frame?.observationId || displayedFrame !== s.frame;
   $('tap').disabled = !enabled || (!s.point && s.hit === null);
   $('back').disabled = !enabled || !s.frame.observationId;
   $('input').disabled = !enabled || !s.frame.observationId || !$('text').value;
@@ -516,34 +525,73 @@ async function busy(id, fn) {
   try {
     await fn(s);
   } catch (e) {
-    message(id, describe(e.message));
+    if (e.message === 'PENDING_ACTION_REVIEW_REQUIRED') {
+      requireReview(id);
+      await refreshFrame(id).catch(error => message(id, '读取当前画面失败。' + describe(error.message), 'warning'));
+    } else message(id, describe(e.message));
   } finally {
     s.busy = false;
-    if (id === selected) render();
+    if (id === selected) {
+      render();
+      if (s.reviewAfterRun && !s.active) void refresh(id);
+    }
+  }
+}
+function requireReview(id) {
+  const device = devices.find(t => t.id === id);
+  if (device) device.needsReview = true;
+  markFrame(id, null);
+}
+function showRefresh(id, { frame, unconfirmed }) {
+  if (unconfirmed) {
+    state(id).pendingActions = unconfirmed;
+    const device = devices.find(t => t.id === id);
+    if (device) device.needsReview = unconfirmed.length > 0;
+  }
+  markFrame(id, frame || null);
+}
+async function refreshFrame(id) {
+  try {
+    const result = await api.refresh(id);
+    showRefresh(id, result);
+    return result.frame;
+  } catch (error) {
+    markFrame(id, null);
+    state(id).diagnostic = { controllable: false };
+    throw error;
   }
 }
 function refresh(id = selected) {
   return busy(id, async (s) => {
-    let result;
-    try {
-      result = await api.refresh(id);
-    } catch (e) {
-      markFrame(id, null);
-      s.diagnostic = { controllable: false };
-      throw e;
-    }
-    markFrame(id, result.frame);
-    if (result.unconfirmed.length)
-      message(
-        id,
-        '服务有 ' + result.unconfirmed.length + ' 条未决操作，请对照当前画面和连接诊断核实。',
-        'warning',
-      );
-    else if (result.frame.controlsChangedDuringCapture)
-      message(id, result.frame.gestureObservationId ? '采集时画面有变化，点击或滑动前会重新核对目标区域。'
+    const review = s.reviewAfterRun;
+    s.reviewAfterRun = false;
+    const frame = await refreshFrame(id);
+    if (review && !s.pendingActions.length)
+      message(id, '操作结果暂未确认。已刷新手机画面。', 'warning');
+    else if (!s.pendingActions.length && frame.controlsChangedDuringCapture)
+      message(id, frame.gestureObservationId ? '采集时画面有变化，点击或滑动前会重新核对目标区域。'
         : '采集时画面发生变化。请刷新并等待稳定画面，再进行单步操作。', 'info');
   });
 }
+$('review-actions').onclick = () => {
+  const id = selected;
+  const s = state(id);
+  const observationId = s.frame?.observationId;
+  if (!observationId || displayedFrame !== s.frame) return;
+  return busy(id, async () => {
+    let failure;
+    try {
+      for (const action of s.pendingActions) await api.acknowledgeAction(id, action.id, observationId);
+    } catch (error) {
+      failure = error;
+    }
+    await refreshFrame(id);
+    if (!s.pendingActions.length) message(id, '已确认当前画面，可以继续操作。', 'success');
+    else if (failure?.message === 'STALE_OBSERVATION')
+      message(id, '已重新刷新，请核对最新画面。', 'warning');
+    else if (failure) throw failure;
+  });
+};
 function fit() {
   const img = $('shot'),
     canvas = $('canvas'),
@@ -726,6 +774,13 @@ async function action(raw) {
         if (loc.within || hits.length === 1) raw = { action: 'tap', ...loc };
       }
       r = await api.action(id, raw, observation, chatId || undefined, chatId ? s.chat.revision : undefined);
+      if (['ACTION_OUTCOME_UNKNOWN', 'PENDING_ACTION_REVIEW_REQUIRED'].includes(r.result.reason)) {
+        if (!r.unconfirmed) requireReview(id);
+        showRefresh(id, r);
+        if (r.captureError) message(id, '读取当前画面失败。' + describe(r.captureError), 'warning');
+        else if (!s.pendingActions.length) message(id, '操作结果暂未确认。已刷新手机画面。', 'warning');
+        return;
+      }
       if (r.result.status === 'needs_review') {
         markFrame(id, r.frame || null);
         message(id, describe(r.result.reason), 'warning');
@@ -753,7 +808,6 @@ async function action(raw) {
           'INPUT_TARGET_CHANGED',
           'INPUT_FOCUS_UNCONFIRMED',
           'INPUT_NOT_VERIFIED',
-          'ACTION_OUTCOME_UNKNOWN',
         ].includes(e.message)
       )
         markFrame(id, null);
@@ -1252,11 +1306,11 @@ api.onEvent((event) => {
       }
       s.stopping = false;
       if (r.reason === 'ACTION_OUTCOME_UNKNOWN') {
-        const t = devices.find((device) => device.id === event.device);
-        if (t) t.needsReview = true;
-        message(event.device, describe(r.reason), 'warning');
-      }
-      if (selected === event.device && r.reason !== 'ACTION_OUTCOME_UNKNOWN') {
+        requireReview(event.device);
+        s.reviewAfterRun = true;
+        message(event.device, '操作结果暂未确认，正在读取当前画面。', 'warning');
+        if (selected === event.device) void refresh(event.device);
+      } else if (selected === event.device) {
         setTimeout(() => {
           if (selected === event.device && !state().active && !state().busy) refresh(event.device);
         }, 200);
@@ -1437,25 +1491,8 @@ $('diagnose').onclick = () => {
           (p.next && !issues[p.error] ? ' · ' + p.next : ''),
       ),
     ];
-    const pending = report.unconfirmed.map((action) => {
-      const row = element('p', '待核查 · ' + nice(action.action) + ' · ' + clock(action.dispatchedAt));
-      const button = element('button', '确认当前设备状态', 'outline');
-      button.disabled = !s.frame?.observationId;
-      if (button.disabled) row.append(element('small', ' 请先刷新设备画面。'));
-      button.onclick = async () => {
-        button.disabled = true;
-        try {
-          await api.acknowledgeAction(id, action.id, s.frame.observationId);
-          row.replaceChildren('已确认当前状态');
-          await scan();
-        } catch (error) {
-          row.append(element('small', describe(error.message)));
-          button.disabled = false;
-        }
-      };
-      row.append(button);
-      return row;
-    });
+    const pending = report.unconfirmed.map(action =>
+      element('p', '待核查 · ' + nice(action.action) + ' · ' + clock(action.dispatchedAt)));
     $('diagnostic-content').replaceChildren(...rows.map((v) => element('p', v)), ...pending);
   });
 };

@@ -132,6 +132,13 @@ test('verification tolerates temporary foreground and focus changes after append
   assert.deepEqual(attempt.unconfirmed(), []);
 });
 
+test('a missing text reply is resolved by reading the expected field value', async () => {
+  const attempt = input(view(''), [view(''), view('X')], { reply: '' });
+  await attempt.result;
+  assert.deepEqual(attempt.commands, [typeX]);
+  assert.deepEqual(attempt.unconfirmed(), []);
+});
+
 for (const code of ['FOREGROUND_WINDOW_AMBIGUOUS', 'HDC_LAYOUT_UNAVAILABLE']) {
   test('a post-write ' + code + ' cannot trigger another append', async () => {
     const attempt = input(view('old'), [view('old'), Error(code)]);

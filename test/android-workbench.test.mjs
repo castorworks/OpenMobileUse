@@ -163,9 +163,13 @@ test('a tap with a missing dispatch receipt is never reported as a cancelled sta
   const { id, wb, phone, preview } = await previewFixture(t);
   const dispatched = t.mock.method(phone, 'perform', async () => { throw Error('ACTION_OUTCOME_UNKNOWN'); });
   const capture = t.mock.method(phone, 'screenshot');
-  await assert.rejects(wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId), /ACTION_OUTCOME_UNKNOWN/);
+  const uncertain = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId);
+  assert.equal(uncertain.result.status, 'failed');
+  assert.equal(uncertain.result.reason, 'ACTION_OUTCOME_UNKNOWN');
+  assert.ok(uncertain.frame.observationId);
+  assert.notEqual(uncertain.frame.observationId, preview.observationId);
   assert.equal(dispatched.mock.callCount(), 1);
-  assert.equal(capture.mock.callCount(), 0);
+  assert.equal(capture.mock.callCount(), 1);
 });
 
 test('a changing Android frame authorizes a revalidated gesture and rejects input and back', async t => {

@@ -9,7 +9,12 @@ import type { Move } from './navigation.js';
 export type Dispatch = (
   kind: Move | 'swipe' | 'input' | 'launch' | 'goHome',
   perform: () => Promise<unknown>,
+  verify?: () => Promise<boolean>,
 ) => Promise<void>;
+
+// The driver explicitly refused the action before applying it.
+export class ActionRejected extends Error {}
+
 function directory(t: Target) {
   const key = createHash('sha256')
     .update(t.platform + ':' + t.id)
@@ -55,7 +60,7 @@ export async function withDevice<T>(t: Target, runId: string, work: (dispatch: D
       if ((error as { errcode?: number }).errcode === 5) throw new Error('DEVICE_BUSY');
       throw error;
     }
-    return await work(async (kind, perform) => {
+    return await work(async (kind, perform, verify) => {
       const tmp = record + '.' + randomUUID();
       writeFileSync(tmp, JSON.stringify({ runId, seq: ++seq, kind, time: new Date().toISOString() }), {
         mode: 0o600,
@@ -64,8 +69,15 @@ export async function withDevice<T>(t: Target, runId: string, work: (dispatch: D
       renameSync(tmp, record);
       try {
         await perform();
-      } catch (e) {
-        throw new Error('ACTION_OUTCOME_UNKNOWN: ' + (e as Error).message);
+      } catch (error) {
+        if (error instanceof ActionRejected) {
+          unlinkSync(record);
+          throw error;
+        }
+        // Verify the original action while still holding the device lock.
+        let confirmed = false;
+        try { confirmed = (await verify?.()) === true; } catch {}
+        if (!confirmed) throw new Error('ACTION_OUTCOME_UNKNOWN: ' + (error as Error).message, { cause: error });
       }
       unlinkSync(record);
     });

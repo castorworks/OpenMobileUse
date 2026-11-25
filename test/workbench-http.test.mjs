@@ -29,6 +29,7 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
   const running = Promise.withResolvers();
   const unblock = Promise.withResolvers();
   let waitForTap = false;
+  let loseReceipt = false;
   let taps = 0;
   const noop = async () => {};
   const drivers = {
@@ -42,6 +43,10 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
         perform: async (step) => dispatch(step.kind, async () => {
           assert.equal(step.kind, 'tap');
           taps++;
+          if (loseReceipt) {
+            view.window = 'details';
+            throw Error('driver timeout');
+          }
           if (waitForTap) {
             running.resolve();
             await unblock.promise;
@@ -98,7 +103,19 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
   const { frame } = await workbench.refresh(device.id);
   assert.match(frame.image, /^data:image\/png;base64,/);
   assert.ok(frame.observationId);
-  assert.equal((await workbench.action(device.id, { action: 'tap', x: 0.3, y: 0.13 }, frame.observationId)).result.action, 'tap');
+  const tap = { action: 'tap', x: 0.3, y: 0.13 };
+  const first = await workbench.action(device.id, tap, frame.observationId);
+  assert.equal(first.result.action, 'tap');
+  loseReceipt = true;
+  const uncertain = await workbench.action(device.id, tap, first.frame.observationId);
+  assert.equal(uncertain.result.reason, 'ACTION_OUTCOME_UNKNOWN');
+  assert.ok(uncertain.frame.observationId);
+  assert.notEqual(uncertain.frame.observationId, first.frame.observationId);
+  assert.equal(taps, 2);
+  assert.equal(uncertain.unconfirmed.length, 1);
+  await workbench.acknowledgeAction(device.id, uncertain.unconfirmed[0].id, uncertain.frame.observationId);
+  assert.deepEqual((await workbench.refresh(device.id)).unconfirmed, []);
+  loseReceipt = false;
 
   const chatRun = await workbench.start(device.id, 'chat', { message: '核对应用已打开' });
   await workbench.watchers.get(chatRun)?.done;
@@ -125,5 +142,5 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
   unblock.resolve();
   assert.equal((await api.waitRun(active)).status, 'succeeded');
   assert.equal((await api.json('/healthz')).status, 'ok');
-  assert.equal(taps, 2);
+  assert.equal(taps, 3);
 });
