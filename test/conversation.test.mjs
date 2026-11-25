@@ -30,18 +30,20 @@ function frame(colour) {
     .toBuffer();
 }
 
-async function run(device, choose, useImages = false, preview) {
+async function run(device, choose, useImages = false, { user = '浏览并总结', preview } = {}) {
   const records = [],
     events = [];
   const decide = async (messages, tools, deadline, count) => {
     count();
     const current = messages.findLast((m) => m.role === 'user' && typeof m.content === 'string');
     const obs = JSON.parse(current.content);
-    const [name, args] = choose(
+    const choice = choose(
       obs,
       tools.map((t) => t.function.name),
       messages,
     );
+    if (typeof choice === 'string') return { role: 'assistant', content: choice, tool_calls: [] };
+    const [name, args] = choice;
     return {
       role: 'assistant',
       content: null,
@@ -58,7 +60,7 @@ async function run(device, choose, useImages = false, preview) {
     device,
     'android:test',
     'android',
-    [{ user: '浏览并总结' }],
+    [{ user }],
     decide,
     new AbortController().signal,
     async (s) => records.push(s),
@@ -708,7 +710,7 @@ test('a stale screenshot at the stall limit is discarded and a fresh observation
     assert.ok(tools.includes('tap'));
     if (attempts === 5) assert.equal(capturesAtLimit, 2);
     return ['tap', { target: current.ref }];
-  }, true, image => { if (image) published.push(image); });
+  }, true, { preview: image => { if (image) published.push(image); } });
   assert.equal(result.status, 'succeeded');
   assert.ok(!published.some(image => image.equals(stale)));
   assert.equal(events.filter(e => e === 'STALE_OBSERVATION').length, 1);
@@ -853,7 +855,7 @@ test('an unreadable initial view returns a partial answer after bounded read att
   assert.deepEqual(records, []);
 });
 
-test('Android Home is verified and replays with a different starting app and default launcher', async () => {
+test('standalone Android Home completes after verification and replays with a different default launcher', async () => {
   const device = phone([control('player')]);
   let launcher = 'example.launcher';
   let presses = 0;
@@ -864,11 +866,13 @@ test('Android Home is verified and replays with a different starting app and def
   };
   device.foregroundApp = async () => device.view.app;
   const { result, records } = await run(device, (obs, tools) => {
-    if (obs.app === launcher) return ['finish', { evidence: 'foreground', message: '已回到主屏幕。' }];
+    if (obs.app === launcher) return '已返回手机桌面。';
     assert.ok(tools.includes('home'));
     return ['home', {}];
-  });
+  }, false, { user: '返回手机桌面' });
   assert.equal(result.status, 'succeeded');
+  assert.equal(result.answer, '已返回手机桌面。');
+  assert.equal(result.modelCalls, 1);
   assert.equal(presses, 1);
   assert.deepEqual(records, [{ inApp: 'example.feed', action: 'goHome' }]);
 
@@ -879,6 +883,44 @@ test('Android Home is verified and replays with a different starting app and def
   assert.equal(replay.status, 'succeeded');
   assert.equal(device.view.app, launcher);
   assert.equal(presses, 2);
+});
+
+test('Android Home continues a request that also opens settings', async () => {
+  const device = phone([control('heading', 'Text')]);
+  const launcher = 'example.launcher';
+  const settings = 'example.settings';
+  device.goHome = async () => {
+    device.view.app = launcher;
+    return launcher;
+  };
+  device.foregroundApp = async () => device.view.app;
+  device.launch = async (step, guard) => {
+    assert.equal(device.view.app, launcher);
+    assert.equal(step.app, 'settings');
+    guard(settings);
+    device.view.app = settings;
+    return settings;
+  };
+  const { result, records } = await run(device, (obs) => {
+    if (obs.app === launcher) return ['launch_app', { app: 'settings' }];
+    if (obs.app === settings) return ['finish', { evidence: 'foreground', message: '已打开设置。' }];
+    return ['home', {}];
+  }, false, { user: '返回手机桌面，然后打开设置' });
+  assert.equal(result.status, 'succeeded');
+  assert.equal(result.modelCalls, 3);
+  assert.equal(device.view.app, settings);
+  assert.deepEqual(records.map(s => s.action), ['goHome', 'launchApp', 'check']);
+});
+
+test('standalone Android Home fails if the launcher cannot be verified', async (t) => {
+  expireLaunchPoll(t);
+  const device = phone([control('heading', 'Text')]);
+  device.goHome = async () => 'example.launcher';
+  device.foregroundApp = async () => device.view.app;
+  const { result, records } = await run(device, () => ['home', {}], false, { user: '返回手机桌面' });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'APP_NOT_FOREGROUND');
+  assert.deepEqual(records, []);
 });
 
 test('a blocked swipe cannot be completed by checking the page or the screenshot', async () => {

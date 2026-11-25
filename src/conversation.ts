@@ -203,7 +203,9 @@ export async function runConversation(
     /^(?:继续|重试|再试一次|continue|retry)[。！!.]?$/i.test(context[searchTurn].user.trim())) searchTurn--;
   const searchInstruction = context[searchTurn]?.user ?? '';
   const searchRequest = requestedSearch(searchInstruction);
-  const swipeRequest = singleSwipeRequest(context.at(-1)?.user ?? '');
+  const request = context.at(-1)?.user ?? '';
+  const swipeRequest = singleSwipeRequest(request);
+  const standaloneHome = /^(?:请\s*)?(?:帮我\s*)?(?:返回到?|回到?|退出到)(?:手机)?(?:桌面|主屏幕)[。！.!]?$/.test(request.trim());
   const single: {
     start?: SwipeStart; report?: { status: string; reason?: string; answer: string }; followed?: boolean;
     readback?: Awaited<ReturnType<typeof verifySingleSwipe>>;
@@ -952,6 +954,11 @@ export async function runConversation(
                 lastSwipeView = swipeView;
                 labelsBeforeSwipe = priorLabels;
                 await record(recording);
+                if (standaloneHome && step.kind === 'goHome') {
+                  bounded.throwIfAborted();
+                  progress(description, 'observed');
+                  return { status: 'succeeded', answer: '已返回手机桌面。', modelCalls };
+                }
                 outcome = 'dispatched';
               }
             }
