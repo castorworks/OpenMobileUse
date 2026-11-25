@@ -482,7 +482,8 @@ export class RunService {
   private observation(id: string, deviceId: string, after?: number, allowGesture = false): SavedObservation {
     const row = this.db.prepare('SELECT * FROM service_observations WHERE id = ?').get(id) as
       unknown as SavedObservation | undefined;
-    if (!row || (id.startsWith('gesture-') && !allowGesture) || row.deviceId !== deviceId || row.expires <= Date.now() ||
+    if (!row || id.startsWith('reconcile-') || (id.startsWith('gesture-') && !allowGesture) ||
+        row.deviceId !== deviceId || row.expires <= Date.now() ||
         (after !== undefined && row.at <= after)) {
       throw new ServiceError(409, 'STALE_OBSERVATION');
     }
@@ -540,18 +541,23 @@ export class RunService {
         } finally {
           await this.closeDriverSession(leaseId, deviceId, opened);
         }
-        const value = { id: actionId, acknowledgedAt: clock(), outcome: input.outcome };
-        this.db.prepare(`
-          INSERT OR IGNORE INTO service_acknowledgements(id,deviceId,principal,observationId,body)
-          VALUES(?,?,?,?,?)
-        `).run(actionId, deviceId, principal.subject, input.observationId, JSON.stringify(value));
-        acknowledgePending(exact.target, exact.runId, exact.seq);
-        return value;
+        return this.recordAcknowledgement(deviceId, exact, input.observationId, input.outcome, principal.subject);
       });
     } catch (error) {
       if (reason(error) === 'DEVICE_BUSY') throw new ServiceError(409, 'DEVICE_BUSY');
       throw error;
     }
+  }
+
+  private recordAcknowledgement(deviceId: string, action: PendingRecord, observationId: string,
+    outcome: Acknowledgement['outcome'], subject: string) {
+    const value = { id: action.id, acknowledgedAt: clock(), outcome };
+    this.db.prepare(`
+      INSERT OR IGNORE INTO service_acknowledgements(id,deviceId,principal,observationId,body)
+      VALUES(?,?,?,?,?)
+    `).run(action.id, deviceId, subject, observationId, JSON.stringify(value));
+    acknowledgePending(action.target, action.runId, action.seq);
+    return value;
   }
 
   private runRow(id: string) {
@@ -1239,14 +1245,27 @@ export class RunService {
     const stable = !metadata.controlsChangedDuringCapture;
     const token = stable ? randomUUID() : undefined;
     const gestureToken = !stable && this.deviceRow(row.deviceId).platform === 'android' ? 'gesture-' + randomUUID() : undefined;
+    const reconcile = request.kind === 'capture' && request.input.reconcilePendingActions === true &&
+      before.windowIdentity === view.windowIdentity;
+    const evidence = token ?? gestureToken ?? (reconcile ? 'reconcile-' + randomUUID() : undefined);
     const stripLayout = (observed: View) => JSON.stringify({ ...observed, layout: undefined, commentOrigin: device.commentOrigin });
     const observedAt = Date.parse(metadata.observedAt);
+    const expires = observedAt + this.limits.observationTtlMs;
     await this.saveArtifact(row.id, 'screenshot', 'image/png', image, {
       observationId: token, observedAt: metadata.observedAt,
-    }, token || gestureToken ? () => {
+    }, evidence ? () => {
       this.db.prepare('INSERT INTO service_observations(id,deviceId,at,expires,before,view) VALUES(?,?,?,?,?,?)')
-        .run(token ?? gestureToken!, row.deviceId, observedAt, observedAt + this.limits.observationTtlMs, stripLayout(before), stripLayout(view));
+        .run(evidence, row.deviceId, observedAt, expires, stripLayout(before), stripLayout(view));
     } : undefined);
+    if (reconcile && evidence && expires > Date.now()) {
+      signal.throwIfAborted();
+      this.checkAuthorization(json<ServicePrincipal>(row.principal), request);
+      // Capture verified the same foreground window and display geometry around the screenshot.
+      for (const action of this.pendingRecords(row.deviceId)) {
+        if (Date.parse(action.time) < observedAt)
+          this.recordAcknowledgement(row.deviceId, action, evidence, 'accepted_current_state', row.owner);
+      }
+    }
     if (request.input.includeLayout === true) {
       const xml = typeof layout === 'string';
       await this.saveArtifact(row.id, 'layout', xml ? 'application/xml' : 'application/json',

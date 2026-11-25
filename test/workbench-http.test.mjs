@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -7,6 +8,7 @@ import test from 'node:test';
 import sharp from 'sharp';
 import { ApiClient, terminalRunStatus } from '../dist/api-client.js';
 import { createApiServer } from '../dist/http.js';
+import { withDevice } from '../dist/session.js';
 import { Workbench } from '../desktop/workbench.mjs';
 
 test('Desktop uses the real HTTP service for device work and leaves an active run intact on exit', { timeout: 10000 }, async (t) => {
@@ -30,6 +32,8 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
   const unblock = Promise.withResolvers();
   let waitForTap = false;
   let loseReceipt = false;
+  let changingPreview = false;
+  let previewTick = 0;
   let taps = 0;
   const noop = async () => {};
   const drivers = {
@@ -37,7 +41,9 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
     status: async (platform) => ({ platform, available: platform === 'harmony' }),
     open: async (_target, dispatch) => ({
       device: {
-        snapshot: async () => view,
+        snapshot: async () => changingPreview ? {
+          ...view, controls: [{ ...view.controls[0], labels: [String(++previewTick)] }],
+        } : view,
         screenshot: async () => png,
         foregroundApp: async () => view.app,
         perform: async (step) => dispatch(step.kind, async () => {
@@ -92,29 +98,55 @@ test('Desktop uses the real HTTP service for device work and leaves an active ru
       id: 'fixture', config: { baseURL: 'http://127.0.0.1:' + model.address().port, model: 'fixture-model' },
     }],
   });
-  const api = new ApiClient({ baseURL: service.url, token });
+  const acknowledgementViews = [];
+  let legacyCapture = false;
+  const api = new ApiClient({ baseURL: service.url, token, fetch: async (url, options) => {
+    if (legacyCapture && url.pathname === '/api/runs' && options.method === 'POST' &&
+      JSON.parse(options.body).input.reconcilePendingActions)
+      return Response.json({ code: 'INVALID_REQUEST' }, { status: 400 });
+    if (url.pathname.endsWith('/ack')) {
+      if (!acknowledgementViews.length) view.window = 'updated';
+      acknowledgementViews.push(JSON.parse(options.body).observationId);
+    }
+    return fetch(url, options);
+  } });
   const finished = new Map();
   workbench = new Workbench((event) => {
     if (event.type === 'run' && terminalRunStatus(event.record.status)) finished.set(event.record.id, event.record);
   }, { api, preferences: { config: () => ({ local: false, model: 'fixture', useImages: false }) } });
+  for (const kind of ['launch', 'swipe', 'tap', 'tap']) {
+    await assert.rejects(withDevice(target, randomUUID(), dispatch => dispatch(kind, async () => {
+      throw Error('old driver timeout');
+    })), /ACTION_OUTCOME_UNKNOWN/);
+  }
   const { devices: [device] } = await workbench.devices();
   assert.equal(device.model, 'Fixture phone');
-  assert.ok(!device.needsReview);
+  assert.ok(device.needsReview);
+  changingPreview = true;
+  const { frame: movingFrame, unconfirmed } = await workbench.refresh(device.id);
+  assert.match(movingFrame.image, /^data:image\/png;base64,/);
+  assert.equal(movingFrame.controlsChangedDuringCapture, true);
+  assert.equal(movingFrame.observationId, undefined);
+  assert.deepEqual(unconfirmed, []);
+  assert.equal((await api.json('/api/devices/' + device.id)).needsReview, false);
+  assert.deepEqual(acknowledgementViews, []);
+  changingPreview = false;
   const { frame } = await workbench.refresh(device.id);
-  assert.match(frame.image, /^data:image\/png;base64,/);
-  assert.ok(frame.observationId);
   const tap = { action: 'tap', x: 0.3, y: 0.13 };
   const first = await workbench.action(device.id, tap, frame.observationId);
   assert.equal(first.result.action, 'tap');
+  legacyCapture = true;
   loseReceipt = true;
   const uncertain = await workbench.action(device.id, tap, first.frame.observationId);
+  assert.equal(uncertain.result.status, 'failed');
   assert.equal(uncertain.result.reason, 'ACTION_OUTCOME_UNKNOWN');
   assert.ok(uncertain.frame.observationId);
   assert.notEqual(uncertain.frame.observationId, first.frame.observationId);
   assert.equal(taps, 2);
-  assert.equal(uncertain.unconfirmed.length, 1);
-  await workbench.acknowledgeAction(device.id, uncertain.unconfirmed[0].id, uncertain.frame.observationId);
-  assert.deepEqual((await workbench.refresh(device.id)).unconfirmed, []);
+  assert.deepEqual(uncertain.unconfirmed, []);
+  assert.equal((await api.json('/api/devices/' + device.id)).needsReview, false);
+  assert.notEqual(acknowledgementViews[0], uncertain.frame.observationId);
+  assert.deepEqual(acknowledgementViews.slice(1), [uncertain.frame.observationId]);
   loseReceipt = false;
 
   const chatRun = await workbench.start(device.id, 'chat', { message: '核对应用已打开' });

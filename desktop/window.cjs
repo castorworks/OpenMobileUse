@@ -67,7 +67,6 @@ function startWorkbench(options) {
       'startEmulator',
       'environment',
       'diagnoseService',
-      'acknowledgeAction',
       'platformSetup',
       'chooseAndroidSdk',
     ];

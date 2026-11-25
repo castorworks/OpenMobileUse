@@ -24,7 +24,6 @@ for (const method of [
   'startEmulator',
   'environment',
   'diagnoseService',
-  'acknowledgeAction',
   'platformSetup',
   'chooseAndroidSdk',
 ]) {

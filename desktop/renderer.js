@@ -433,13 +433,10 @@ function feedback(id, text, tone) {
 function renderNotice() {
   const s = state();
   const count = selected ? s.pendingActions.length : 0;
-  const pending = count ? count + ' 条操作结果仍待核对。' + (s.frame?.observationId
-    ? '手机画面已刷新。' : '请在手机画面稳定后刷新。') : '';
+  const pending = count ? count + ' 条操作记录暂未处理。' : '';
   const note = selected ? s.notice || pending : '';
   $('notice').hidden = !note;
-  $('notice').dataset.tone = (s.notice ? s.noticeTone : count ? 'warning' : 'info') || 'info';
-  $('notice-text').textContent = note;
-  $('review-actions').hidden = !count || !s.frame?.observationId;
+  feedback('notice', note, (s.notice ? s.noticeTone : count ? 'warning' : 'info') || 'info');
 }
 function canAct() {
   const s = state(),
@@ -464,7 +461,6 @@ function renderButtons() {
     stopping = s.stopping || s.active?.status === 'cancelling';
   $('diagnose').disabled = !t || s.busy || !!s.active;
   $('refresh').disabled = !free;
-  $('review-actions').disabled = !free || !s.frame?.observationId || displayedFrame !== s.frame;
   $('tap').disabled = !enabled || (!s.point && s.hit === null);
   $('back').disabled = !enabled || !s.frame.observationId;
   $('input').disabled = !enabled || !s.frame.observationId || !$('text').value;
@@ -542,13 +538,19 @@ function requireReview(id) {
   if (device) device.needsReview = true;
   markFrame(id, null);
 }
-function showRefresh(id, { frame, unconfirmed }) {
+function showRefresh(id, { frame, unconfirmed, reviewError }) {
+  const device = devices.find(t => t.id === id);
   if (unconfirmed) {
     state(id).pendingActions = unconfirmed;
-    const device = devices.find(t => t.id === id);
     if (device) device.needsReview = unconfirmed.length > 0;
   }
   markFrame(id, frame || null);
+  if (reviewError) {
+    const detail = reviewError === 'STALE_OBSERVATION' ? '手机画面持续变化。' : describe(reviewError);
+    message(id, unconfirmed.length + ' 条操作记录暂未处理。' + detail, 'warning');
+  } else if (frame && !unconfirmed && device?.needsReview) {
+    message(id, '当前访问令牌缺少处理待核对操作的权限。', 'warning');
+  }
 }
 async function refreshFrame(id) {
   try {
@@ -566,32 +568,13 @@ function refresh(id = selected) {
     const review = s.reviewAfterRun;
     s.reviewAfterRun = false;
     const frame = await refreshFrame(id);
-    if (review && !s.pendingActions.length)
+    if (review && !s.notice && !s.pendingActions.length)
       message(id, '操作结果暂未确认。已刷新手机画面。', 'warning');
-    else if (!s.pendingActions.length && frame.controlsChangedDuringCapture)
+    else if (!s.notice && !s.pendingActions.length && frame.controlsChangedDuringCapture)
       message(id, frame.gestureObservationId ? '采集时画面有变化，点击或滑动前会重新核对目标区域。'
         : '采集时画面发生变化。请刷新并等待稳定画面，再进行单步操作。', 'info');
   });
 }
-$('review-actions').onclick = () => {
-  const id = selected;
-  const s = state(id);
-  const observationId = s.frame?.observationId;
-  if (!observationId || displayedFrame !== s.frame) return;
-  return busy(id, async () => {
-    let failure;
-    try {
-      for (const action of s.pendingActions) await api.acknowledgeAction(id, action.id, observationId);
-    } catch (error) {
-      failure = error;
-    }
-    await refreshFrame(id);
-    if (!s.pendingActions.length) message(id, '已确认当前画面，可以继续操作。', 'success');
-    else if (failure?.message === 'STALE_OBSERVATION')
-      message(id, '已重新刷新，请核对最新画面。', 'warning');
-    else if (failure) throw failure;
-  });
-};
 function fit() {
   const img = $('shot'),
     canvas = $('canvas'),
@@ -778,7 +761,7 @@ async function action(raw) {
         if (!r.unconfirmed) requireReview(id);
         showRefresh(id, r);
         if (r.captureError) message(id, '读取当前画面失败。' + describe(r.captureError), 'warning');
-        else if (!s.pendingActions.length) message(id, '操作结果暂未确认。已刷新手机画面。', 'warning');
+        else if (!s.notice && !s.pendingActions.length) message(id, '操作结果暂未确认。已刷新手机画面。', 'warning');
         return;
       }
       if (r.result.status === 'needs_review') {

@@ -1560,6 +1560,9 @@ components:
       type: object
       properties:
         includeLayout: {type: boolean, default: false}
+        reconcilePendingActions:
+          type: boolean
+          description: 确认截图前后是同一窗口和显示尺寸后，将此设备较早的待核对操作登记为接受当前状态。需要 devices:reconcile 权限。
       additionalProperties: false
     DiagnoseInput:
       type: object

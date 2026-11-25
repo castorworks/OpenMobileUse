@@ -440,8 +440,9 @@ export class Workbench {
     };
   }
 
-  async capture(api, signal, id) {
-    const run = await this.invoke(api, signal, { deviceId: id, kind: 'capture', input: {} });
+  async capture(api, signal, id, reconcilePendingActions = false) {
+    const input = reconcilePendingActions ? { reconcilePendingActions: true } : {};
+    const run = await this.invoke(api, signal, { deviceId: id, kind: 'capture', input });
     if (run.result?.kind !== 'capture') throw Error('API_INVALID_RESPONSE');
     const artifact = run.artifacts.find((value) => value.kind === 'screenshot');
     signal.throwIfAborted();
@@ -449,13 +450,53 @@ export class Workbench {
   }
 
   async refresh(id) {
-    const { api, signal } = this.context();
-    const frame = await this.capture(api, signal, id);
-    const unconfirmed = await listItems(this.context().api, devicePath(id) + '/pending-actions', { signal }).catch((error) => {
+    const { signal } = this.context();
+    const readPending = () => listItems(this.context().api, devicePath(id) + '/pending-actions', { signal }).catch((error) => {
       if (error.status === 403) return undefined;
       throw error;
     });
-    return { frame, unconfirmed };
+    let unconfirmed = await readPending();
+    let reconcileInCapture = Boolean(unconfirmed?.length);
+    const capture = async () => {
+      try {
+        return await this.capture(this.context().api, signal, id, reconcileInCapture);
+      } catch (error) {
+        if (!reconcileInCapture || errorCode(error) !== 'INVALID_REQUEST') throw error;
+        // Older services still support acknowledging against a capture token.
+        reconcileInCapture = false;
+        return this.capture(this.context().api, signal, id);
+      }
+    };
+    let frame = await capture();
+    unconfirmed = await readPending();
+    let reviewError;
+    for (let attempt = 0; unconfirmed?.length && attempt < 2; attempt++) {
+      reviewError = 'STALE_OBSERVATION';
+      if (frame.observationId && !reconcileInCapture) {
+        reviewError = undefined;
+        try {
+          for (const action of unconfirmed) {
+            signal.throwIfAborted();
+            await this.acknowledgeAction(id, action.id, frame.observationId);
+          }
+        } catch (error) {
+          signal.throwIfAborted();
+          reviewError = errorCode(error);
+        }
+        unconfirmed = await readPending();
+      }
+      if (!unconfirmed?.length || attempt || (reviewError &&
+        !['STALE_OBSERVATION', 'DEVICE_BUSY', 'UNKNOWN_PENDING_ACTION', 'API_TIMEOUT'].includes(reviewError))) break;
+      try {
+        frame = await capture();
+      } catch (error) {
+        signal.throwIfAborted();
+        reviewError = errorCode(error);
+        break;
+      }
+      unconfirmed = await readPending();
+    }
+    return { frame, unconfirmed, ...(unconfirmed?.length && reviewError ? { reviewError } : {}) };
   }
 
   async probe(id) {

@@ -160,6 +160,7 @@ test('ambiguous dispatch gates device writes until a matching, fresh capture is 
     bounds: { x: 0, y: 0, width: 10, height: 10 }, enabled: true, focused: false, editable: false, secret: false }];
   const moving = await waitForRun(service, (await accept(service, id, 'capture', {})).id);
   assert.ok(moving.result.gestureObservationId);
+  assert.deepEqual(service.listPendingActions(id), [marker]);
   await assert.rejects(service.acknowledgeAction(id, marker.id, {
     observationId: moving.result.gestureObservationId, outcome: 'applied',
   }, actor), { code: 'STALE_OBSERVATION' });

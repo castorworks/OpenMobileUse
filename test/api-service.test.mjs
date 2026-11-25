@@ -259,6 +259,11 @@ test('HTTP rejects simultaneous writes, cancels queued runs and enforces device 
   const data = new ApiData(join(directory, 'api'));
   const allowed = data.issueToken('viewer', ['devices:read'], [device.id]);
   const other = data.issueToken('other', ['devices:read'], [randomUUID()]);
+  const capturer = data.issueToken('capturer', ['runs:submit'], [device.id]);
+  assert.equal((await request('/api/runs', {
+    method: 'POST', token: capturer.token, headers: { 'Idempotency-Key': randomUUID() },
+    body: { deviceId: device.id, kind: 'capture', input: { reconcilePendingActions: true } },
+  })).status, 403);
   assert.equal((await request('/api/devices/' + device.id, { token: allowed.token })).status, 200);
   assert.equal((await request('/api/devices/' + device.id, { token: other.token })).status, 404);
   assert.equal((await request('/api/runs/' + active.id, { token: allowed.token })).status, 403);

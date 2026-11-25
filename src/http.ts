@@ -214,6 +214,7 @@ export async function createApiServer(options: ApiServerOptions) {
     requireDevice(grant, request.deviceId);
     const input = request.input as Record<string, unknown>;
     if (request.kind === 'diagnose' || input.includeLayout === true) requirePermission(grant, 'devices:diagnose');
+    if (request.kind === 'capture' && input.reconcilePendingActions === true) requirePermission(grant, 'devices:reconcile');
     if (request.kind === 'chat' || input.conversationId) requirePermission(grant, 'conversations:write');
     if (typeof input.scriptId === 'string') requirePermission(grant, 'scripts:read');
   }

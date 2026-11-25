@@ -1193,12 +1193,6 @@ select:disabled,
   color: var(--success);
   background: var(--success-bg);
 }
-#review-actions {
-  display: block;
-  margin-top: 5px;
-  padding: 3px 9px;
-  min-height: 26px;
-}
 :is(#script-feedback, #manage-feedback, #settings-status)[data-tone='error'] {
   color: var(--danger);
 }

@@ -74,7 +74,7 @@ flowchart LR
 | `chat` | `message`、`conversationId?`、`conversationETag?`、`modelProfile?`、`useImages?`、`record?` | `conversationId`、轮次、`answer`、`replyRequested`、`modelCalls` 和已确认录制。省略对话 ID 时创建新对话。 |
 | `agent` | `taskId` 或现有 `task` 文件正文二选一。可传 `modelProfile`、`useImages`、`repeat`。 | 原任务检查点、证据、每轮结果和失败原因。 |
 
-坐标点击和滑动必须带本服务采集的 `observationId`。服务在拿到设备锁后比对前台窗口、目标区域、方向和观测有效期，失败返回 `STALE_OBSERVATION` 并停止派发。安卓截图前后控件有变化时，结果可提供 `gestureObservationId`。仅点击和滑动可将它作为 `observationId` 提交，服务会同时核对截图两侧的控件树及执行前的实时目标。核销未决操作、返回和输入仍需稳定观测。图片产物有独立 ID，使视频等控件树不变的画面也能定位到具体帧。脚本继续按其声明的控件及观测条件校验。 [观察采集](../src/inspect.ts) · [现有动作校验](../src/steps.ts)
+坐标点击和滑动必须带本服务采集的 `observationId`。服务在拿到设备锁后比对前台窗口、目标区域、方向和观测有效期，失败返回 `STALE_OBSERVATION` 并停止派发。安卓截图前后控件有变化时，结果可提供 `gestureObservationId`。点击和滑动可将它作为 `observationId` 提交，服务会同时核对截图两侧的控件树及执行前的实时目标。独立核对接口、返回和输入仍需稳定观测。采集请求可带 `reconcilePendingActions`，服务在同一次采集中确认窗口和显示尺寸后，将较早的待核对操作登记为接受当前状态。图片产物有独立 ID，使视频等控件树不变的画面也能定位到具体帧。脚本继续按其声明的控件及观测条件校验。 [观察采集](../src/inspect.ts) · [现有动作校验](../src/steps.ts)
 
 带 `preview` 的单步和对话运行可以在结果的 `frame` 中返回最终采集的控件和观测标识，对应 PNG 通过该运行的截图产物下载。抖音关闭评论经核对后才返回 `commentPanelClosed` 和实际像素落点 `tapPoint`。面板仍在时返回 `needs_review`，旧预览的点击在派发前取消并返回新画面。
 
