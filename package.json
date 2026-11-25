@@ -6,11 +6,15 @@
   "bin": {
     "omu": "./dist/cli.js"
   },
+  "files": ["dist/", "docs/", "examples/"],
   "scripts": {
     "build": "tsc && node scripts/prepare-screen-text.mjs",
     "omu": "node dist/cli.js",
+    "serve": "node dist/cli.js serve",
     "appium": "appium --address 127.0.0.1 --log-level warn",
-    "build:desktop": "npm run build && node desktop/build-ocr.mjs",
+    "build:service": "npm run build && node desktop/build-ocr.mjs",
+    "package:service": "npm run build:service && npm pack --ignore-scripts",
+    "build:desktop": "npm run build:service",
     "package:desktop": "npm run build:desktop && node desktop/package-mac.mjs",
     "desktop": "npm run build:desktop && npm --prefix desktop start"
   },
@@ -20,9 +24,6 @@
   },
   "devDependencies": {
     "@types/node": "22.20.5",
-    "appium": "3.9.1",
-    "appium-uiautomator2-driver": "8.7.3",
-    "appium-xcuitest-driver": "12.22.8",
     "typescript": "5.9.3"
   },
   "dependencies": {
@@ -30,7 +31,13 @@
     "@tesseract.js-data/chi_tra": "1.0.0",
     "@tesseract.js-data/eng": "1.0.0",
     "@xmldom/xmldom": "0.9.12",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "appium": "3.9.1",
+    "appium-uiautomator2-driver": "8.7.3",
+    "appium-xcuitest-driver": "12.22.8",
     "sharp": "0.35.5",
-    "tesseract.js": "7.0.0"
+    "tesseract.js": "7.0.0",
+    "yaml": "2.9.1"
   }
 }

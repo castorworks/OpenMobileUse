@@ -9,13 +9,13 @@ import { runConversation } from '../dist/conversation.js';
 const app = 'example.video', identity = 'android:test', signal = new AbortController().signal;
 const screenshot = await sharp({ create: { width: 200, height: 400, channels: 3, background: 'orange' } }).png().toBuffer();
 
-function frame({ label = '暂停视频，按钮', caption = '猫咪的一天', overlay = '', area = '[20,40][180,280]' } = {}) {
+function frame({ label = '暂停视频，按钮', caption = '猫咪的一天', overlay = '', decoration = '', area = '[20,40][180,280]' } = {}) {
   const node = (role, bounds, fields = '', children = '') =>
     `<node class="android.${role}" package="${app}" bounds="${bounds}" displayed="true" ${fields}>${children}</node>`;
   const video = node('view.SurfaceView', area);
   const action = node('view.View', area, `content-desc="${label}" clickable="true"`);
   const title = node('widget.TextView', '[20,245][150,279]', `resource-id="example.video:id/desc" text="${caption}"`);
-  const surface = node('widget.FrameLayout', area, '', video + title + action);
+  const surface = node('widget.FrameLayout', area, '', video + title + action + decoration);
   const layout = '<hierarchy>' + node('widget.FrameLayout', '[0,0][200,400]', '', surface + overlay) + '</hierarchy>';
   return { app, window: 'detail', width: 200, height: 400, rotation: 0, layout,
     controls: xmlControls('android', layout, app, 200, 400), screen: { page: 'other' } };
@@ -24,6 +24,17 @@ function frame({ label = '暂停视频，按钮', caption = '猫咪的一天', o
 const playing = frame(), paused = frame({ label: '播放视频，按钮' });
 const sheet = frame({ overlay: '<node class="android.view.View" package="example.video" bounds="[0,140][200,400]" clickable="true"/>' });
 const item = () => readVideoPlayer(playing).key;
+test('a paused player can show its own small suggestion without authorizing a tap through it', async () => {
+  const hint = '<node class="android.widget.FrameLayout" package="example.video" bounds="[65,140][135,180]" clickable="true">' +
+    '<node class="android.widget.TextView" package="example.video" bounds="[70,145][130,175]" text="相关问题"/></node>';
+  const stopped = frame({ decoration: hint, label: '播放视频，按钮' });
+  assert.equal(readVideoPlayer(stopped)?.key, item());
+  assert.equal(readVideoPlayer(frame({ decoration: hint })), undefined);
+  assert.equal(readVideoPlayer(frame({ overlay: hint, label: '播放视频，按钮' })), undefined);
+  const device = phone([playing, playing, stopped]);
+  assert.equal((await pauseVideoCenter(device, identity, playing, item(), signal)).tapped, true);
+  assert.equal(device.clicks.length, 1);
+});
 function phone(views) {
   let i = 0;
   const clicks = [];

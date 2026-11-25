@@ -35,10 +35,9 @@ async function signingTeams() {
     return [];
   }
 }
-export async function configureHost() {
-  const env = process.env;
+export async function configureHost(env = process.env) {
   const tools = androidToolchain();
-  applyAndroidToolchain(tools);
+  applyAndroidToolchain(tools, env);
   const androidSetup = androidSetupStatus(tools);
   const developer =
     process.platform === 'darwin' && first(env.DEVELOPER_DIR, installed('Xcode.app/Contents/Developer'));

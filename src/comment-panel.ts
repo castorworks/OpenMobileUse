@@ -31,10 +31,19 @@ export function commentCloseTarget(view: View, step: Step, node?: Control) {
   const titles = view.controls.filter(c => labelled(c, heading));
   const matches = close.filter(c => {
     const center = visibleCenter(view, c.bounds);
-    return titles.some(({ bounds: b }) => center.x >= b.x + b.width &&
-      center.y >= b.y && center.y < b.y + b.height);
+    return titles.some(title => {
+      const b = title.bounds;
+      if (center.x < b.x + b.width) return false;
+      if (center.y >= b.y && center.y < b.y + b.height) return true;
+      // Some Douyin sheets place the count directly below their close toolbar.
+      const gap = b.y - (c.bounds.y + c.bounds.height);
+      return titles.length === 1 && c.id === douyin + ':id/back_btn' && title.id === douyin + ':id/title' &&
+        gap >= 0 && gap <= Math.min(c.bounds.height, b.height) / 2;
+    });
   });
   if (matches.length > 1) throw Error('AMBIGUOUS_ELEMENT');
+  if (!matches.length && titles.length && close.some(c => c.id === douyin + ':id/back_btn'))
+    throw Error('COMMENT_CLOSE_POINT_UNAVAILABLE');
   return matches[0];
 }
 

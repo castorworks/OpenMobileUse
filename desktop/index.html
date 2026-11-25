@@ -43,7 +43,7 @@
           启动 Android 模拟器
         </button>
         <div class="rail-bottom">
-          <span class="host-dot"></span>本机工作台<button id="model-settings" class="rail-link">
+          <span class="host-dot"></span><span id="service-location">本机服务</span><button id="model-settings" class="rail-link">
             工作台设置
           </button>
         </div>
@@ -78,11 +78,12 @@
               <button class="stop" id="chat-stop" hidden>停止</button>
             </div>
           </div>
-          <p class="hint recording-note">AI 可读取控件和画面文字。操作和输入内容自动保存到脚本库。</p>
+          <p class="hint recording-note">AI 可读取控件和画面文字。已确认的操作可从对话保存到脚本库。</p>
         </section>
         <section id="script-panel" aria-label="脚本库" hidden>
           <label for="script-search" class="sr-only">搜索脚本名称</label>
           <input type="search" id="script-search" placeholder="搜索脚本名称" />
+          <label class="checkbox"><input type="checkbox" id="show-archived" />显示已归档的脚本</label>
           <p class="hint" id="script-target"></p>
           <div id="script-list"></div>
           <p class="muted" role="status" id="script-feedback"></p>
@@ -177,7 +178,9 @@
       <div class="manage-actions">
         <button id="save-name" class="primary">保存名称</button>
         <button id="export-script" class="outline">导出 JSON</button>
+        <button id="continue-recording" class="outline" hidden>续录为新对话</button>
         <button id="remove-script" class="text-button danger">移除</button>
+        <button id="restore-script" class="outline" hidden>恢复到脚本库</button>
       </div>
       <div id="remove-confirm" hidden>
         <p id="remove-question"></p>
@@ -191,23 +194,27 @@
       <h2 id="dialog-title"></h2>
       <div id="diagnostic-content"></div>
       <div id="model-content" hidden>
-        <label for="endpoint">模型接口地址</label><input id="endpoint" type="url" />
-        <label for="model-id">模型名称</label><input id="model-id" /> <label for="key">API Key</label
-        ><input id="key" type="password" autocomplete="off" />
-        <p class="hint">密钥使用系统凭据保护。免鉴权的本机模型可留空。</p>
+        <label for="connection-mode">服务连接方式</label>
+        <select id="connection-mode">
+          <option value="local">自动本机服务</option>
+          <option value="custom">自定义服务</option>
+        </select>
+        <p class="hint" id="local-service-detail"></p>
+        <div id="custom-connection" hidden>
+          <label for="endpoint">HTTP 服务地址</label><input id="endpoint" type="url" />
+          <label for="key">访问令牌</label><input id="key" type="password" autocomplete="off" />
+          <p class="hint">访问令牌由服务宿主签发，使用本机系统凭据存储保护。</p>
+        </div>
+        <label for="model-id">模型配置</label><select id="model-id"></select>
         <label class="checkbox"><input type="checkbox" id="use-images" />允许模型按需查看手机截图</label>
-        <p class="hint">游戏或控件不足时，截图会发往上方模型接口。DeepSeek 可选 deepseek-flash。</p>
+        <p class="hint">开启后，服务可将画面发给选中的模型配置。</p>
         <details id="host-setup">
-          <summary>设备环境与 iPhone 签名</summary>
+          <summary>本机平台工具</summary>
           <div id="platforms"></div>
-          <label for="team">Apple Team ID</label
-          ><input id="team" list="teams" maxlength="10" placeholder="自动检测" /><datalist
-            id="teams"
-          ></datalist>
-          <label for="wda-bundle">WDA Bundle ID</label><input id="wda-bundle" />
         </details>
         <p class="hint" id="settings-status" role="status"></p>
         <button class="primary" id="save-key">保存设置</button>
+        <button class="outline" id="diagnose-service">诊断服务连接</button>
       </div>
     </dialog>
   </body>

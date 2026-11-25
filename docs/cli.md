@@ -1,26 +1,39 @@
 # 命令行（CLI）
 
-CLI 支持自由对话、单步操作、JSON 脚本和预定义 Agent 任务，结果以 JSON 输出。`node dist/cli.js --help` 列出全部命令和参数。
+CLI 通过 Open Mobile Use 服务发现设备、执行对话、单步操作、JSON 脚本和 Agent 任务，结果以 JSON 输出。`node dist/cli.js --help` 列出命令和参数。
 
 ## 准备
 
-按 [安装与设备接入](setup.md) 运行 `npm ci`、`npm run build` 并准备手机。用 CLI 操作 iPhone 或 Android 时，在单独的终端从仓库根目录启动 Appium。使用 Android 时，在该终端也设置好 `ANDROID_HOME` 和 `JAVA_HOME`。默认服务地址为 `http://127.0.0.1:4723`，可用 `OMU_APPIUM_URL` 指向其他本机地址。鸿蒙不需要 Appium。
+在连接手机的 Windows 或 macOS 主机上安装依赖并构建。设备工具链、手机授权及 iPhone 签名由服务宿主准备。 [安装与设备接入](setup.md)
 
 ```sh
-export ANDROID_HOME="$HOME/Library/Android/sdk"
-export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-npm run appium
+npm ci
+npm run build
+node dist/cli.js auth token create --subject my-cli
+node dist/cli.js serve
 ```
 
-本文示例使用 macOS 的 zsh。Windows PowerShell 中用 `$env:名称 = '值'` 设置环境变量，例如 `$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"`、`$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"`，变量赋值写作 `$DEVICE = '...'`。
+从 `npm run package:service` 生成的 npm 包安装后，示例中的 `node dist/cli.js` 可写为 `omu`。 [打包与安装](setup.md#打包服务)
+
+服务默认按需启动本机 Appium。也可在宿主切换到已运行的外置 Appium。 [Appium 模式](setup.md#构建并启动服务)
+
+在调用 CLI 的终端设置签发的令牌。CLI 默认发现同一状态目录中的本机服务，包括由工作台启动的服务，其次尝试 `http://127.0.0.1:18765`。从其他主机访问时，通过 `OMU_API_URL` 配置宿主的 HTTPS 地址。 [服务部署和权限](api-design.md#访问权限与部署)
+
+```sh
+read -rs 'OMU_API_TOKEN?Open Mobile Use token: ' && export OMU_API_TOKEN
+```
+
+Windows PowerShell 7 中执行 `$env:OMU_API_TOKEN = Read-Host 'Open Mobile Use token' -MaskInput`。下文的 `DEVICE='...'` 在 PowerShell 写作 `$DEVICE = '...'`。管理员可在签发令牌时用 `--permissions` 和 `--devices` 限定访问范围。撤销用 `auth token revoke <tokenId>`。服务发现和令牌管理使用同一状态目录，可通过 `OMU_API_STATE_DIR` 指定。
+
+宿主可用 `serve --host <地址> --port <端口> --tls-cert <证书> --tls-key <私钥>` 提供 HTTPS。Windows 和 macOS 可在具备设备权限的登录账户下后台启动同一条命令。退出 CLI 或关闭工作台后，后台服务可继续运行。
 
 ## 选择设备
 
-列出设备，将 `DEVICE` 替换成输出中目标设备的完整 `id`（含 `harmony:`、`ios:` 或 `android:` 前缀）。下文命令都使用它。
+列出设备后，将 `DEVICE` 替换为输出中的设备 `id`。服务分配该标识，`platform` 字段显示手机平台。
 
 ```sh
 node dist/cli.js devices --json
-DEVICE='android:emulator-5554'
+DEVICE='a8038141-136d-4d60-ad1b-a9cf255e3cc7'
 node dist/cli.js doctor --device "$DEVICE" --json
 ```
 
@@ -44,19 +57,19 @@ node dist/cli.js launch --device "$DEVICE" --app com.apple.calculator --json
 
 ### 查看界面、点击、滑动和输入
 
-将目标 App 停在要操作的页面。先运行 `inspect`，在返回的 `directory` 里查看截图 `screen.png` 和 `controls.json`，后者列出可见控件的标识、名称、类型和位置。采集文件可能包含输入框内容等页面信息。
+将目标 App 停在要操作的页面。先运行 `inspect`，在返回的 `directory` 里查看截图 `screen.png` 和 `controls.json`，后者列出可见控件的标识、名称、类型和位置。有诊断权限时，可用 `--include-layout` 同时下载原始布局。采集文件可能包含输入框内容等页面信息。
 
 ```sh
 node dist/cli.js inspect --device "$DEVICE" --output "$HOME/omu-captures"
 ```
 
-下面是独立调用示例。将控件标识、名称或坐标换成当前页面的实际值。按名称定位时可加 `--role` 区分同名控件。坐标以当前方向的整张截图为准，左上角为 `(0, 0)`，右下角为 `(1, 1)`。根据截图操作时，传入该次采集返回的 `observationId`，设备、前台页面、控件或方向发生变化时，命令会返回 `STALE_OBSERVATION`，此时重新采集即可。
+按名称定位时可加 `--role` 区分同名控件。坐标以当前方向的整张截图为准，左上角为 `(0, 0)`，右下角为 `(1, 1)`。坐标点击和滑动需要传入该次 `inspect` 返回的 `observationId`。画面变化或观察过期时返回 `STALE_OBSERVATION`，重新采集后即可继续。
 
 ```sh
 node dist/cli.js tap --device "$DEVICE" --id "$CONTROL_ID"
 node dist/cli.js tap --device "$DEVICE" --label '蓝牙'
 node dist/cli.js tap --device "$DEVICE" --x 0.50 --y 0.35 --observation "$OBSERVATION_ID"
-node dist/cli.js swipe --device "$DEVICE" --from-x 0.5 --from-y 0.8 --to-x 0.5 --to-y 0.25 --duration-ms 400
+node dist/cli.js swipe --device "$DEVICE" --from-x 0.5 --from-y 0.8 --to-x 0.5 --to-y 0.25 --duration-ms 400 --observation "$OBSERVATION_ID"
 node dist/cli.js input --device "$DEVICE" --id "$FIELD_ID" --replace --text '手机 Open Mobile'
 printf '%s' ' 中文 "OK" ' | node dist/cli.js input --device "$DEVICE" --stdin
 ```
@@ -86,7 +99,7 @@ node dist/cli.js waitFor --device "$DEVICE" --label '蓝牙地址' --state visib
 
 ## 自由对话
 
-`chat` 使用与工作台相同的对话引擎处理一条自然语言指令。模型配置与下文的 `agent` 相同。默认使用原生控件和本机识别文字，加 `--vision` 才允许模型按需接收手机截图。`--output` 可把已确认的步骤保存为新的脚本文件，供 CLI 重放或导入工作台。
+`chat` 使用与工作台相同的对话引擎处理一条自然语言指令。模型由服务宿主配置。默认使用原生控件和本机识别文字，服务允许截图时可加 `--vision` 让模型按需接收截图。`--output` 可把已确认的步骤下载为新脚本文件，供 CLI 重放或导入工作台。
 
 ```sh
 node dist/cli.js chat --device "$DEVICE" --message '打开设置，确认蓝牙是否开启' --output ./recording.json
@@ -97,20 +110,14 @@ node dist/cli.js run --device "$DEVICE" --script ./recording.json
 
 `agent` 按任务文件让模型逐步操作手机。主机只执行任务允许的动作，并根据新的观察独立核对检查点。`--repeat` 和 `--output` 的用法与 `run` 相同。
 
-在运行 CLI 的终端设置模型凭据。省略 `--model` 会向 DeepSeek 的 OpenAI 兼容 `/chat/completions` 接口请求 `deepseek-flash`。[DeepSeek 接口文档](https://api-docs.deepseek.com/)
+通过 `--model-profile` 选择宿主授权的模型配置。省略时使用宿主默认配置。服务启动时读取 `OMU_MODEL_BASE_URL`、`OMU_MODEL` 和 `OMU_MODEL_KEY_ENV`，模型密钥也在宿主配置。要允许默认模型查看截图，启动服务前设置 `OMU_ALLOW_MODEL_IMAGES=true`。多模型配置可用 `OMU_MODEL_PROFILES` 指定 JSON 数组。
 
 下例从 Android 简体中文设置首页打开搜索，其他设备换用对应的任务文件：[Android](../examples/agent-open-search-android.json) · [鸿蒙](../examples/agent-open-search-harmony.json) · [iPhone](../examples/agent-open-search-ios.json)。这个任务使用视觉定位，所选模型需要支持图像和函数调用。
 
 ```sh
-read -rs 'DEEPSEEK_API_KEY?DeepSeek API key: ' && export DEEPSEEK_API_KEY
 node dist/cli.js launch --device "$DEVICE" --app settings
 node dist/cli.js agent --device "$DEVICE" --task examples/agent-open-search-android.json --vision --json
-unset DEEPSEEK_API_KEY
 ```
-
-Windows PowerShell 7 可用 `$env:DEEPSEEK_API_KEY = Read-Host 'DeepSeek API key' -MaskInput` 输入凭据，用完后执行 `Remove-Item Env:DEEPSEEK_API_KEY`。
-
-其他支持函数调用的 Chat Completions 服务可用 `--base-url` 和 `--model` 指定，例如 `--base-url http://127.0.0.1:8000/v1 --model local-tool-model`。地址需使用 HTTPS，本机回环地址可用 HTTP。需要鉴权时，使用 `--api-key-env` 指定该端点专用的凭据变量。本地免鉴权服务可省略该参数。
 
 报告中的状态：检查点全部通过为 `succeeded`；需要人工处理时为 `needs_review`，例如出现未授权 App、可识别的敏感输入或阻塞弹窗，或模型请求接管；模型协议、鉴权、设备故障或超出决策次数和时长时为 `failed`。
 
@@ -122,6 +129,6 @@ Windows PowerShell 7 可用 `$env:DEEPSEEK_API_KEY = Read-Host 'DeepSeek API key
 
 ## 诊断与恢复
 
-`doctor` 依次检查连接、工具链、会话和界面读取，报告设备能否控制（`controllable`）和未确认的动作，失败时给出错误码和处理提示。桌面工作台的「连接诊断」执行同样的检查。
+`doctor` 依次检查连接、工具链、会话和界面读取，报告设备能否控制（`controllable`）和待核对动作（`pendingActions`），失败时给出错误码和处理提示。桌面工作台的「连接诊断」执行同样的检查。
 
-运行中按 Ctrl+C 会停止后续步骤并关闭会话。同一台设备同时只能运行一个命令，第二个会收到 `DEVICE_BUSY`。动作已发出但回执丢失时，报告返回 `ACTION_OUTCOME_UNKNOWN`。重新连接后运行 `doctor`，对照 `unconfirmed` 和当前页面核实，再决定从哪一步继续。
+按 Ctrl+C 会请求服务取消，并等待运行结束。同一台设备只能有一个活动操作，第二个命令会收到 `DEVICE_BUSY`。动作已发出而回执丢失时，服务返回 `ACTION_OUTCOME_UNKNOWN`。此时用 `doctor` 查看待核对动作，采集新画面并通过 API 确认处理结果，之后才能继续写操作。 [调度、取消与故障恢复](api-design.md#调度取消与故障恢复)

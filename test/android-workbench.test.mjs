@@ -1,36 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createServer } from 'node:http';
 import sharp from 'sharp';
-import { Workbench } from '../desktop/workbench.mjs';
-import { deviceDir, loadConversation, saveConversation } from '../desktop/library.mjs';
-import { scriptEntry } from '../desktop/script-library.mjs';
+import { androidWorkbench } from '../test-support/http-workbench.mjs';
+import { NativeServiceDrivers } from '../dist/service-drivers.js';
 import { openDevice } from '../dist/doctor.js';
 import { guardObservation, screenAvailable } from '../dist/steps.js';
 import { compileScript, executeRound } from '../dist/run.js';
 
 test('only Android workbench sessions request a one-second UI idle wait', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'omu-session-settings-'));
-  const previous = process.env.OMU_STATE_DIR;
-  process.env.OMU_STATE_DIR = dir;
-  t.after(async () => {
-    if (previous === undefined) delete process.env.OMU_STATE_DIR;
-    else process.env.OMU_STATE_DIR = previous;
-    await rm(dir, { recursive: true, force: true });
-  });
   const capabilities = [];
-  t.mock.method(globalThis, 'fetch', async (_url, options) => {
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.endsWith('/status')) return Response.json({ value: { ready: true, build: { version: 'test' } } });
     if (options.method === 'DELETE') return Response.json({ value: null });
     capabilities.push(JSON.parse(options.body).capabilities.alwaysMatch);
     return Response.json({ value: { sessionId: 'fixture' } });
   });
-  const workbench = new Workbench(() => {}, { appium: { ensureReady: async () => {} } });
+  const drivers = new NativeServiceDrivers({ appiumMode: 'external' });
   const android = { id: 'fixture', platform: 'android', available: true };
   const ios = { ...android, platform: 'ios' };
   for (const target of [android, ios])
-    await workbench.session(target, 'test', null, 'foreground', async () => {}, undefined, 630);
+    await (await drivers.open(target, async () => {}, 'foreground', new AbortController().signal, 630)).close();
   const cli = await openDevice(android, async () => {});
   await cli.close();
   assert.deepEqual(capabilities.map(c => c['appium:settings[waitForIdleTimeout]']), [1000, undefined, undefined]);
@@ -38,6 +28,19 @@ test('only Android workbench sessions request a one-second UI idle wait', async 
 });
 
 const swipe = { kind: 'swipe', from: { x: 0.5, y: 0.78 }, to: { x: 0.5, y: 0.26 }, duration: 400 };
+test('cancelling a run during shared Appium startup releases its waiter before the driver opens', async t => {
+  const drivers = new NativeServiceDrivers({ appiumMode: 'managed' });
+  const warmup = Promise.withResolvers();
+  t.mock.method(drivers, 'endpoint', () => warmup.promise);
+  const reserve = t.mock.method(drivers, 'reservePort', () => assert.fail('cancelled waiter reserved a driver port'));
+  const controller = new AbortController();
+  const opening = drivers.open({ platform: 'android', id: 'test' }, async () => {}, 'foreground', controller.signal);
+  controller.abort(Error('CANCELLED'));
+  await assert.rejects(opening, /CANCELLED/);
+  warmup.resolve('http://127.0.0.1:4723');
+  assert.equal(reserve.mock.callCount(), 0);
+});
+
 function player(y = 298, height = 1688) {
   return {
     app: 'example.feed', window: 'player', width: 1272, height: 2772, rotation: 0,
@@ -53,6 +56,18 @@ test('the Android swipe guard accepts slight edge jitter on the same gesture pat
   const validate = guardObservation('android:test', player(), swipe, screenAvailable);
   validate(player(297, 1690));
   validate(player(301, 1682));
+});
+
+test('a one-pixel passive player edge can move behind a live native button; a covering control still cancels it', () => {
+  const v = player();
+  const button = { ...v.controls[0], role: 'android.widget.Button', id: 'comments',
+    bounds: { x: 100, y: 400, width: 100, height: 100 }, clickable: true };
+  const background = { ...button, role: 'android.widget.FrameLayout', id: 'video', labels: [], clickable: false,
+    bounds: { x: 0, y: 0, width: 150, height: 900 } };
+  const view = { ...v, controls: [background, button] };
+  const guard = guardObservation('android:phone', view, { kind: 'tap', selector: { id: button.id, role: button.role } });
+  guard({ ...view, controls: [{ ...background, bounds: { ...background.bounds, width: 151 } }, button] });
+  assert.throws(() => guard({ ...view, controls: [...view.controls, { ...button, id: 'new-overlay' }] }), /STALE_OBSERVATION/);
 });
 
 test('swipe revalidation rejects a changed target, window, overlay or touch endpoint', () => {
@@ -90,9 +105,6 @@ test('an existing v2 recording replays a swipe across player edge jitter', async
 });
 
 async function previewFixture(t) {
-  const id = 'android:preview';
-  const wb = new Workbench(() => {});
-  wb.targets.set(id, { id: 'preview', platform: 'android', available: true });
   const button = (id, text, x, y) => ({
     id, role: 'android.widget.Button', labels: [text], bounds: { x, y, width: 24, height: 24 },
     enabled: true, focused: false, editable: false, secret: false,
@@ -108,9 +120,10 @@ async function previewFixture(t) {
     screenshot: async () => image,
     perform: async (step, view, node) => { taps.push(node?.id ?? step.point); phone.view = video; },
   };
-  const session = t.mock.method(wb, 'session', async (_target, _run, _signal, _mode, work) => work(phone));
-  const preview = await wb.frame(phone, id);
-  return { id, wb, phone, panel, taps, session, preview };
+  const http = await androidWorkbench(t, phone);
+  const { frame: preview } = await http.wb.refresh(http.id);
+  http.open.mock.resetCalls();
+  return { ...http, phone, panel, taps, session: http.open, preview };
 }
 
 test('a covered preview tap is cancelled and returns a fresh actionable panel in the same session', async t => {
@@ -140,7 +153,9 @@ test('an unavailable replacement frame leaves a stale tap cancelled and invalida
   assert.equal(recovery.result.status, 'cancelled');
   assert.equal(recovery.captureError, 'SCREENSHOT_UNAVAILABLE');
   assert.equal(recovery.frame, undefined);
-  assert.equal(wb.frames.has(id), false);
+  phone.view = player();
+  const again = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId);
+  assert.equal(again.result.reason, 'STALE_OBSERVATION');
   assert.deepEqual(taps, []);
 });
 
@@ -153,6 +168,69 @@ test('a tap with a missing dispatch receipt is never reported as a cancelled sta
   assert.equal(capture.mock.callCount(), 0);
 });
 
+test('a changing Android frame authorizes a revalidated gesture and rejects input and back', async t => {
+  const { id, wb, phone, api, taps } = await previewFixture(t);
+  const view = phone.view;
+  let tick = 0;
+  phone.snapshot = async () => ({ ...view, controls: [...view.controls, {
+    ...view.controls[0], id: 'timer', labels: [String(++tick)], bounds: { x: 1, y: 1, width: 15, height: 10 },
+  }] });
+  const { frame } = await wb.refresh(id);
+  assert.equal(frame.observationId, undefined);
+  assert.ok(frame.gestureObservationId);
+  for (const step of [{ action: 'back' }, { action: 'input', id: 'query', text: 'test' }])
+    await assert.rejects(api.submitRun({ kind: 'step', deviceId: id, input: {
+      step, observationId: frame.gestureObservationId,
+    } }), /STALE_OBSERVATION/);
+  const r = await wb.action(id, { action: 'tap', id: 'comments' }, frame.gestureObservationId);
+  assert.equal(r.result.status, 'succeeded');
+  assert.deepEqual(taps, ['comments']);
+});
+
+test('HTTP chat refuses a second up request after only the playback timer changes and records one swipe', async t => {
+  const field = (id, label, y, role = 'android.widget.TextView') => ({
+    id, role, labels: [label], bounds: { x: 0, y, width: 65, height: 12 }, enabled: true, secret: false,
+    editable: false, focused: false,
+  });
+  let sends = 0, decisions = 0;
+  const model = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks));
+    const obs = JSON.parse(body.messages.findLast(m => m.role === 'user' && typeof m.content === 'string').content);
+    const name = ++decisions <= 2 ? 'swipe' : 'finish';
+    const args = name === 'swipe' ? { direction: 'up' } :
+      { evidence: obs.controls.find(c => c.id === 'seek').ref, message: obs.singleSwipe.readback + ' 当前进度 00:02。' };
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', tool_calls: [
+      { id: obs.observationId, type: 'function', function: { name, arguments: JSON.stringify({ ...args, observationId: obs.observationId }) } },
+    ] } }] }));
+  });
+  await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
+  t.after(() => { model.closeAllConnections(); return new Promise(resolve => model.close(resolve)); });
+  const image = await sharp({ create: { width: 100, height: 200, channels: 3, background: 'white' } }).png().toBuffer();
+  const phone = {
+    snapshot: async () => ({ app: 'example.feed', window: 'main', width: 100, height: 200, rotation: 0,
+      controls: [field('caption', '同一作品', 25), field('author', '@作者', 42),
+        field('seek', sends ? '00:02' : '00:01', 184, 'android.widget.SeekBar')] }),
+    screenshot: async () => image, foregroundApp: async () => 'example.feed', back: async () => {}, launch: async () => {},
+    perform: async step => { assert.equal(step.kind, 'swipe'); sends++; },
+  };
+  const { wb, api, id } = await androidWorkbench(t, phone, fetch,
+    [{ id: 'fixture', config: { baseURL: 'http://127.0.0.1:' + model.address().port, model: 'fixture' } }]);
+  const runId = await wb.start(id, 'chat', { message: '只上滑一次，核对作品标题，再读出当前播放进度。' });
+  await wb.watchers.get(runId)?.done;
+  const run = await api.getRun(runId);
+  assert.equal(run.status, 'succeeded');
+  assert.equal(run.result.modelCalls, 3);
+  assert.equal(sends, 1);
+  assert.match(run.result.answer, /作品信息相同/);
+  assert.ok((await wb.events(api, runId)).some(e => e.data.status === 'SWIPE_LIMIT_REACHED'));
+  const tape = await api.json('/api/conversations/' + run.conversationId + '/recording');
+  assert.equal(tape.steps.filter(s => s.action === 'swipe').length, 1);
+  assert.ok(run.result.frame.observationId);
+});
+
 test('a stale screenshot after a confirmed tap preserves the successful action and its receipt', async t => {
   const { id, wb, preview, taps } = await previewFixture(t);
   t.mock.method(wb, 'frame', async () => { throw Error('STALE_OBSERVATION'); });
@@ -163,40 +241,29 @@ test('a stale screenshot after a confirmed tap preserves the successful action a
 });
 
 
-test('a stale manual tap never forks a V2 recording; a successful continuation writes a separate flat copy', async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'omu-v2-continuation-'));
-  const previous = process.env.OMU_STATE_DIR;
-  process.env.OMU_STATE_DIR = dir;
-  t.after(async () => {
-    if (previous === undefined) delete process.env.OMU_STATE_DIR;
-    else process.env.OMU_STATE_DIR = previous;
-    await rm(dir, { recursive: true, force: true });
-  });
-  const { id, wb, phone, panel, preview, taps } = await previewFixture(t);
-  const oldId = '01234567-89ab-4cde-8123-0123456789ab';
-  const originalStep = { inApp: 'example.feed', command: { action: 'check', id: 'comments' } };
-  await saveConversation(id, {
-    id: oldId, updated: new Date().toISOString(), turns: [{ user: '已录制', status: 'succeeded' }],
-    script: { schemaVersion: 2, platform: 'android', steps: [originalStep] },
-  });
-  const folder = deviceDir(id, 'conversations'), file = join(folder, oldId + '.json');
-  const originalBytes = await readFile(file);
+test('an imported V2 recording continues in an independent HTTP conversation and a stale tap appends no step', async t => {
+  const { id, wb, api, phone, panel, preview, taps } = await previewFixture(t);
+  const original = JSON.stringify({ schemaVersion: 2, platform: 'android', steps: [
+    { inApp: 'example.feed', command: { action: 'check', id: 'comments' } },
+  ] });
+  const script = await wb.importScript('旧录制', original);
+  const flat = { platform: 'android', steps: [{ inApp: 'example.feed', action: 'check', id: 'comments' }] };
+  assert.deepEqual((await wb.exportScript(script)).script, flat);
+  const entry = await wb.scriptInfo(script);
+  await assert.rejects(wb.continueRecording(id, script, '"outdated"'), { message: 'PRECONDITION_FAILED' });
+  const copy = await wb.continueRecording(id, script, entry.revision);
+  assert.notEqual(copy.id, script);
   phone.view = panel;
-  const blocked = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId, oldId);
+  const blocked = await wb.action(id, { action: 'tap', id: 'comments' }, preview.observationId, copy.id);
   assert.equal(blocked.result.status, 'cancelled');
-  assert.equal(blocked.chatId, undefined);
-  assert.deepEqual(await readdir(folder), [oldId + '.json']);
-  const ok = await wb.action(id, { action: 'tap', id: 'close' }, blocked.frame.observationId, oldId);
-  assert.deepEqual(taps, ['close']);
-  assert.ok(ok.chatId && ok.chatId !== oldId);
-  assert.deepEqual(await readFile(file), originalBytes);
-  const copy = await loadConversation(id, ok.chatId);
-  assert.equal(copy.sourceChatId, oldId);
-  assert.equal(copy.script.schemaVersion, undefined);
-  assert.deepEqual(copy.script.steps.map(({ action, id }) => [action, id]), [['check', 'comments'], ['tap', 'close']]);
-  const old = await wb.conversation(id, oldId);
-  const exported = (await scriptEntry(old.recordingId)).script;
-  assert.deepEqual(exported.steps, [{ inApp: 'example.feed', action: 'check', id: 'comments' }]);
-  assert.equal((await compileScript(copy.script, 'android')).steps.length, 2);
-  assert.deepEqual(await readFile(file), originalBytes);
+  assert.deepEqual(taps, []);
+  assert.deepEqual(await api.json('/api/conversations/' + copy.id + '/recording'), flat);
+  const ok = await wb.action(id, { action: 'tap', id: 'close' }, blocked.frame.observationId, copy.id);
+  assert.equal(ok.result.status, 'succeeded');
+  const continued = await api.json('/api/conversations/' + copy.id + '/recording');
+  assert.deepEqual(continued.steps.map(({ action, id }) => [action, id]), [['check','comments'], ['tap','close']]);
+  assert.equal((await compileScript(continued, 'android')).steps.length, 2);
+  assert.deepEqual((await wb.exportScript(script)).script, flat);
+  assert.equal((await wb.scriptInfo(script)).revision, entry.revision);
+  await assert.rejects(wb.importScript('未知版本', original.replace('"schemaVersion":2', '"schemaVersion":99')), /INVALID_REQUEST|INVALID_SCRIPT/);
 });

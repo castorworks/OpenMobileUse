@@ -253,7 +253,7 @@ const cliArgumentNames: Partial<Record<string, StepArgument>> = {
   'card-y': 'cardY',
 };
 
-export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
+export async function readStepArguments(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
     flag = { type: 'boolean' } as const;
   const {
@@ -304,9 +304,14 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     if (values.text !== undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
     options.text = await stdin();
   }
+  return { device, options, kind };
+}
+
+export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
+  const { device, options, kind: stepKind } = await readStepArguments(kind, args, stdin);
   const prefix = device.indexOf(':');
   const platform = prefix === -1 ? undefined : device.slice(0, prefix);
-  return { ...validateStep(kind, options, platform), device };
+  return { ...validateStep(stepKind, options, platform), device };
 }
 type ObservationScope =
   | CommandStep
@@ -383,7 +388,16 @@ function relevantControls(view: View, scope?: ObservationScope) {
     const states = hits.map(n => n.card ? { ...controlState(n), within: n.card.label } : controlState(n));
     if (hits.length !== 1 || scope.kind === 'check' || scope.kind === 'waitFor') return states;
     const center = visibleCenter(view, hits[0].bounds);
-    const atTarget = view.controls.filter((n) => containsPoint(n.bounds, center));
+    const nativeTap = scope.kind === 'tap' && !!scope.selector.id && !!scope.selector.role;
+    const atTarget = view.controls.filter(n => {
+      if (containsPoint(n.bounds, center)) return true;
+      // A live Android player can shift a passive layout edge across the centre
+      // by a pixel while its separately identified button keeps the same owner.
+      if (!nativeTap || n.role !== 'android.widget.FrameLayout' || n.clickable !== false ||
+          n.labels.length || n.editable || n.secret || n.focused) return false;
+      const b = n.bounds;
+      return containsPoint({ x: b.x - 2, y: b.y - 2, width: b.width + 4, height: b.height + 4 }, center);
+    });
     return [states, atTarget.map((c) => [c.role, c.id])];
   }
   if (

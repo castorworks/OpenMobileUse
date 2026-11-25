@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { Workbench } from '../desktop/workbench.mjs';
+import { androidWorkbench } from '../test-support/http-workbench.mjs';
 import { WebDriver } from '../dist/webdriver.js';
 import { executeStep } from '../dist/steps.js';
 import { commentTapPoint } from '../dist/comment-panel.js';
@@ -49,7 +49,7 @@ async function setup(t, after, dump = display) {
   d.gestureDisplay = async () => dump;
   await d.snapshot();
   content = panel;
-  return { d, taps };
+  return { d, taps, displayContent(value) { content = value; } };
 }
 
 for (const [name, step] of [['selector', selector], ['preview point', atCenter]]) {
@@ -80,6 +80,20 @@ test('a fully reserved button cannot be tapped', async t => {
   assert.equal(taps.length, 0);
 });
 
+test('the two-row Douyin header also uses the guarded safe point; an unrelated distant title cannot trigger a native click', async t => {
+  const { d, taps, displayContent } = await setup(t, video('原作品'));
+  const twoRows = panel.replace('text="673条评论"', 'resource-id="' + app + ':id/title" text="1207条评论"')
+    .replace('[536,965][736,1105]', '[527,1112][745,1218]').replace('[1118,972][1258,1112]', '[1118,968][1258,1108]');
+  displayContent(twoRows.replace('[527,1112][745,1218]', '[527,1500][745,1606]'));
+  await assert.rejects(executeStep(d, phoneId, selector), /COMMENT_CLOSE_POINT_UNAVAILABLE/);
+  assert.deepEqual(taps, []);
+  displayContent(twoRows);
+  const result = await executeStep(d, phoneId, selector);
+  assert.equal(result.commentPanelClosed, true);
+  assert.deepEqual(result.tapPoint, { x: 1142, y: 1038 });
+  assert.equal(taps.length, 1);
+});
+
 test('a dismiss animation is observed to completion without repeating the tap', async t => {
   const { d, taps } = await setup(t, [panel, video('原作品')]);
   const result = await executeStep(d, phoneId, selector);
@@ -105,16 +119,32 @@ test('use the current display, preserve a safe centre and reject unconfirmed geo
 });
 
 test('a panel visible again in the returned workbench preview cannot be reported closed', async t => {
-  const { d, taps } = await setup(t, [video('原作品'), panel]);
+  const transport = fetch;
+  const { d, taps, displayContent } = await setup(t, [video('原作品'), panel]);
   const png = await sharp({ create: { width: 1272, height: 2772, channels: 3, background: 'white' } }).png().toBuffer();
   d.screenshot = async () => png;
-  const wb = new Workbench(() => {});
-  wb.targets.set(phoneId, { id: 'fixture', platform: 'android', available: true });
-  wb.session = (_target, _run, _signal, _mode, work) => work(d);
-  const before = await wb.frame(d, phoneId);
-  const { result, frame } = await wb.action(phoneId, { action: 'tap', ...selector.selector }, before.observationId);
+  const { wb, id } = await androidWorkbench(t, d, transport);
+  displayContent(video('原作品'));
+  await wb.refresh(id);
+  displayContent(panel);
+  const { frame: before } = await wb.refresh(id);
+  const { result, frame } = await wb.action(id, { action: 'tap', ...selector.selector }, before.observationId);
   assert.equal(result.status, 'needs_review');
   assert.equal(result.reason, 'COMMENT_PANEL_STILL_OPEN');
   assert.ok(frame.controls.some(c => c.labels.includes('673条评论')));
   assert.equal(taps.length, 1);
+});
+
+test('an observed close button cannot fall through to a generic click if its comment heading disappears', async t => {
+  const transport = fetch;
+  const { d, taps, displayContent } = await setup(t, video('原作品'));
+  const png = await sharp({ create: { width: 1272, height: 2772, channels: 3, background: 'white' } }).png().toBuffer();
+  d.screenshot = async () => png;
+  const { wb, id } = await androidWorkbench(t, d, transport);
+  const { frame } = await wb.refresh(id);
+  displayContent(panel.replace('673条评论', '正在加载'));
+  const { result } = await wb.action(id, { action: 'tap', ...selector.selector }, frame.observationId);
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.reason, 'STALE_OBSERVATION');
+  assert.deepEqual(taps, []);
 });

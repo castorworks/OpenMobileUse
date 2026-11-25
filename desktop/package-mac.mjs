@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import {
-  copyFile,
   cp,
+  copyFile,
   mkdir,
   mkdtemp,
   readFile,
@@ -10,7 +10,7 @@ import {
   rm,
   writeFile,
 } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
@@ -66,17 +66,18 @@ try {
   const pkg = JSON.parse(await readFile(join(project, 'package.json'), 'utf8'));
   await writeFile(join(appDir, 'package.json'), JSON.stringify({ ...pkg, main: 'desktop/main.cjs' }));
   await copyFile(join(project, 'package-lock.json'), join(appDir, 'package-lock.json'));
-  run('npm', ['ci', '--include=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', appDir]);
-  for (const name of ['dist', 'examples', 'LICENSE']) {
-    await cp(join(project, name), join(appDir, name), { recursive: true });
-  }
+  run('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', appDir]);
+  for (const name of ['dist', 'examples']) await cp(join(project, name), join(appDir, name), { recursive: true });
+  await mkdir(join(appDir, 'docs'));
+  await copyFile(join(project, 'docs', 'openapi.yaml'), join(appDir, 'docs', 'openapi.yaml'));
+  await copyFile(join(project, 'LICENSE'), join(appDir, 'LICENSE'));
   for (const name of await readdir(join(project, 'desktop'))) {
     if (!['build-ocr.mjs', 'package-mac.mjs'].includes(name) && /\.(?:cjs|mjs|js|html|css)$/.test(name))
       await copyFile(join(project, 'desktop', name), join(desktop, name));
   }
-  const bin = join(appDir, 'bin/node');
-  await mkdir(dirname(bin), { recursive: true });
-  await writeFile(bin, '#!/bin/sh\nexec "$OMU_NODE_BINARY" "$@"\n', { mode: 0o755 });
+  const bin = join(appDir, 'bin');
+  await mkdir(bin);
+  await writeFile(join(bin, 'node'), '#!/bin/sh\nexec "$OMU_NODE_BINARY" "$@"\n', { mode: 0o755 });
   await rm(join(contents, 'Resources/default_app.asar'));
   // Produce an ad hoc signed local build, including the Electron helpers and frameworks.
   run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', bundle]);

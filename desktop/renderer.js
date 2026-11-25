@@ -54,6 +54,10 @@ const names = {
   succeeded: '已通过',
   observed: '已观察',
   running: '运行中',
+  queued: '排队中',
+  starting: '正在连接设备',
+  cancelling: '正在停止',
+  ok: '通过',
   failed: '失败',
   needs_review: '待人工核查',
   STALE_OBSERVATION: '操作目标或前台窗口已变化',
@@ -127,7 +131,7 @@ const issues = {
   TASK_INCOMPLETE: '后续要求尚未完成。',
   SEARCH_NOT_SUBMITTED: '搜索词尚未核对成功，请查看手机搜索框。',
   SEARCH_RESULTS_UNVERIFIED: '搜索已提交，尚未确认本次结果。',
-  MODEL_IMAGES_UNSUPPORTED: '此模型不支持截图。可选择 deepseek-flash，或关闭截图选项。',
+  MODEL_IMAGES_UNSUPPORTED: '此模型配置无法接收截图。请选择允许图像的配置，或关闭截图选项。',
   SCREENSHOT_GEOMETRY_MISMATCH: '截图与手机触控区域的方向或比例不一致，请刷新画面。',
   AMBIGUOUS_OR_MISSING_ELEMENT: '设备没有找到唯一匹配的控件。',
   DEVICE_UNAVAILABLE: '请检查 USB 连接并重新扫描设备。',
@@ -140,10 +144,10 @@ const issues = {
   APPIUM_START_FAILED: '本机 Appium 启动失败，请检查本机端口后重新连接。',
   APPIUM_START_TIMEOUT: '等待本机 Appium 就绪超时，请检查服务日志和端口配置。',
   APPIUM_INVALID_URL: '请将 OMU_APPIUM_URL 设为本机回环地址，可包含端口和服务路径。',
-  MODEL_HTTP_401: '模型服务拒绝了凭据，请在工作台设置中更新 API Key。',
-  MODEL_HTTP_403: '此凭据无权调用当前模型，请检查工作台设置。',
-  MODEL_HTTP_404: '模型或接口不存在，请检查模型名称和接口地址。',
   MODEL_REQUEST_TIMEOUT: '模型请求超时，已达到重试上限。请稍后重试。',
+  MODEL_HTTP_401: '模型服务拒绝了凭据，请在服务宿主检查模型配置。',
+  MODEL_HTTP_403: '服务宿主的凭据无权调用当前模型。',
+  MODEL_HTTP_404: '模型或接口不存在，请在服务宿主检查模型配置。',
   MODEL_CONTENT_FILTERED: '模型服务过滤了本轮回复。',
   MODEL_REFUSED: '模型拒绝执行本轮请求。',
   MODEL_PROVIDER_ERROR: '模型服务返回了错误。',
@@ -172,13 +176,34 @@ const issues = {
   NO_PROGRESS: '连续几次尝试都没有进展，已暂停。可展开本轮执行过程查看原因。',
   DECISION_BUDGET: '已到本轮决策上限，可以回复以继续。',
   TIME_BUDGET: '本轮已超时，可以回复以继续。',
-  MODEL_KEY_REQUIRED: '请在工作台设置中填写 API Key。',
-  INVALID_SETTINGS: '请检查接口地址、模型名称和签名配置。',
-  KEYCHAIN_UNAVAILABLE: '无法保存密钥，请检查系统凭据存储后重试。',
+  MODEL_KEY_REQUIRED: '请在服务宿主配置模型凭据。',
+  API_TOKEN_REQUIRED: '请在工作台设置中填写服务访问令牌。',
+  API_TOKEN_INVALID: '请检查工作台设置中的访问令牌。',
+  API_INVALID_URL: '服务地址无效。请检查环境变量 OMU_API_URL 或工作台设置。',
+  UNAUTHORIZED: '服务未接受访问令牌。请检查工作台设置。',
+  FORBIDDEN: '当前访问令牌没有执行此操作的权限。',
+  API_UNREACHABLE: '无法连接 Open Mobile Use 服务。请在设备宿主启动 omu serve，并检查工作台的服务地址。',
+  API_TIMEOUT: '服务连接超时，请检查宿主状态，并使用重新扫描重试。',
+  LOCAL_SERVICE_START_FAILED: '本机服务启动失败。可诊断服务连接，或点击重新扫描重试。',
+  LOCAL_SERVICE_START_TIMEOUT: '等待本机服务就绪超时。可诊断服务连接，或点击重新扫描重试。',
+  LOCAL_SERVICE_AUTH_FAILED: '无法取得本机服务的访问令牌。请重新扫描并检查服务状态。',
+  LOCAL_SERVICE_STATE_CHANGED: '本机服务使用了不同的状态目录。请检查配置后重新打开工作台。',
+  INVALID_LOCAL_SERVICE_CONNECTION: '未能验证本机服务连接。请尝试重新扫描。',
+  SETTINGS_WRITE_FAILED: '设置仅在本次会话中有效。请检查本机设置目录。',
+  RUN_SUBMISSION_UNCONFIRMED: '服务尚未确认提交。请核对运行历史，或重试同一请求以找回原运行。',
+  INVALID_SETTINGS: '请检查服务地址、访问令牌和模型配置。',
+  DEVICE_NEEDS_REVIEW: '设备存在待核对动作。请先刷新画面并打开连接诊断。',
+  PENDING_ACTION_REVIEW_REQUIRED: '设备存在待核对动作。请先刷新画面并打开连接诊断。',
+  MODEL_IMAGES_FORBIDDEN: '当前模型配置不允许发送截图。请检查工作台设置。',
+  REMOTE_HOST_SETUP: '请在设备服务所在的宿主上设置平台工具。',
+  STALE_RESOURCE: '服务中的资源已更新。请刷新后重试。',
+  PRECONDITION_FAILED: '服务中的资源已更新。请重新打开后再修改。',
+  KEYCHAIN_UNAVAILABLE: '系统凭据存储暂不可用，访问令牌只保留在本次会话。',
 };
 const nice = (s) => names[s] || s || '—';
 const describe = (s) => (issues[s] ? issues[s] + ' (' + s + ')' : s);
 const clock = (time) => (time ? new Date(time).toLocaleTimeString('zh-CN', { hour12: false }) : '');
+const runActive = (run) => ['queued', 'starting', 'running', 'cancelling'].includes(run?.status);
 function state(id = selected) {
   if (!states.has(id))
     states.set(id, {
@@ -239,7 +264,7 @@ function renderDevices() {
         element(
           'small',
           (t.connection === 'emulator'
-            ? t.id.slice('android:'.length)
+            ? '模拟器'
             : [
                 t.platform === 'harmony' ? '鸿蒙' : nice(t.platform),
                 connection === 'network' ? '网络' : (connection || '').toUpperCase(),
@@ -283,6 +308,7 @@ async function scanDevices() {
     devices = r.devices;
     scanErrors = r.scanErrors ?? {};
     androidSetup = r.androidSetup;
+    if (model) model.modelProfiles = r.modelProfiles || [];
     if (selected && !devices.some((t) => t.id === selected) && !state().active) selected = '';
     const androidDevices = devices.filter((t) => t.platform === 'android');
     if (!androidPreparing) {
@@ -315,8 +341,8 @@ async function scanDevices() {
     if (!selected && online.length === 1 &&
         (online[0].platform !== 'android' || !androidSetup?.missing.length))
       await selectDevice(online[0]);
-  } catch {
-    if (!androidPreparing) $('scan-status').textContent = '暂时无法扫描设备。请点「重新扫描」。';
+  } catch (error) {
+    if (!androidPreparing) $('scan-status').textContent = describe(error.message);
   }
 }
 async function rescanAndroid() {
@@ -328,7 +354,7 @@ async function rescanAndroid() {
     await scanPending;
     await scan();
     if (devices.some((t) => t.platform === 'android' && t.available)) {
-      if (previous && previous === selected && selected.startsWith('android:') && !state().frame)
+      if (previous && previous === selected && devices.find((t) => t.id === selected)?.platform === 'android' && !state().frame)
         await refresh();
     } else if (Date.now() < deadline && androidSetup?.missing.length === 0) {
       androidScanTimer = setTimeout(check, 1500);
@@ -362,7 +388,7 @@ async function prepareAndroid() {
 function markFrame(id, frame) {
   const s = state(id);
   s.frame = frame;
-  if (frame?.observationId) s.diagnostic = { controllable: true };
+  if (frame?.observationId || frame?.gestureObservationId) s.diagnostic = { controllable: true };
   s.hit = null;
   s.point = null;
   if (id === selected) renderFrame();
@@ -379,7 +405,7 @@ async function selectDevice(t) {
     .history(t.id, true)
     .then((data) => {
       s.history = data.history;
-      if (data.current?.status === 'running') {
+      if (runActive(data.current)) {
         s.active = data.current;
         if (s.active.mode === 'chat' && s.chat?.id !== s.active.chatId)
           refreshLibrary(t.id, s.active.chatId);
@@ -388,8 +414,9 @@ async function selectDevice(t) {
       if (selected === t.id) render();
     })
     .catch((e) => message(t.id, e.message));
-  if (!s.busy && !s.active && t.available) await refresh(t.id);
-  await Promise.all([history, chats]);
+  await history;
+  if (!s.busy && !s.active && t.available && !t.busy) await refresh(t.id);
+  await chats;
 }
 function message(id, value, tone = 'error') {
   state(id).notice = value || '';
@@ -413,22 +440,26 @@ function canAct() {
     s.frame &&
     displayedFrame === s.frame &&
     t?.available &&
+    model?.connectionStatus !== 'offline' && model?.connectionStatus !== 'connecting' &&
+    !t.needsReview &&
     !s.busy &&
     !s.active &&
-    s.frame?.observationId
+    (s.frame.observationId || s.frame.gestureObservationId)
   );
 }
 function renderButtons() {
   const s = state(),
     t = devices.find((x) => x.id === selected),
     enabled = canAct(),
-    free = t?.available && !s.busy && !s.active;
+    free = t?.available && !s.busy && !s.active && !['offline', 'connecting'].includes(model?.connectionStatus),
+    writable = free && !t.needsReview,
+    stopping = s.stopping || s.active?.status === 'cancelling';
   $('diagnose').disabled = !t || s.busy || !!s.active;
   $('refresh').disabled = !free;
   $('tap').disabled = !enabled || (!s.point && s.hit === null);
-  $('back').disabled = !enabled;
-  $('input').disabled = !enabled || !$('text').value;
-  $('text').disabled = !enabled;
+  $('back').disabled = !enabled || !s.frame.observationId;
+  $('input').disabled = !enabled || !s.frame.observationId || !$('text').value;
+  $('text').disabled = !enabled || !s.frame.observationId;
   $('control').disabled = !enabled;
   $('select-mode').disabled = !enabled;
   $('swipe-mode').disabled = !enabled;
@@ -437,7 +468,7 @@ function renderButtons() {
   $('start').hidden = !!s.active;
   $('chat-stop').hidden = !s.active;
   $('stop').hidden = !s.active || s.active.mode === 'chat';
-  $('start').disabled = !free || s.loadingChat || !s.draft.trim();
+  $('start').disabled = !writable || s.loadingChat || !s.draft.trim();
   $('open-recording').disabled = s.loadingChat || !!s.active;
   $('new-chat').disabled = !selected || !free || s.loadingChat;
   $('chats').disabled = !selected || !free || s.loadingChat;
@@ -449,18 +480,18 @@ function renderButtons() {
       : '选择设备后可运行兼容的脚本。';
     for (const button of $('script-list').querySelectorAll('[data-platforms]')) {
       const compatible = !!t && button.dataset.platforms.split(',').includes(t.platform);
-      button.disabled = !free || !compatible;
+      button.disabled = !writable || !compatible || button.dataset.archived === 'true';
       button.title = t && !compatible ? '请选择与脚本兼容的设备' : '';
     }
   }
-  $('stop').disabled = !s.active || s.stopping;
-  $('chat-stop').disabled = !s.active || s.stopping;
-  $('chat-stop').textContent = s.stopping
+  $('stop').disabled = !s.active || stopping;
+  $('chat-stop').disabled = $('stop').disabled;
+  $('chat-stop').textContent = stopping
     ? '正在停止…'
     : s.active?.mode === 'script'
       ? '停止脚本'
       : '停止';
-  $('stop').textContent = s.stopping ? '正在停止…' : '■　停止任务';
+  $('stop').textContent = stopping ? '正在停止…' : '■　停止任务';
 }
 function render() {
   const t = devices.find((x) => x.id === selected);
@@ -505,11 +536,12 @@ function refresh(id = selected) {
     if (result.unconfirmed.length)
       message(
         id,
-        '本机有 ' + result.unconfirmed.length + ' 条未决操作，请对照当前画面和连接诊断核实。',
+        '服务有 ' + result.unconfirmed.length + ' 条未决操作，请对照当前画面和连接诊断核实。',
         'warning',
       );
     else if (result.frame.controlsChangedDuringCapture)
-      message(id, '画面有动态内容，操作前会重新核对目标。', 'info');
+      message(id, result.frame.gestureObservationId ? '采集时画面有变化，点击或滑动前会重新核对目标区域。'
+        : '采集时画面发生变化。请刷新并等待稳定画面，再进行单步操作。', 'info');
   });
 }
 function fit() {
@@ -599,7 +631,7 @@ $('screen').onpointerdown = (e) => {
   if (!canAct() || e.button !== 0) return;
   gesture = {
     id: selected,
-    observation: state().frame.observationId,
+    observation: state().frame.observationId ?? state().frame.gestureObservationId,
     from: coords(e),
     pointer: e.pointerId,
   };
@@ -616,7 +648,7 @@ $('screen').onpointerup = (e) => {
     g.pointer !== e.pointerId ||
     g.id !== selected ||
     !canAct() ||
-    g.observation !== state().frame.observationId
+    g.observation !== (state().frame.observationId ?? state().frame.gestureObservationId)
   )
     return;
   const p = coords(e),
@@ -679,12 +711,13 @@ function selector(c) {
 async function action(raw) {
   if (!canAct()) return;
   const id = selected,
-    observation = state().frame.observationId;
+    observation = state().frame.observationId ?? (['tap', 'swipe'].includes(raw.action) && state().frame.gestureObservationId);
+  if (!observation) return;
   await busy(id, async (s) => {
     let r;
     try {
       // Prefer a stable control selector for recorded manual taps.
-      const chatId = s.recordManual && workspaceMode === 'chat' && s.chat?.recordingId && s.chat.id;
+      const chatId = s.recordManual && workspaceMode === 'chat' && s.chat?.id;
       if (raw.action === 'tap' && chatId && s.hit !== null) {
         const loc = selector(s.frame.controls[s.hit]);
         const hits = s.frame.controls.filter(
@@ -692,7 +725,7 @@ async function action(raw) {
         );
         if (loc.within || hits.length === 1) raw = { action: 'tap', ...loc };
       }
-      r = await api.action(id, raw, observation, chatId || undefined);
+      r = await api.action(id, raw, observation, chatId || undefined, chatId ? s.chat.revision : undefined);
       if (r.result.status === 'needs_review') {
         markFrame(id, r.frame || null);
         message(id, describe(r.result.reason), 'warning');
@@ -825,7 +858,7 @@ function drawChat() {
   stream.dataset.chat = chatKey;
   for (const [i, saved] of turns.entries()) {
     const turn =
-      saved.status === 'running' && (!s.active || saved.runId !== s.active.id)
+      runActive(saved) && (!s.active || saved.runId !== s.active.id)
         ? { ...saved, status: 'interrupted' }
         : saved;
     const key = turn.runId || String(i);
@@ -854,10 +887,8 @@ function drawChat() {
     : '选择设备后，在下方输入任务。';
   if (follow) stream.scrollTop = stream.scrollHeight;
   $('open-recording').hidden = !chat?.recordingId || !chat.stepCount;
-  $('open-recording').textContent = chat?.recordingHidden
-    ? '恢复到脚本库'
-    : '查看录制 · ' + (chat?.stepCount || 0) + ' 步';
-  $('manual-record-label').hidden = !chat?.recordingId || workspaceMode !== 'chat';
+  $('open-recording').textContent = '保存录制到脚本库 · ' + (chat?.stepCount || 0) + ' 步';
+  $('manual-record-label').hidden = !chat?.id || workspaceMode !== 'chat';
   $('manual-record').checked = !!s.recordManual;
 }
 $('chats').onchange = () => {
@@ -894,7 +925,7 @@ $('prompt').onkeydown = (e) => {
 };
 function composer() {
   if (workspaceMode === 'chat') drawChat();
-  $('model-line').textContent = model?.model || 'deepseek-flash';
+  $('model-line').textContent = model?.model || '服务默认模型';
   $('model-line').title = model?.endpoint || '';
 }
 function switchMode(value) {
@@ -908,7 +939,7 @@ function switchMode(value) {
   $('import-script').hidden = chatting;
   $(chatting ? 'chat-mode' : 'script-mode').setAttribute('aria-current', 'page');
   $(chatting ? 'script-mode' : 'chat-mode').removeAttribute('aria-current');
-  $('manual-record-label').hidden = !chatting || !state().chat?.recordingId;
+  $('manual-record-label').hidden = !chatting || !state().chat?.id;
   render();
 }
 $('chat-mode').onclick = () => switchMode('chat');
@@ -928,31 +959,46 @@ function drawScripts() {
       const body = element('div', undefined, 'script-info');
       const platformText =
         entry.platforms.length === 3 ? '全平台' : entry.platforms.map(nice).join(' / ');
-      const source = { builtin: '内置', import: '导入', record: '对话录制' }[entry.source];
+      const source = entry.source === 'builtin' ? '内置' : '已保存';
       const meta = [source, platformText, entry.stepCount + ' 步'];
-      if (entry.partial) meta.push('部分录制');
+      if (entry.archived) meta.push('已归档');
       body.append(element('h3', entry.title), element('p', meta.join(' · '), 'muted'));
       const run = element('button', '运行', 'outline run-script');
       run.dataset.platforms = entry.platforms.join(',');
+      run.dataset.archived = String(entry.archived);
       run.setAttribute('aria-label', '运行 ' + entry.title);
       run.onclick = () => {
         const id = selected;
         if (!id) return;
         busy(id, async () => {
-          await api.start(id, 'script', entry.id);
+          await api.start(id, 'script', { id: entry.id, title: entry.title });
           if (id === selected) setJournal(true);
         });
       };
       const manage = element('button', '管理', 'outline');
       manage.setAttribute('aria-label', '管理 ' + entry.title);
-      manage.onclick = () => {
-        managedScript = entry;
-        $('script-name').value = entry.title;
-        $('script-name').readOnly = entry.source === 'builtin';
-        $('save-name').hidden = $('remove-script').hidden = entry.source === 'builtin';
-        $('remove-confirm').hidden = true;
-        $('manage-feedback').textContent = '';
-        $('script-dialog').showModal();
+      manage.onclick = async () => {
+        const version = scriptsVersion;
+        manage.disabled = true;
+        try {
+          const script = await api.scriptInfo(entry.id);
+          if (version !== scriptsVersion || workspaceMode !== 'script' || $('script-dialog').open) return;
+          managedScript = script;
+          $('continue-recording').hidden = !script.canContinueRecording ||
+            !script.platforms.includes(devices.find(device => device.id === selected)?.platform);
+          $('script-name').value = managedScript.title;
+          $('script-name').readOnly = managedScript.source === 'builtin';
+          $('save-name').hidden = managedScript.source === 'builtin';
+          $('remove-script').hidden = managedScript.source === 'builtin' || managedScript.archived;
+          $('restore-script').hidden = !managedScript.archived;
+          $('remove-confirm').hidden = true;
+          $('manage-feedback').textContent = '';
+          $('script-dialog').showModal();
+        } catch (error) {
+          feedback('script-feedback', describe(error.message), 'error');
+        } finally {
+          manage.disabled = false;
+        }
       };
       const icon = element('span', undefined, 'script-glyph');
       icon.setAttribute('aria-hidden', 'true');
@@ -967,7 +1013,7 @@ function drawScripts() {
 async function refreshScripts(focusId) {
   const version = ++scriptsVersion;
   try {
-    const rows = await api.scripts();
+    const rows = await api.scripts($('show-archived').checked);
     if (version !== scriptsVersion) return;
     scripts = rows;
     drawScripts();
@@ -980,6 +1026,7 @@ async function refreshScripts(focusId) {
   }
 }
 $('script-search').oninput = drawScripts;
+$('show-archived').onchange = () => refreshScripts();
 $('import-script').onclick = () => $('script-file').click();
 $('script-file').onchange = async () => {
   const file = $('script-file').files[0];
@@ -1000,18 +1047,20 @@ $('script-file').onchange = async () => {
   }
 };
 $('open-recording').onclick = async () => {
-  const chat = state().chat;
+  const id = selected, chat = state(id).chat;
   if (!chat?.recordingId) return;
+  $('open-recording').disabled = true;
   try {
-    if (chat.recordingHidden) {
-      await api.restoreRecording(chat.recordingId);
-      chat.recordingHidden = false;
-    }
+    const scriptId = await api.saveRecording(chat.id, chat.title || '对话录制');
+    if (id !== selected) return;
     $('script-search').value = '';
     switchMode('script');
-    await refreshScripts(chat.recordingId);
+    await refreshScripts(scriptId);
+    feedback('script-feedback', '录制已保存到脚本库。', 'success');
   } catch (e) {
-    message(selected, describe(e.message));
+    message(id, describe(e.message));
+  } finally {
+    renderButtons();
   }
 };
 async function manageScript(action) {
@@ -1019,19 +1068,27 @@ async function manageScript(action) {
   if (!entry || $('script-dialog').dataset.busy) return;
   $('script-dialog').dataset.busy = 'true';
   try {
-    if (action === 'rename') await api.renameScript(entry.id, $('script-name').value);
-    if (action === 'remove') {
-      await api.removeScript(entry.id);
-      for (const s of states.values())
-        if (s.chat?.recordingId === entry.id) s.chat.recordingHidden = true;
+    if (action === 'continue') {
+      const id = selected;
+      const chat = await api.continueRecording(id, entry.id, entry.revision);
+      $('script-dialog').close();
+      if (selected === id) {
+        switchMode('chat');
+        await refreshLibrary(id, chat.id);
+      }
+      return;
     }
+    if (action === 'rename') await api.renameScript(entry.id, $('script-name').value, entry.revision);
+    if (action === 'remove') await api.removeScript(entry.id, entry.revision);
+    if (action === 'restore') await api.restoreRecording(entry.id, entry.revision);
     if (action === 'export' && !(await api.exportScript(entry.id))) return;
     $('script-dialog').close();
     feedback(
       'script-feedback',
       {
         rename: '脚本名称已保存。',
-        remove: '已从脚本库移除。',
+        remove: '脚本已归档。',
+        restore: '脚本已恢复。',
         export: '脚本已导出。',
       }[action],
       'success',
@@ -1044,13 +1101,11 @@ async function manageScript(action) {
   }
 }
 $('save-name').onclick = () => manageScript('rename');
+$('restore-script').onclick = () => manageScript('restore');
 $('export-script').onclick = () => manageScript('export');
+$('continue-recording').onclick = () => manageScript('continue');
 $('remove-script').onclick = () => {
-  $('remove-question').textContent =
-    '从脚本库移除「' +
-    managedScript.title +
-    '」？' +
-    (managedScript.source === 'record' ? '原对话仍可查看，也可从对话中恢复录制。' : '');
+  $('remove-question').textContent = '归档「' + managedScript.title + '」？可以在脚本库中恢复。';
   $('remove-confirm').hidden = false;
   $('cancel-remove').focus();
 };
@@ -1090,7 +1145,7 @@ function renderJournal() {
           ? describe(r.reason)
           : lastPage === 'home'
             ? '已回到设置首页'
-            : r.status === 'running'
+            : runActive(r)
               ? '正在执行 ' + r.title
               : r.title,
         result?.failedStep ? '第 ' + result.failedStep + ' 步' : '',
@@ -1143,7 +1198,7 @@ $('start').onclick = async () => {
   }
   await busy(id, async (s) => {
     const submitted = s.draft;
-    await api.start(id, 'chat', { message: submitted.trim(), chatId: s.chat?.id });
+    await api.start(id, 'chat', { message: submitted.trim(), chatId: s.chat?.id, revision: s.chat?.revision });
     if (s.draft === submitted) s.draft = '';
   });
 };
@@ -1167,10 +1222,26 @@ api.onEvent((event) => {
     feedback('settings-status', event.message, 'info');
     return;
   }
+  if (event.type === 'connection') {
+    model = event.config;
+    showConnection();
+    if (model.connectionStatus === 'connecting' && !androidPreparing)
+      $('scan-status').textContent = '正在启动或连接本机服务…';
+    if (model.connectionStatus === 'offline') $('scan-status').textContent = describe(model.connectionError);
+    if (model.connectionStatus === 'offline' || model.connectionStatus === 'connecting') {
+      for (const [id, value] of states) if (value.frame) markFrame(id, null);
+    }
+    renderButtons();
+    if (event.reconnected) void scan().then(() => {
+      const id = selected;
+      if (id && !state(id).frame && devices.find((t) => t.id === id)?.available) void refresh(id);
+    });
+    return;
+  }
   const s = state(event.device);
   if (event.type === 'run') {
     const r = event.record;
-    s.active = r.status === 'running' ? r : null;
+    s.active = runActive(r) ? r : null;
     if (r.mode !== 'chat') s.current = r;
     if (!s.active) {
       if (r.mode !== 'chat') displayRun(s, r);
@@ -1180,15 +1251,24 @@ api.onEvent((event) => {
         if (workspaceMode === 'script') refreshScripts();
       }
       s.stopping = false;
-      if (r.reason === 'ACTION_OUTCOME_UNKNOWN') message(event.device, describe(r.reason), 'warning');
+      if (r.reason === 'ACTION_OUTCOME_UNKNOWN') {
+        const t = devices.find((device) => device.id === event.device);
+        if (t) t.needsReview = true;
+        message(event.device, describe(r.reason), 'warning');
+      }
+      if (selected === event.device && r.reason !== 'ACTION_OUTCOME_UNKNOWN') {
+        setTimeout(() => {
+          if (selected === event.device && !state().active && !state().busy) refresh(event.device);
+        }, 200);
+      }
     }
     if (selected === event.device) render();
   } else if (s.active?.id === event.runId) {
     if (event.type === 'frame') markFrame(event.device, event.frame);
     if (event.type === 'frameError') {
-      markFrame(event.device, null);
       message(event.device, '画面读取失败。' + describe(event.error));
     }
+    if (event.type === 'runConnectionError') message(event.device, describe(event.error), 'warning');
   }
 });
 function dialog(title, settings = false) {
@@ -1201,7 +1281,6 @@ function showPlatformTools() {
   return api
     .environment()
     .then((env) => {
-      $('teams').replaceChildren(...env.teams.map((t) => new Option(t, t)));
       $('platforms').replaceChildren(
         ...(model.macHost ? ['ios', 'android', 'harmony'] : ['android', 'harmony']).map((k) => {
           const row = element('p', nice(k) + (env[k] ? ' · 已找到工具链' : ' · 缺少平台工具'));
@@ -1253,32 +1332,85 @@ function showPlatformTools() {
 function showModel() {
   if (!model) return;
   dialog('工作台设置', true);
-  $('endpoint').value = model.endpoint;
-  $('model-id').value = model.model;
-  $('use-images').checked = model.useImages === true;
-  $('team').value = model.team;
-  $('wda-bundle').value = model.bundle;
-  $('settings-status').textContent = '';
-  $('key').placeholder = model.hasKey ? '已配置，留空沿用当前端点的密钥' : '输入此端点的密钥';
-  showPlatformTools();
+  $('connection-mode').value = model.mode || 'custom';
+  $('endpoint').value = model.customEndpoint || model.endpoint;
+  $('key').placeholder = (model.customHasKey ?? model.hasKey) ? '已配置，留空沿用当前服务的令牌' : '输入服务访问令牌';
+  $('host-setup').hidden = !model.local;
+  if (model.local) showPlatformTools();
   $('key').value = '';
-  $('key').focus();
+  showConnectionFields();
+  $('settings-status').textContent = describe(model.storageWarning || model.connectionError || '');
+  $('connection-mode').focus();
 }
+
+function showConnectionFields() {
+  const mode = $('connection-mode').value;
+  const manual = mode === 'custom';
+  const { model: profile = '', useImages = false } = model.profiles?.[mode] || model;
+  const current = mode === (model.mode || 'custom');
+  const known = current ? model.modelProfiles.map((item) => item.id) : [];
+  const profiles = [...new Set(profile ? [...known, profile] : known)];
+  $('custom-connection').hidden = !manual;
+  if (!manual) $('key').value = '';
+  $('local-service-detail').hidden = manual;
+  $('local-service-detail').textContent = '启动工作台会自动连接本机服务。退出工作台后服务继续运行。';
+  $('model-id').replaceChildren(new Option('服务默认模型', ''), ...profiles.map((id) => new Option(id, id)));
+  $('model-id').value = profile;
+  $('use-images').checked = useImages;
+}
+
+$('connection-mode').onchange = showConnectionFields;
 $('model-settings').onclick = showModel;
+$('diagnose-service').onclick = async () => {
+  const button = $('diagnose-service');
+  button.disabled = true;
+  try {
+    const checks = await api.diagnoseService();
+    feedback('settings-status', checks.map(({ label, status }) => label + ' · ' + (status === 'ok' ? nice(status) : describe(status))).join('。'),
+      checks.some((check) => check.status !== 'ok') ? 'error' : 'success');
+  } catch (error) {
+    feedback('settings-status', describe(error.message), 'error');
+  } finally {
+    button.disabled = false;
+  }
+};
+function showConnection() {
+  $('service-location').textContent = model.mode === 'local'
+    ? '自动本机服务'
+    : model.local ? '自定义本机服务' : '远程服务';
+  $('service-location').title = model.endpoint;
+  $('emulator').hidden = !model.local || !model.macHost;
+}
 $('save-key').onclick = async () => {
   try {
     $('save-key').disabled = true;
+    const nextMode = $('connection-mode').value;
+    const changed = nextMode !== (model.mode || 'custom') ||
+      (nextMode === 'custom' && (model.endpoint !== $('endpoint').value.trim().replace(/\/$/, '') || !!$('key').value.trim()));
     model = await api.saveSettings({
+      mode: nextMode,
       endpoint: $('endpoint').value,
       model: $('model-id').value,
       useImages: $('use-images').checked,
       key: $('key').value,
-      team: $('team').value.trim(),
-      bundle: $('wda-bundle').value.trim(),
     });
+    if (changed) {
+      states.clear();
+      devices = [];
+      selected = '';
+      androidSetup = null;
+      scripts = [];
+      scriptsVersion++;
+      render();
+    }
     $('key').value = '';
     $('dialog').close();
+    showConnection();
     composer();
+    await scanPending;
+    await scan();
+    if (model.storageWarning) $('scan-status').textContent = describe(model.storageWarning);
+    if (workspaceMode === 'script') await refreshScripts();
   } catch (e) {
     feedback('settings-status', describe(e.message), 'error');
   } finally {
@@ -1304,9 +1436,27 @@ $('diagnose').onclick = () => {
           (p.ok ? '通过' : describe(p.error)) +
           (p.next && !issues[p.error] ? ' · ' + p.next : ''),
       ),
-      ...report.unconfirmed.map((u) => '待核查 · ' + u.kind + ' · ' + u.time),
     ];
-    $('diagnostic-content').replaceChildren(...rows.map((v) => element('p', v)));
+    const pending = report.unconfirmed.map((action) => {
+      const row = element('p', '待核查 · ' + nice(action.action) + ' · ' + clock(action.dispatchedAt));
+      const button = element('button', '确认当前设备状态', 'outline');
+      button.disabled = !s.frame?.observationId;
+      if (button.disabled) row.append(element('small', ' 请先刷新设备画面。'));
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          await api.acknowledgeAction(id, action.id, s.frame.observationId);
+          row.replaceChildren('已确认当前状态');
+          await scan();
+        } catch (error) {
+          row.append(element('small', describe(error.message)));
+          button.disabled = false;
+        }
+      };
+      row.append(button);
+      return row;
+    });
+    $('diagnostic-content').replaceChildren(...rows.map((v) => element('p', v)), ...pending);
   });
 };
 $('emulator').onclick = async () => {
@@ -1326,9 +1476,15 @@ $('scan').onclick = scan;
 $('prepare-android').onclick = prepareAndroid;
 $('refresh').onclick = () => refresh();
 render();
-api.config().then((v) => {
+api.config().then(async (v) => {
   model = v;
-  $('emulator').hidden = !model.macHost;
+  showConnection();
   composer();
+  if (v.configError && v.mode === 'custom') {
+    $('scan-status').textContent = describe(v.configError);
+    return;
+  }
+  await scan();
+}).catch((error) => {
+  $('scan-status').textContent = describe(error.message);
 });
-scan();

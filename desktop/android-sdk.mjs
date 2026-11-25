@@ -4,7 +4,6 @@ import {
   createReadStream,
   createWriteStream,
   existsSync,
-  readFileSync,
   readdirSync,
   realpathSync,
 } from 'node:fs';
@@ -14,6 +13,7 @@ import { basename, delimiter, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
+import { readAndroidSettings } from '../dist/host.js';
 import { stateRoot, writeJSON } from './library.mjs';
 
 const exec = promisify(execFile);
@@ -53,14 +53,6 @@ function sdkRoot(path) {
       existsSync(join(path, name)),
     )
   );
-}
-
-function readAndroidSettings(base) {
-  try {
-    return JSON.parse(readFileSync(join(base, androidSettings), 'utf8')) || {};
-  } catch {
-    return {};
-  }
 }
 
 function missingComponents(sdk, emulator = false) {
@@ -172,14 +164,15 @@ export function androidSetupStatus(toolchain = androidToolchain()) {
   return { supported: windows || mac, missing };
 }
 
-export function applyAndroidToolchain({ sdk, java }) {
+export function applyAndroidToolchain({ sdk, java }, env = process.env) {
   if (sdkRoot(sdk)) {
-    process.env.ANDROID_HOME = sdk;
-    process.env.ANDROID_SDK_ROOT = sdk;
+    env.ANDROID_HOME = sdk;
+    env.ANDROID_SDK_ROOT = sdk;
     const adbDir = join(sdk, 'platform-tools');
-    process.env.PATH = [...new Set([adbDir, ...(process.env.PATH || '').split(delimiter)])].join(delimiter);
+    const pathKey = Object.keys(env).find((key) => windows && key.toUpperCase() === 'PATH') || 'PATH';
+    env[pathKey] = [...new Set([adbDir, ...(env[pathKey] || '').split(delimiter)])].join(delimiter);
   }
-  if (java) process.env.JAVA_HOME = java;
+  if (java) env.JAVA_HOME = java;
 }
 
 export async function chooseAndroidSdk(sdk) {

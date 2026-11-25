@@ -13,8 +13,6 @@ function startWorkbench(options) {
     if (!app.isPackaged && app.dock) app.dock.setIcon(join(__dirname, 'brand.png'));
     const { configureHost } = await import('./setup.mjs');
     const { chooseAndroidSdk } = await import('./android-sdk.mjs');
-    await configureHost();
-    const { scriptEntry } = await import('./script-library.mjs');
     const { Workbench, errorCode } = await import('./workbench.mjs');
     workbench = new Workbench(
       (event) => {
@@ -58,13 +56,18 @@ function startWorkbench(options) {
       'library',
       'conversation',
       'scripts',
+      'scriptInfo',
       'importScript',
       'renameScript',
       'removeScript',
       'restoreRecording',
+      'saveRecording',
+      'continueRecording',
       'exportScript',
       'startEmulator',
       'environment',
+      'diagnoseService',
+      'acknowledgeAction',
       'platformSetup',
       'chooseAndroidSdk',
     ];
@@ -79,9 +82,11 @@ function startWorkbench(options) {
         throw Error('Invalid workbench request');
       try {
         if (name === 'environment') {
+          workbench.assertLocalHost();
           return { ok: true, value: await configureHost() };
         }
         if (name === 'platformSetup') {
+          workbench.assertLocalHost();
           if (!Object.hasOwn(resources, args[0])) throw Error('INVALID_PLATFORM');
           if (args[0] === 'android' && ['win32', 'darwin'].includes(process.platform))
             await workbench.emulator.ensure();
@@ -89,6 +94,7 @@ function startWorkbench(options) {
           return { ok: true };
         }
         if (name === 'chooseAndroidSdk') {
+          workbench.assertLocalHost();
           const folder = await dialog.showOpenDialog(window, {
             title: '选择已安装的 Android SDK',
             properties: ['openDirectory'],
@@ -96,9 +102,9 @@ function startWorkbench(options) {
           return { ok: true, value: folder.canceled ? null : await chooseAndroidSdk(folder.filePaths[0]) };
         }
         if (name === 'exportScript') {
-          const { script, title } = await scriptEntry(args[0]);
+          const { script, title } = await workbench.exportScript(args[0]);
           const file = await dialog.showSaveDialog(window, {
-            defaultPath: basename(title).replace(/[\x00-\x1f:/]/g, '_') + '.json',
+            defaultPath: basename(title).replace(/[\x00-\x1f<>:"/\\|?*]/g, '_') + '.json',
             filters: [{ name: '脚本', extensions: ['json'] }],
           });
           if (!file.canceled)
@@ -114,7 +120,6 @@ function startWorkbench(options) {
         return {
           ok: false,
           error: errorCode(e),
-          message: name === 'start' && /credential|model ID/i.test(e.message) ? e.message : undefined,
         };
       }
     });
@@ -140,6 +145,7 @@ function startWorkbench(options) {
     window.webContents.on('will-navigate', (event) => event.preventDefault());
     window.once('ready-to-show', () => window.show());
     await window.loadFile(entry);
+    workbench.startConnectionMonitor();
   });
 }
 module.exports = { startWorkbench };

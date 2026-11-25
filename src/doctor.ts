@@ -13,7 +13,7 @@ export function openDevice(
 ) {
   return target.platform === 'harmony'
     ? new Harmony(target.id, dispatch)
-    : WebDriver.open(target.platform, target.id, dispatch, mode, newCommandTimeoutSeconds, waitForIdleTimeoutMs);
+    : WebDriver.open(target.platform, target.id, dispatch, mode, { newCommandTimeoutSeconds, waitForIdleTimeoutMs });
 }
 export function diagnose(error: unknown) {
   const msg = String((error as Error)?.message || '');

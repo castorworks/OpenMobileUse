@@ -1,0 +1,2256 @@
+openapi: 3.1.2
+info: {title: Open Mobile Use HTTP API, version: development, description: 独立设备服务的目标契约。脚本正文采用项目统一 JSON 格式，业务语义沿用核心校验。}
+servers:
+- {url: 'http://127.0.0.1:18765', description: 默认本机地址。远程访问通过配置的 HTTPS 入口。}
+security:
+- BearerToken: []
+tags:
+- {name: Service}
+- {name: Devices}
+- {name: Tasks}
+- {name: Runs}
+- {name: Scripts}
+- {name: Conversations}
+paths:
+  /healthz:
+    get:
+      operationId: health
+      tags: [Service]
+      summary: 进程健康状态
+      security: []
+      responses:
+        '200':
+          description: 查询成功。
+          headers:
+            X-OMU-Instance:
+              description: 服务进程本次启动的标识。
+              schema: {type: string, format: uuid}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /readyz:
+    get:
+      operationId: readiness
+      tags: [Service]
+      summary: 服务接单状态
+      security: []
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+        '500': {$ref: '#/components/responses/Error500'}
+        '503': {$ref: '#/components/responses/Error503'}
+  /openapi.json:
+    get:
+      operationId: openApiDocument
+      tags: [Service]
+      summary: 读取 OpenAPI 契约
+      security: []
+      responses:
+        '200':
+          description: 契约文档。
+          content:
+            application/json:
+              schema: {type: object}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/capabilities:
+    get:
+      operationId: getCapabilities
+      tags: [Service]
+      summary: 读取服务能力和运行限制
+      x-omu-permission: devices:read
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Capabilities'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/devices:
+    get:
+      operationId: listDevices
+      tags: [Devices]
+      summary: 列出授权设备
+      x-omu-permission: devices:read
+      parameters:
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      - name: refresh
+        in: query
+        description: 等待一次有界的设备发现刷新。
+        schema: {type: boolean}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DevicePage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '429': {$ref: '#/components/responses/Error429'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/devices/{deviceId}:
+    get:
+      operationId: getDevice
+      tags: [Devices]
+      summary: 读取设备信息
+      x-omu-permission: devices:read
+      parameters:
+      - name: deviceId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Device'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/devices/{deviceId}/pending-actions:
+    get:
+      operationId: listPendingActions
+      tags: [Devices]
+      summary: 列出待核对的动作
+      x-omu-permission: devices:reconcile
+      parameters:
+      - name: deviceId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PendingActionPage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/devices/{deviceId}/pending-actions/{actionId}/ack:
+    post:
+      operationId: acknowledgeAction
+      tags: [Devices]
+      summary: 核对待确认的已派发动作
+      x-omu-permission: devices:reconcile
+      parameters:
+      - name: deviceId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: actionId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AcknowledgeAction'}
+      responses:
+        '200':
+          description: 核对结果已登记。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ActionAcknowledgement'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '500': {$ref: '#/components/responses/Error500'}
+        '503': {$ref: '#/components/responses/Error503'}
+  /api/tasks:
+    get:
+      operationId: listTasks
+      tags: [Tasks]
+      summary: 列出注册 Agent 任务
+      x-omu-permission: runs:read
+      parameters:
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskPage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/tasks/{taskId}:
+    get:
+      operationId: getTask
+      tags: [Tasks]
+      summary: 读取注册任务描述
+      x-omu-permission: runs:read
+      parameters:
+      - name: taskId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Task'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/runs:
+    post:
+      operationId: createRun
+      tags: [Runs]
+      summary: 提交异步设备运行
+      x-omu-permission: runs:submit
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: 每次预期执行使用新的键。相同主体、同键和相同请求复用原运行。
+        required: true
+        schema: {type: string, minLength: 1, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RunRequest'}
+      responses:
+        '202':
+          description: 运行已持久化受理。
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RunSummary'}
+        '200':
+          description: 相同幂等键的终态运行。
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RunSummary'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '428': {$ref: '#/components/responses/Error428'}
+        '429': {$ref: '#/components/responses/Error429'}
+        '500': {$ref: '#/components/responses/Error500'}
+        '503': {$ref: '#/components/responses/Error503'}
+    get:
+      operationId: listRuns
+      tags: [Runs]
+      summary: 列出运行历史
+      x-omu-permission: runs:read
+      parameters:
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      - name: deviceId
+        in: query
+        description: 按设备筛选。
+        schema: {type: string, format: uuid}
+      - name: status
+        in: query
+        description: 按当前状态筛选。
+        schema: {$ref: '#/components/schemas/RunStatus'}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RunPage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/runs/{runId}:
+    get:
+      operationId: getRun
+      tags: [Runs]
+      summary: 读取运行结果和事件位置
+      x-omu-permission: runs:read
+      parameters:
+      - name: runId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Run'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/runs/{runId}/cancel:
+    post:
+      operationId: cancelRun
+      tags: [Runs]
+      summary: 请求停止运行
+      x-omu-permission: runs:cancel
+      parameters:
+      - name: runId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '202':
+          description: 正在取消，仍可能等待设备会话关闭。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Run'}
+        '200':
+          description: 运行已进入终态。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Run'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/runs/{runId}/events:
+    get:
+      operationId: getRunEvents
+      tags: [Runs]
+      summary: 分页读取或订阅运行事件
+      x-omu-permission: runs:read
+      parameters:
+      - name: runId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: Last-Event-ID
+        in: header
+        description: SSE 断线重连时最后收到的事件序号。
+        schema: {type: string, pattern: ^\d+$}
+      - name: after
+        in: query
+        description: JSON 分页从此序号之后读取。
+        schema: {type: integer, minimum: 0}
+      - name: limit
+        in: query
+        description: JSON 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: 事件分页或可重连的 SSE 事件流。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventPage'}
+            text/event-stream:
+              schema: {type: string, description: UTF-8 SSE。id 为 sequence，event 为 type，data 为 Event JSON。心跳为 SSE
+                  注释。}
+              example: 'id: 4
+
+                event: run.status
+
+                data: {"sequence":4,"type":"run.status","at":"2026-11-25T08:00:00Z","data":{"status":"succeeded"}}
+
+
+                '
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '410': {$ref: '#/components/responses/Error410'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/runs/{runId}/artifacts/{artifactId}:
+    get:
+      operationId: downloadArtifact
+      tags: [Runs]
+      summary: 下载已授权的运行产物
+      x-omu-permission: artifacts:read
+      parameters:
+      - name: runId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: artifactId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 返回原始内容。录制为可直接重放的 Script JSON。
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - {$ref: '#/components/schemas/Script'}
+                - {type: object}
+            application/xml:
+              schema: {type: string}
+            image/png:
+              schema: {type: string, format: binary}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '410': {$ref: '#/components/responses/Error410'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/scripts:
+    get:
+      operationId: listScripts
+      tags: [Scripts]
+      summary: 列出脚本
+      x-omu-permission: scripts:read
+      parameters:
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      - name: includeArchived
+        in: query
+        description: 包含已归档用户脚本。
+        schema: {type: boolean}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScriptPage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '500': {$ref: '#/components/responses/Error500'}
+    post:
+      operationId: createScript
+      tags: [Scripts]
+      summary: 导入脚本或保存录制副本
+      x-omu-permission: scripts:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateScript'}
+      responses:
+        '201':
+          description: 脚本已创建。
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScriptResource'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '410': {$ref: '#/components/responses/Error410'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/scripts/{scriptId}:
+    get:
+      operationId: getScript
+      tags: [Scripts]
+      summary: 读取脚本元数据
+      x-omu-permission: scripts:read
+      parameters:
+      - name: scriptId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScriptResource'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+    patch:
+      operationId: updateScript
+      tags: [Scripts]
+      summary: 更新标题、正文或归档状态
+      x-omu-permission: scripts:write
+      parameters:
+      - name: scriptId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: If-Match
+        in: header
+        description: 提交此前读取的强 ETag。
+        required: true
+        schema: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchScript'}
+      responses:
+        '200':
+          description: 脚本已更新。
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ScriptResource'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '428': {$ref: '#/components/responses/Error428'}
+        '500': {$ref: '#/components/responses/Error500'}
+    delete:
+      operationId: deleteScript
+      tags: [Scripts]
+      summary: 删除用户脚本
+      x-omu-permission: scripts:write
+      parameters:
+      - name: scriptId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: If-Match
+        in: header
+        description: 提交此前读取的强 ETag。
+        required: true
+        schema: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+      responses:
+        '204': {description: 脚本已删除。}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '428': {$ref: '#/components/responses/Error428'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/scripts/{scriptId}/content:
+    get:
+      operationId: downloadScript
+      tags: [Scripts]
+      summary: 下载脚本正文
+      x-omu-permission: scripts:read
+      parameters:
+      - name: scriptId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Script'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/conversations:
+    get:
+      operationId: listConversations
+      tags: [Conversations]
+      summary: 列出对话
+      x-omu-permission: conversations:read
+      parameters:
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      - name: deviceId
+        in: query
+        description: 按绑定设备筛选。
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationPage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '500': {$ref: '#/components/responses/Error500'}
+    post:
+      operationId: createConversation
+      tags: [Conversations]
+      summary: 创建对话，可从已有录制的独立副本继续
+      x-omu-permission: conversations:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateConversation'}
+      responses:
+        '201':
+          description: 对话已创建。
+          headers:
+            Location: {$ref: '#/components/headers/Location'}
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Conversation'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/conversations/{conversationId}:
+    get:
+      operationId: getConversation
+      tags: [Conversations]
+      summary: 读取对话状态
+      x-omu-permission: conversations:read
+      parameters:
+      - name: conversationId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: 查询成功。
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Conversation'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+    patch:
+      operationId: renameConversation
+      tags: [Conversations]
+      summary: 修改对话标题
+      x-omu-permission: conversations:write
+      parameters:
+      - name: conversationId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: If-Match
+        in: header
+        description: 提交此前读取的强 ETag。
+        required: true
+        schema: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PatchConversation'}
+      responses:
+        '200':
+          description: 标题已更新。
+          headers:
+            ETag: {$ref: '#/components/headers/ETag'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Conversation'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '413': {$ref: '#/components/responses/Error413'}
+        '415': {$ref: '#/components/responses/Error415'}
+        '428': {$ref: '#/components/responses/Error428'}
+        '500': {$ref: '#/components/responses/Error500'}
+    delete:
+      operationId: deleteConversation
+      tags: [Conversations]
+      summary: 删除对话
+      x-omu-permission: conversations:write
+      parameters:
+      - name: conversationId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: If-Match
+        in: header
+        description: 提交此前读取的强 ETag。
+        required: true
+        schema: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+      responses:
+        '204': {description: 对话已删除。}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '412': {$ref: '#/components/responses/Error412'}
+        '428': {$ref: '#/components/responses/Error428'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/conversations/{conversationId}/messages:
+    get:
+      operationId: listMessages
+      tags: [Conversations]
+      summary: 按顺序读取对话消息
+      x-omu-permission: conversations:read
+      parameters:
+      - name: conversationId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: cursor
+        in: query
+        description: 上一次查询返回的不透明分页游标。
+        schema: {type: string}
+      - name: limit
+        in: query
+        description: 单页结果数。
+        schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePage'}
+        '400': {$ref: '#/components/responses/Error400'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '500': {$ref: '#/components/responses/Error500'}
+  /api/conversations/{conversationId}/recording:
+    get:
+      operationId: downloadConversationRecording
+      tags: [Conversations]
+      summary: 下载截至指定轮次的已确认脚本
+      x-omu-permission: artifacts:read
+      parameters:
+      - name: conversationId
+        in: path
+        description: 目标资源标识。
+        required: true
+        schema: {type: string, format: uuid}
+      - name: throughTurn
+        in: query
+        description: 包含的最后一个已完成轮次。
+        schema: {type: integer, minimum: 1}
+      responses:
+        '200':
+          description: 查询成功。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Script'}
+        '401': {$ref: '#/components/responses/Error401'}
+        '403': {$ref: '#/components/responses/Error403'}
+        '404': {$ref: '#/components/responses/Error404'}
+        '409': {$ref: '#/components/responses/Error409'}
+        '422': {$ref: '#/components/responses/Error422'}
+        '500': {$ref: '#/components/responses/Error500'}
+components:
+  securitySchemes:
+    BearerToken: {type: http, scheme: bearer, description: 由宿主管理员授权的令牌。具体权限由各请求的 x-omu-permission 描述。}
+  headers:
+    ETag:
+      description: 当前资源的强实体标签。
+      schema: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+    Location:
+      description: 所创建资源的访问路径。
+      schema: {type: string, format: uri-reference}
+  responses:
+    Error400:
+      description: 请求格式无效
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error401:
+      description: 缺少凭据或凭据无效
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error403:
+      description: 权限不足
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error404:
+      description: 资源不可访问或不存在
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error409:
+      description: 资源冲突或设备忙
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error410:
+      description: 产物或事件游标已过期
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error412:
+      description: 条件请求失败
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error413:
+      description: 请求正文过大
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error415:
+      description: 不支持请求媒体类型
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error422:
+      description: 业务输入无效
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error428:
+      description: 缺少前置条件
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error429:
+      description: 请求或队列超出配额
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error500:
+      description: 服务内部错误
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Error503:
+      description: 当前无法受理请求
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+  schemas:
+    Platform:
+      type: string
+      enum: [android, harmony, ios]
+    Kind:
+      type: string
+      enum: [capture, diagnose, step, script, chat, agent]
+    RunStatus:
+      type: string
+      enum: [queued, starting, running, cancelling, succeeded, needs_review, failed, cancelled]
+    TerminalStatus:
+      type: string
+      enum: [succeeded, needs_review, failed, cancelled]
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: {type: string, format: uri-reference}
+        title: {type: string, minLength: 1}
+        status: {type: integer, minimum: 400, maximum: 599}
+        code: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+        detail: {type: string}
+        instance: {type: string, format: uri-reference}
+        runUrl: {type: string, format: uri-reference}
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, starting, draining]
+      additionalProperties: false
+    DriverStatus:
+      type: object
+      required: [platform, available]
+      properties:
+        platform: {$ref: '#/components/schemas/Platform'}
+        available: {type: boolean}
+        code: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+      additionalProperties: false
+    Capabilities:
+      type: object
+      required: [kinds, drivers, modelProfiles, limits]
+      properties:
+        kinds:
+          type: array
+          items: {$ref: '#/components/schemas/Kind'}
+        drivers:
+          type: array
+          items: {$ref: '#/components/schemas/DriverStatus'}
+        modelProfiles:
+          type: array
+          items:
+            type: object
+            required: [id, allowsImages]
+            properties:
+              id: {type: string, minLength: 1}
+              allowsImages: {type: boolean}
+            additionalProperties: false
+        limits:
+          type: object
+          required: [requestBytes, queuePerDevice, observationTtlMs, maximumTimeoutMs, defaultTimeoutMs]
+          properties:
+            requestBytes: {type: integer, minimum: 1}
+            queuePerDevice: {type: integer, minimum: 0}
+            observationTtlMs: {type: integer, minimum: 1}
+            maximumTimeoutMs: {type: integer, minimum: 1}
+            defaultTimeoutMs: {type: integer, minimum: 1}
+          additionalProperties: false
+      additionalProperties: false
+    Device:
+      type: object
+      required: [id, platform, name, state, connection, busy, needsReview]
+      properties:
+        id: {type: string, format: uuid}
+        platform: {$ref: '#/components/schemas/Platform'}
+        name: {type: string, minLength: 1}
+        state:
+          type: string
+          enum: [available, offline, unauthorized, driver_unavailable, conflict]
+        connection:
+          type: string
+          enum: [usb, network, emulator, unknown]
+        busy: {type: boolean}
+        needsReview: {type: boolean}
+        lastSeenAt: {type: string, format: date-time}
+        errorCode: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+      additionalProperties: false
+    PendingAction:
+      type: object
+      required: [id, deviceId, runId, sequence, action, dispatchedAt]
+      properties:
+        id: {type: string, format: uuid}
+        deviceId: {type: string, format: uuid}
+        runId: {type: string, format: uuid}
+        sequence: {type: integer, minimum: 1}
+        action: {type: string, minLength: 1}
+        dispatchedAt: {type: string, format: date-time}
+      additionalProperties: false
+    AcknowledgeAction:
+      type: object
+      required: [observationId, outcome]
+      properties:
+        observationId: {type: string, minLength: 1, maxLength: 200}
+        outcome:
+          type: string
+          enum: [applied, not_applied, accepted_current_state]
+      additionalProperties: false
+    ActionAcknowledgement:
+      type: object
+      required: [id, acknowledgedAt, outcome]
+      properties:
+        id: {type: string, format: uuid}
+        acknowledgedAt: {type: string, format: date-time}
+        outcome:
+          type: string
+          enum: [applied, not_applied, accepted_current_state]
+      additionalProperties: false
+    Selector:
+      type: object
+      properties:
+        id: {type: string, minLength: 1}
+        label: {type: string, minLength: 1}
+        role: {type: string, minLength: 1}
+        within: {type: string, minLength: 1}
+        cardX: {type: number, minimum: 0, maximum: 1}
+        cardY: {type: number, minimum: 0, maximum: 1}
+      dependentRequired:
+        within: [id, role]
+        cardX: [within, cardY]
+        cardY: [within, cardX]
+      additionalProperties: false
+      oneOf:
+      - required: [id]
+      - required: [label]
+    Reading:
+      type: object
+      properties:
+        checked: {type: boolean}
+        value: {type: string}
+        label: {type: string}
+      additionalProperties: false
+    ScreenGuard:
+      type: object
+      required: [width, height, rotation, anchors]
+      properties:
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        rotation: {type: number}
+        anchors:
+          type: array
+          items: {$ref: '#/components/schemas/Selector'}
+          maxItems: 3
+      additionalProperties: false
+    ImageAnchor:
+      type: object
+      required: [rgb, dx, dy]
+      properties:
+        rgb: {type: string, minLength: 1700, maxLength: 1700, pattern: '^[A-Za-z0-9+/]+$'}
+        dx: {type: integer, minimum: 0, maximum: 24}
+        dy: {type: integer, minimum: 0, maximum: 16}
+        match: {type: string, const: contour}
+        row:
+          type: object
+          required: [rgb, offsetX]
+          properties:
+            rgb: {type: string, minLength: 1700, maxLength: 1700, pattern: '^[A-Za-z0-9+/]+$'}
+            offsetX:
+              oneOf:
+              - {type: integer, minimum: -455, maximum: -25}
+              - {type: integer, minimum: 25, maximum: 455}
+          additionalProperties: false
+      additionalProperties: false
+      not:
+        required: [match, row]
+    NativeStep:
+      oneOf:
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: tap}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          within: {type: string, minLength: 1}
+          cardX: {type: number, minimum: 0, maximum: 1}
+          cardY: {type: number, minimum: 0, maximum: 1}
+        dependentRequired:
+          within: [id, role]
+          cardX: [within, cardY]
+          cardY: [within, cardX]
+        additionalProperties: false
+        oneOf:
+        - required: [id]
+        - required: [label]
+      - type: object
+        required: [action, x, y]
+        properties:
+          action: {type: string, const: tap}
+          x: {type: number, minimum: 0, maximum: 1}
+          y: {type: number, minimum: 0, maximum: 1}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+        additionalProperties: false
+      - type: object
+        required: [action, fromX, fromY, toX, toY]
+        properties:
+          action: {type: string, const: swipe}
+          fromX: {type: number, minimum: 0, maximum: 1}
+          fromY: {type: number, minimum: 0, maximum: 1}
+          toX: {type: number, minimum: 0, maximum: 1}
+          toY: {type: number, minimum: 0, maximum: 1}
+          durationMs: {type: integer, minimum: 1, maximum: 10000}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+        additionalProperties: false
+      - type: object
+        required: [action, text]
+        properties:
+          action: {type: string, const: input}
+          text: {type: string}
+          replace: {type: boolean}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+        additionalProperties: false
+        not:
+          required: [id, label]
+      - type: object
+        required: [action, app]
+        properties:
+          action:
+            type: string
+            enum: [launchApp, launch]
+          app: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          ability: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          module: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+        additionalProperties: false
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: back}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+        additionalProperties: false
+        not:
+          required: [id, label]
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: waitFor}
+          state:
+            type: string
+            enum: [visible, hidden]
+          timeoutMs: {type: integer, minimum: 1, maximum: 60000}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          within: {type: string, minLength: 1}
+          cardX: {type: number, minimum: 0, maximum: 1}
+          cardY: {type: number, minimum: 0, maximum: 1}
+        dependentRequired:
+          within: [id, role]
+          cardX: [within, cardY]
+          cardY: [within, cardX]
+        additionalProperties: false
+        oneOf:
+        - required: [id]
+        - required: [label]
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: goHome}
+        additionalProperties: false
+    ScriptStep:
+      oneOf:
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: tap}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          within: {type: string, minLength: 1}
+          cardX: {type: number, minimum: 0, maximum: 1}
+          cardY: {type: number, minimum: 0, maximum: 1}
+          target: {type: string, minLength: 1}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        dependentRequired:
+          within: [id, role]
+          cardX: [within, cardY]
+          cardY: [within, cardX]
+        additionalProperties: false
+        oneOf:
+        - required: [id]
+        - required: [label]
+        - required: [target]
+      - type: object
+        required: [action, x, y]
+        properties:
+          action: {type: string, const: tap}
+          x: {type: number, minimum: 0, maximum: 1}
+          y: {type: number, minimum: 0, maximum: 1}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, fromX, fromY, toX, toY]
+        properties:
+          action: {type: string, const: swipe}
+          fromX: {type: number, minimum: 0, maximum: 1}
+          fromY: {type: number, minimum: 0, maximum: 1}
+          toX: {type: number, minimum: 0, maximum: 1}
+          toY: {type: number, minimum: 0, maximum: 1}
+          durationMs: {type: integer, minimum: 1, maximum: 10000}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, text]
+        properties:
+          action: {type: string, const: input}
+          text: {type: string}
+          replace: {type: boolean}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          target: {type: string, minLength: 1}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+        not:
+          required: [id, label]
+      - type: object
+        required: [action, app]
+        properties:
+          action:
+            type: string
+            enum: [launchApp, launch]
+          app: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          ability: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          module: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: back}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          target: {type: string, minLength: 1}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+        not:
+          required: [id, label]
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: waitFor}
+          state:
+            type: string
+            enum: [visible, hidden]
+          timeoutMs: {type: integer, minimum: 1, maximum: 60000}
+          observation: {type: string, pattern: '^[a-f0-9]{64}$'}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          within: {type: string, minLength: 1}
+          cardX: {type: number, minimum: 0, maximum: 1}
+          cardY: {type: number, minimum: 0, maximum: 1}
+          target: {type: string, minLength: 1}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        dependentRequired:
+          within: [id, role]
+          cardX: [within, cardY]
+          cardY: [within, cardX]
+        additionalProperties: false
+        oneOf:
+        - required: [id]
+        - required: [label]
+        - required: [target]
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: check}
+          target: {type: string, minLength: 1}
+          id: {type: string, minLength: 1}
+          label: {type: string, minLength: 1}
+          role: {type: string, minLength: 1}
+          within: {type: string, minLength: 1}
+          cardX: {type: number, minimum: 0, maximum: 1}
+          cardY: {type: number, minimum: 0, maximum: 1}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          reading: {$ref: '#/components/schemas/Reading'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        dependentRequired:
+          within: [id, role]
+          cardX: [within, cardY]
+          cardY: [within, cardX]
+        additionalProperties: false
+        not:
+          required: [id, label]
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: pause}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          screen: {$ref: '#/components/schemas/ScreenGuard'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, text]
+        properties:
+          action:
+            type: string
+            enum: [tapScreenText, checkScreenText]
+          text: {type: string, minLength: 1, maxLength: 160}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, label, anchor]
+        properties:
+          action:
+            type: string
+            enum: [tapImage, checkImage]
+          label: {type: string, minLength: 1, maxLength: 100}
+          anchor: {$ref: '#/components/schemas/ImageAnchor'}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, name]
+        properties:
+          action: {type: string, const: route}
+          name:
+            type: string
+            enum: [settings.toBluetooth, bluetooth.toSettingsHome]
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action]
+        properties:
+          action: {type: string, const: goHome}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, item]
+        properties:
+          action: {type: string, const: pauseVideoCenter}
+          item: {type: string, pattern: '^[a-f0-9]{64}$'}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+      - type: object
+        required: [action, query, firstResult]
+        properties:
+          action: {type: string, const: verifiedSearch}
+          query: {type: string, minLength: 1, maxLength: 200}
+          firstResult: {type: boolean}
+          inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          platforms:
+            type: array
+            items: {$ref: '#/components/schemas/Platform'}
+            minItems: 1
+        additionalProperties: false
+    Script:
+      type: object
+      required: [steps]
+      properties:
+        platform: {$ref: '#/components/schemas/Platform'}
+        targets:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              android: {$ref: '#/components/schemas/Selector'}
+              harmony: {$ref: '#/components/schemas/Selector'}
+              ios: {$ref: '#/components/schemas/Selector'}
+            additionalProperties: false
+        steps:
+          type: array
+          items: {$ref: '#/components/schemas/ScriptStep'}
+          minItems: 1
+          maxItems: 1000
+      additionalProperties: false
+    ScriptDocumentInput:
+      oneOf:
+      - {$ref: '#/components/schemas/Script'}
+      - type: object
+        required: [schemaVersion, platform, steps]
+        properties:
+          schemaVersion: {type: integer, const: 2}
+          platform: {$ref: '#/components/schemas/Platform'}
+          steps:
+            type: array
+            minItems: 1
+            maxItems: 1000
+            items:
+              type: object
+              required: [inApp, command]
+              properties:
+                inApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+                command:
+                  allOf:
+                  - {$ref: '#/components/schemas/ScriptStep'}
+                  - not:
+                      anyOf:
+                      - required: [inApp]
+                      - required: [screen]
+                      - required: [reading]
+                      - required: [target]
+                      - required: [platforms]
+                      - required: [observation]
+                      - properties: {action: {enum: [route, waitFor]}}
+                screen: {$ref: '#/components/schemas/ScreenGuard'}
+                reading: {$ref: '#/components/schemas/Reading'}
+              additionalProperties: false
+        additionalProperties: false
+    TaskDefinition:
+      type: object
+      required: [schemaVersion, id, goal, apps, actions, checkpoints]
+      properties:
+        schemaVersion: {type: integer, const: 1}
+        id: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+        goal: {type: string, minLength: 1, maxLength: 4000}
+        apps:
+          type: array
+          items: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          minItems: 1
+        actions:
+          type: array
+          items:
+            type: object
+            required: [name, app, step]
+            properties:
+              name: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+              app: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+              step:
+                $ref: '#/components/schemas/NativeStep'
+                not:
+                  required: [observation]
+              visual: {type: boolean}
+            additionalProperties: false
+          minItems: 1
+          maxItems: 64
+        checkpoints:
+          type: array
+          items:
+            type: object
+            required: [name, app, target, afterAction]
+            properties:
+              name: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+              app: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+              target: {$ref: '#/components/schemas/Selector'}
+              afterAction: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+              state:
+                type: string
+                enum: [visible, hidden]
+            additionalProperties: false
+          minItems: 1
+          maxItems: 64
+        limits:
+          type: object
+          properties:
+            turns: {type: integer, minimum: 1, maximum: 100}
+            ms: {type: integer, minimum: 1, maximum: 600000}
+          additionalProperties: false
+      additionalProperties: false
+    Task:
+      type: object
+      required: [id, goal, platforms]
+      properties:
+        id: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+        goal: {type: string, minLength: 1}
+        platforms:
+          type: array
+          items: {$ref: '#/components/schemas/Platform'}
+          minItems: 1
+        definition: {$ref: '#/components/schemas/TaskDefinition'}
+      additionalProperties: false
+    CaptureInput:
+      type: object
+      properties:
+        includeLayout: {type: boolean, default: false}
+      additionalProperties: false
+    DiagnoseInput:
+      type: object
+      properties: {}
+      additionalProperties: false
+    StepInput:
+      type: object
+      required: [step]
+      properties:
+        step: {$ref: '#/components/schemas/NativeStep'}
+        observationId: {type: string, minLength: 1, maxLength: 200}
+        conversationId: {type: string, format: uuid}
+        conversationETag: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+      additionalProperties: false
+      allOf:
+      - if:
+          properties:
+            step:
+              anyOf:
+              - properties:
+                  action: {const: swipe}
+              - required: [x, y]
+        then:
+          required: [observationId]
+      - properties:
+          step:
+            not:
+              required: [observation]
+      dependentRequired:
+        conversationId: [conversationETag]
+        conversationETag: [conversationId]
+    ScriptInput:
+      type: object
+      properties:
+        script: {$ref: '#/components/schemas/ScriptDocumentInput'}
+        scriptId: {type: string, format: uuid}
+        scriptETag: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+        repeat: {type: integer, minimum: 1, maximum: 100, default: 1}
+      additionalProperties: false
+      oneOf:
+      - required: [script]
+      - required: [scriptId]
+      dependentRequired:
+        scriptETag: [scriptId]
+    ChatInput:
+      type: object
+      required: [message]
+      properties:
+        message: {type: string, minLength: 1, maxLength: 2000}
+        conversationId: {type: string, format: uuid}
+        conversationETag: {type: string, description: 从资源响应 ETag 头读取的强实体标签，包含双引号。}
+        modelProfile: {type: string, minLength: 1}
+        useImages: {type: boolean, default: false}
+        record: {type: boolean, default: true}
+      additionalProperties: false
+      dependentRequired:
+        conversationId: [conversationETag]
+        conversationETag: [conversationId]
+    AgentInput:
+      type: object
+      properties:
+        taskId: {type: string, pattern: '^[A-Za-z][A-Za-z0-9_.-]{0,80}$'}
+        task: {$ref: '#/components/schemas/TaskDefinition'}
+        modelProfile: {type: string, minLength: 1}
+        useImages: {type: boolean, default: false}
+        repeat: {type: integer, minimum: 1, maximum: 100, default: 1}
+      additionalProperties: false
+      oneOf:
+      - required: [taskId]
+      - required: [task]
+    RunRequest:
+      oneOf:
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: capture}
+          input: {$ref: '#/components/schemas/CaptureInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        dependentRequired:
+          startWithinMs: [onBusy]
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: diagnose}
+          input: {$ref: '#/components/schemas/DiagnoseInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        dependentRequired:
+          startWithinMs: [onBusy]
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: step}
+          input: {$ref: '#/components/schemas/StepInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        - if:
+            properties:
+              input:
+                required: [observationId]
+          then:
+            properties:
+              onBusy: {const: reject}
+        dependentRequired:
+          startWithinMs: [onBusy]
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: script}
+          input: {$ref: '#/components/schemas/ScriptInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        dependentRequired:
+          startWithinMs: [onBusy]
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: chat}
+          input: {$ref: '#/components/schemas/ChatInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        dependentRequired:
+          startWithinMs: [onBusy]
+      - type: object
+        required: [deviceId, kind, input]
+        properties:
+          deviceId: {type: string, format: uuid}
+          kind: {type: string, const: agent}
+          input: {$ref: '#/components/schemas/AgentInput'}
+          onBusy:
+            type: string
+            enum: [reject, queue]
+            default: reject
+          startWithinMs: {type: integer, minimum: 1}
+          preview: {type: boolean, default: false}
+          timeoutMs: {type: integer, minimum: 1}
+        additionalProperties: false
+        allOf:
+        - if:
+            required: [onBusy]
+            properties:
+              onBusy: {type: string, const: queue}
+          then:
+            required: [startWithinMs]
+        - if:
+            required: [startWithinMs]
+          then:
+            properties:
+              onBusy: {const: queue}
+        dependentRequired:
+          startWithinMs: [onBusy]
+    Artifact:
+      type: object
+      required: [id, kind, mediaType, url, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        kind:
+          type: string
+          enum: [screenshot, layout, recording, report]
+        mediaType:
+          type: string
+          enum: [image/png, application/xml, application/json]
+        url: {type: string, format: uri-reference}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        observationId: {type: string, minLength: 1, maxLength: 200}
+        observedAt: {type: string, format: date-time}
+        partial: {type: boolean}
+      additionalProperties: false
+    Control:
+      type: object
+      required: [role, labels, bounds, enabled, editable, secret]
+      properties:
+        id: {type: string}
+        role: {type: string}
+        labels:
+          type: array
+          items: {type: string}
+        bounds:
+          type: object
+          required: [x, y, width, height]
+          properties:
+            x: {type: number}
+            y: {type: number}
+            width: {type: number}
+            height: {type: number}
+          additionalProperties: false
+        enabled: {type: boolean}
+        editable: {type: boolean}
+        cardSelector: {$ref: '#/components/schemas/Selector'}
+        navigation: {type: boolean}
+        focused: {type: boolean}
+        secret: {type: boolean}
+        clickable: {type: boolean}
+        checked: {type: boolean}
+        value: {type: string}
+      additionalProperties: false
+    StepReport:
+      type: object
+      required: [index, action, status]
+      properties:
+        index: {type: integer, minimum: 1}
+        action: {type: string, minLength: 1}
+        status:
+          type: string
+          enum: [succeeded, needs_review, cancelled, failed]
+        durationMs: {type: integer, minimum: 0}
+        error: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+      additionalProperties: false
+    RoundReport:
+      type: object
+      required: [status]
+      properties:
+        status: {$ref: '#/components/schemas/TerminalStatus'}
+        steps:
+          type: array
+          items: {$ref: '#/components/schemas/StepReport'}
+        failedStep: {type: integer, minimum: 1}
+        reason: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+        evidence:
+          type: array
+          items: {type: object, description: 已验证的页面和检查点证据。}
+      additionalProperties: false
+    CaptureResult:
+      type: object
+      required: [kind, observedAt, stable, width, height, rotation, controls, actionWidth, actionHeight, app]
+      properties:
+        kind: {type: string, const: capture}
+        observedAt: {type: string, format: date-time}
+        stable: {type: boolean}
+        width: {type: integer, minimum: 1}
+        height: {type: integer, minimum: 1}
+        rotation: {type: number}
+        observationId: {type: string, minLength: 1, maxLength: 200}
+        gestureObservationId: {type: string, minLength: 1, maxLength: 200}
+        controls:
+          type: array
+          items: {$ref: '#/components/schemas/Control'}
+        actionWidth: {type: integer, minimum: 1}
+        actionHeight: {type: integer, minimum: 1}
+        app: {type: string}
+      additionalProperties: false
+      if:
+        properties:
+          stable: {const: false}
+      then:
+        not:
+          required: [observationId]
+    RunResult:
+      oneOf:
+      - {$ref: '#/components/schemas/CaptureResult'}
+      - type: object
+        required: [kind, controllable, probes]
+        properties:
+          kind: {type: string, const: diagnose}
+          controllable: {type: boolean}
+          probes:
+            type: array
+            items:
+              type: object
+              required: [stage, ok]
+              properties:
+                stage: {type: string, minLength: 1}
+                ok: {type: boolean}
+                error: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+                detail: {type: string}
+                next: {type: string}
+                durationMs: {type: integer, minimum: 0}
+              additionalProperties: false
+          pendingActions:
+            type: array
+            items: {$ref: '#/components/schemas/PendingAction'}
+        additionalProperties: false
+      - type: object
+        required: [kind, action]
+        properties:
+          kind: {type: string, const: step}
+          frame: {$ref: '#/components/schemas/CaptureResult'}
+          captureError: {type: string}
+          commentPanelClosed: {type: boolean}
+          tapPoint:
+            type: object
+            required: [x, y]
+            properties:
+              x: {type: integer, minimum: 0}
+              y: {type: integer, minimum: 0}
+            additionalProperties: false
+          action: {type: string, minLength: 1}
+          observationId: {type: string, minLength: 1, maxLength: 200}
+          foregroundVerified: {type: boolean}
+          inputVerified: {type: boolean}
+          foregroundApp: {type: string, pattern: '^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$'}
+          conversationId: {type: string, format: uuid}
+          turn: {type: integer, minimum: 1}
+        additionalProperties: false
+      - type: object
+        required: [kind, rounds]
+        properties:
+          kind: {type: string, const: script}
+          rounds:
+            type: array
+            items: {$ref: '#/components/schemas/RoundReport'}
+        additionalProperties: false
+      - type: object
+        required: [kind, conversationId, turn, modelCalls]
+        properties:
+          kind: {type: string, const: chat}
+          frame: {$ref: '#/components/schemas/CaptureResult'}
+          captureError: {type: string}
+          conversationId: {type: string, format: uuid}
+          turn: {type: integer, minimum: 1}
+          answer: {type: string}
+          replyRequested: {type: boolean}
+          modelCalls: {type: integer, minimum: 0}
+          confirmedStepCount: {type: integer, minimum: 0}
+        additionalProperties: false
+      - type: object
+        required: [kind, rounds]
+        properties:
+          kind: {type: string, const: agent}
+          rounds:
+            type: array
+            items: {$ref: '#/components/schemas/RoundReport'}
+        additionalProperties: false
+    RunSummary:
+      type: object
+      required: [id, deviceId, kind, status, createdAt, lastEventId]
+      properties:
+        id: {type: string, format: uuid}
+        deviceId: {type: string, format: uuid}
+        kind: {$ref: '#/components/schemas/Kind'}
+        title: {type: string}
+        status: {$ref: '#/components/schemas/RunStatus'}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        cancelRequestedAt: {type: string, format: date-time}
+        lastEventId: {type: integer, minimum: 1}
+        conversationId: {type: string, format: uuid}
+        deadlineAt: {type: string, format: date-time}
+      additionalProperties: false
+    Run:
+      type: object
+      required: [id, deviceId, kind, status, createdAt, lastEventId, artifacts]
+      properties:
+        id: {type: string, format: uuid}
+        deviceId: {type: string, format: uuid}
+        kind: {$ref: '#/components/schemas/Kind'}
+        title: {type: string}
+        status: {$ref: '#/components/schemas/RunStatus'}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+        cancelRequestedAt: {type: string, format: date-time}
+        lastEventId: {type: integer, minimum: 1}
+        conversationId: {type: string, format: uuid}
+        result: {$ref: '#/components/schemas/RunResult'}
+        reason: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+        cleanupError: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+        artifacts:
+          type: array
+          items: {$ref: '#/components/schemas/Artifact'}
+        deadlineAt: {type: string, format: date-time}
+      additionalProperties: false
+    Event:
+      oneOf:
+      - type: object
+        required: [sequence, type, at, data]
+        properties:
+          sequence: {type: integer, minimum: 1}
+          type: {type: string, const: run.status}
+          at: {type: string, format: date-time}
+          data:
+            type: object
+            required: [status]
+            properties:
+              status: {$ref: '#/components/schemas/RunStatus'}
+              reason: {type: string, pattern: '^[A-Z][A-Z0-9_]+$'}
+            additionalProperties: false
+        additionalProperties: false
+      - type: object
+        required: [sequence, type, at, data]
+        properties:
+          sequence: {type: integer, minimum: 1}
+          type: {type: string, const: run.progress}
+          at: {type: string, format: date-time}
+          data:
+            type: object
+            required: [name]
+            properties:
+              name: {type: string, minLength: 1}
+              status: {type: string, minLength: 1}
+              phase: {type: string, minLength: 1}
+              message: {type: string}
+            additionalProperties: false
+        additionalProperties: false
+      - type: object
+        required: [sequence, type, at, data]
+        properties:
+          sequence: {type: integer, minimum: 1}
+          type: {type: string, const: step.result}
+          at: {type: string, format: date-time}
+          data: {$ref: '#/components/schemas/StepReport'}
+        additionalProperties: false
+      - type: object
+        required: [sequence, type, at, data]
+        properties:
+          sequence: {type: integer, minimum: 1}
+          type: {type: string, const: message.completed}
+          at: {type: string, format: date-time}
+          data:
+            type: object
+            required: [conversationId, sequence]
+            properties:
+              conversationId: {type: string, format: uuid}
+              sequence: {type: integer, minimum: 1}
+            additionalProperties: false
+        additionalProperties: false
+      - type: object
+        required: [sequence, type, at, data]
+        properties:
+          sequence: {type: integer, minimum: 1}
+          type: {type: string, const: artifact.available}
+          at: {type: string, format: date-time}
+          data: {$ref: '#/components/schemas/Artifact'}
+        additionalProperties: false
+    EventPage:
+      type: object
+      required: [items, lastEventId]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Event'}
+        lastEventId: {type: integer, minimum: 1}
+        nextAfter: {type: integer, minimum: 1}
+      additionalProperties: false
+    ScriptResource:
+      type: object
+      required: [id, title, source, archived, stepCount, platforms, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, minLength: 1}
+        source:
+          type: string
+          enum: [builtin, user]
+        archived: {type: boolean}
+        stepCount: {type: integer, minimum: 1}
+        canContinueRecording: {type: boolean}
+        platforms:
+          type: array
+          items: {$ref: '#/components/schemas/Platform'}
+          minItems: 1
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+      additionalProperties: false
+    CreateScript:
+      oneOf:
+      - type: object
+        required: [source, title, script]
+        properties:
+          source: {type: string, const: document}
+          title: {type: string, minLength: 1, maxLength: 100}
+          script: {$ref: '#/components/schemas/ScriptDocumentInput'}
+        additionalProperties: false
+      - type: object
+        required: [source, title, runId, artifactId]
+        properties:
+          source: {type: string, const: runRecording}
+          title: {type: string, minLength: 1, maxLength: 100}
+          runId: {type: string, format: uuid}
+          artifactId: {type: string, format: uuid}
+        additionalProperties: false
+      - type: object
+        required: [source, title, conversationId]
+        properties:
+          source: {type: string, const: conversationRecording}
+          title: {type: string, minLength: 1, maxLength: 100}
+          conversationId: {type: string, format: uuid}
+          throughTurn: {type: integer, minimum: 1}
+        additionalProperties: false
+    PatchScript:
+      type: object
+      properties:
+        title: {type: string, minLength: 1, maxLength: 100}
+        script: {$ref: '#/components/schemas/ScriptDocumentInput'}
+        archived: {type: boolean}
+      additionalProperties: false
+      minProperties: 1
+    Conversation:
+      type: object
+      required: [id, deviceId, title, createdAt, updatedAt, lastTurn, messageCount, recordedStepCount]
+      properties:
+        id: {type: string, format: uuid}
+        deviceId: {type: string, format: uuid}
+        title: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        lastTurn: {type: integer, minimum: 0}
+        messageCount: {type: integer, minimum: 0}
+        recordedStepCount: {type: integer, minimum: 0}
+        activeRunId: {type: string, format: uuid}
+      additionalProperties: false
+    CreateConversation:
+      type: object
+      required: [deviceId]
+      properties:
+        deviceId: {type: string, format: uuid}
+        title: {type: string, minLength: 1, maxLength: 100}
+        sourceScriptId: {type: string, format: uuid, description: 复制同平台录制的步骤作为新对话的起点。}
+        sourceScriptETag: {type: string, minLength: 1}
+      dependentRequired:
+        sourceScriptId: [sourceScriptETag]
+        sourceScriptETag: [sourceScriptId]
+      additionalProperties: false
+    PatchConversation:
+      type: object
+      required: [title]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 100}
+      additionalProperties: false
+    Message:
+      type: object
+      required: [id, sequence, turn, role, content, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        sequence: {type: integer, minimum: 1}
+        turn: {type: integer, minimum: 1}
+        role:
+          type: string
+          enum: [user, assistant]
+        content: {type: string}
+        createdAt: {type: string, format: date-time}
+        runId: {type: string, format: uuid}
+        replyRequested: {type: boolean}
+      additionalProperties: false
+    DevicePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Device'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    PendingActionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/PendingAction'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    TaskPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Task'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    RunPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RunSummary'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    ScriptPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ScriptResource'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    ConversationPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Conversation'}
+        nextCursor: {type: string}
+      additionalProperties: false
+    MessagePage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/Message'}
+        nextCursor: {type: string}
+      additionalProperties: false

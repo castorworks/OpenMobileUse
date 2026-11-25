@@ -32,14 +32,23 @@ export function readVideoDetails(view: View) {
     n.el.getAttribute('enabled') !== 'false');
   if (toggles.length !== 1) return;
   const toggle = toggles[0];
-  // Accessibility can still expose the player underneath a sheet in the same Android activity.
-  if (hits.some(({ el, app, label, role }) => !el.contains(toggle.el) && el !== surface.el &&
-    (app !== view.app || label || /Button|EditText|Dialog/.test(role) ||
-      ['clickable', 'long-clickable', 'scrollable', 'focusable'].some(a => el.getAttribute(a) === 'true')))) return;
-
   let owner = toggle.el.parentElement;
   while (owner && !owner.contains(surface.el)) owner = owner.parentElement;
   if (!owner || owner.getAttribute('package') !== view.app) return;
+  const state = playbackState(toggle.label)!;
+  // A paused player may draw its own suggestion over the centre. Its state can
+  // be read without tapping again. An independent sheet or a covered playing
+  // surface still cannot authorize a centre tap.
+  if (hits.some(({ el, app, label, role, box }) => {
+    if (el.contains(toggle.el) || el === surface.el) return false;
+    if (state === 'paused' && app === view.app && owner.contains(el) && /(?:Layout|TextView|ImageView)$/.test(role) &&
+        box.width < surface.box.width && box.height < surface.box.height &&
+        box.x >= surface.box.x && box.y >= surface.box.y &&
+        box.x + box.width <= surface.box.x + surface.box.width && box.y + box.height <= surface.box.y + surface.box.height)
+      return false;
+    return app !== view.app || !!label || /Button|EditText|Dialog/.test(role) ||
+      ['clickable', 'long-clickable', 'scrollable', 'focusable'].some(a => el.getAttribute(a) === 'true');
+  })) return;
   const titles = new Set<string>(), authors = new Set<string>();
   for (const { el, app, role, label } of nodes) {
     if (app !== view.app || !owner.contains(el) || !role.endsWith('.TextView') || !label.trim() || el.getAttribute('password') === 'true') continue;
@@ -50,7 +59,7 @@ export function readVideoDetails(view: View) {
   if ((!titles.size && !authors.size) || titles.size > 1 || authors.size > 1) return;
   const title = titles.values().next().value;
   const author = authors.values().next().value;
-  return { title, author, state: playbackState(toggle.label)!, evidence: toggle.label, center };
+  return { title, author, state, evidence: toggle.label, center };
 }
 
 export function readVideoPlayer(view: View) {

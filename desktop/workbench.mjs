@@ -1,601 +1,661 @@
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
-import { basename, join } from 'node:path';
-import { list } from '../dist/host.js';
-import { connectionError, diagnose, doctor, openDevice } from '../dist/doctor.js';
-import { pending, withDevice } from '../dist/session.js';
-import { captureView } from '../dist/inspect.js';
-import { commentCloseState, CommentCloseUnverified } from '../dist/comment-panel.js';
-import { compileStep, maxScriptSteps, readScriptEnvelope, reason } from '../dist/script.js';
-import {
-  executeStep,
-  guardObservation,
-  isScreenContainer,
-  resolveControl,
-  screenAvailable,
-  uniqueSelector,
-} from '../dist/steps.js';
-import { compileScript, executeRound } from '../dist/run.js';
-import {
-  listScripts,
-  importScript,
-  removeScript,
-  renameScript,
-  recordOptions,
-  restoreRecording,
-  scriptEntry,
-} from './script-library.mjs';
-import { chatClient } from '../dist/chat.js';
-import { LocalAppium } from './appium.mjs';
-import { androidSetupStatus, androidToolchain, applyAndroidToolchain } from './android-sdk.mjs';
-
-import { conversationTimeLimitMs, runConversation } from '../dist/conversation.js';
-import { recordStep } from '../dist/recording.js';
-import {
-  conversations,
-  deviceDir,
-  loadConversation,
-  overview,
-  saveConversation,
-  writeJSON,
-} from './library.mjs';
+import { setTimeout as wait } from 'node:timers/promises';
+import { ApiClient, terminalRunStatus } from '../dist/api-client.js';
+import { discoverLocalConnection } from '../dist/local-connection.js';
+import { isScreenContainer } from '../dist/steps.js';
+import { androidSetupStatus, androidToolchain } from './android-sdk.mjs';
 import { DesktopEmulator } from './emulator.mjs';
 import { Preferences } from './preferences.mjs';
+import { listItems, ScriptLibrary } from './script-library.mjs';
 
-const platforms = ['harmony', 'ios', 'android'];
+const devicePath = (id) => '/api/devices/' + encodeURIComponent(id);
+const conversationPath = (id) => '/api/conversations/' + encodeURIComponent(id);
+const runPath = (id) => '/api/runs/' + encodeURIComponent(id);
+const labels = { chat: '对话', script: '脚本重放', agent: 'Agent 任务' };
+const visibleRun = (run) => Object.hasOwn(labels, run.kind);
+const recoverableConnectionErrors = new Set([
+  'API_UNREACHABLE', 'API_TIMEOUT', 'UNAUTHORIZED', 'API_TOKEN_REQUIRED', 'SERVICE_DRAINING', 'SERVICE_UNAVAILABLE',
+]);
+
+function createApiClient(config) {
+  const { baseURL, stateDirectory } = config;
+  if (!stateDirectory) return new ApiClient(config);
+  const origin = new URL(baseURL).origin;
+  return new ApiClient({ ...config, fetch: async (url, options) => {
+    // A detached daemon's old port can later belong to another process.
+    const connection = await discoverLocalConnection(stateDirectory, { signal: options.signal });
+    if (!connection || new URL(connection.url).origin !== origin) throw Error('API_UNREACHABLE');
+    return fetch(url, options);
+  } });
+}
+
 export function errorCode(error) {
   if (error instanceof SyntaxError) return 'INVALID_JSON';
-  const code = reason(error);
-  return code === 'DEVICE_ERROR' ? diagnose(error) : code;
-}
-function imageUrl(png) {
-  return 'data:image/png;base64,' + png.toString('base64');
-}
-function conversationScript(chat, platform) {
-  try {
-    const script = readScriptEnvelope(chat.script, true);
-    return script.platform === platform ? script : undefined;
-  } catch {
-    return undefined;
-  }
-}
-async function writableConversation(identity, chatId, platform) {
-  const chat = await loadConversation(identity, chatId);
-  const script = conversationScript(chat, platform);
-  if (!script) throw Error('INVALID_CONVERSATION_RECORDING');
-  if (chat.script.schemaVersion !== 2) return chat;
-  // A continuation gets its own file. Listing, exporting and replaying never rewrite the source.
-  if (script.steps.length) {
-    try { await compileScript(script, platform); }
-    catch { throw Error('INVALID_CONVERSATION_RECORDING'); }
-  }
-  return { ...chat, id: randomUUID(), sourceChatId: chat.id, script };
-}
-async function readRuns(identity, ids) {
-  const dir = deviceDir(identity, 'workbench');
-  let files;
-  try {
-    files = ids ? ids.map((id) => id + '.json') : await readdir(dir);
-  } catch (error) {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  }
-  const rows = await Promise.all(
-    files
-      .filter((f) => /^[a-f0-9-]{36}\.json$/.test(f))
-      .map(async (f) => {
-        try {
-          return JSON.parse(await readFile(join(dir, f), 'utf8'));
-        } catch (e) {
-          if (e.code === 'ENOENT') return null; // An active turn has no completed run file yet.
-          throw e;
-        }
-      }),
-  );
-  return rows.filter(Boolean).sort((a, b) => b.started.localeCompare(a.started));
+  if (error?.name === 'TimeoutError') return 'API_TIMEOUT';
+  if (typeof error?.code === 'string' && /^[A-Z][A-Z0-9_]+$/.test(error.code)) return error.code;
+  return /^[A-Z][A-Z_0-9]*(?=:|$)/.exec(error?.message)?.[0] || 'API_REQUEST_FAILED';
 }
 
-// Older turns predate runId. Only pair matching outcomes within this chat, in execution order.
-function turnsWithRuns(turns, runs) {
-  const byId = new Map(runs.map((r) => [r.id, r]));
-  const linked = new Set(turns.map((t) => t.runId));
-  const key = (title, status, reason, answer) => JSON.stringify([title, status, reason, answer]);
-  const legacy = new Map(),
-    counts = new Map();
-  const turnKey = (t) => key(t.user.slice(0, 64), t.status, t.reason, t.assistant);
-  for (const t of turns) if (!t.runId) counts.set(turnKey(t), (counts.get(turnKey(t)) || 0) + 1);
-  for (const r of runs.slice().reverse()) {
-    if (linked.has(r.id)) continue;
-    const k = key(r.title, r.status, r.reason, r.result?.answer);
-    if (!legacy.has(k)) legacy.set(k, []);
-    legacy.get(k).push(r);
+function progressEvent(event) {
+  const { at, data } = event;
+  if (event.type === 'run.progress') return { ...data, name: data.name, at };
+  if (event.type === 'step.result') return { kind: 'step', name: data.action, status: data.error || data.status, at };
+}
+
+function runView(run, events = [], display = {}) {
+  const lastRound = run.result?.rounds?.at(-1);
+  const progress = events.map(progressEvent).filter(Boolean);
+  const evidence = lastRound?.evidence;
+  for (const entry of evidence || []) {
+    if (entry.phase && typeof entry.bluetooth === 'boolean') {
+      progress.push({ kind: 'evidence', ...entry, name: entry.page, at: run.finishedAt });
+    }
   }
-  for (const [k, rows] of legacy) if (rows.length !== counts.get(k)) legacy.delete(k);
-  return turns.map((t) => {
-    const r = t.runId ? byId.get(t.runId) : legacy.get(turnKey(t))?.shift();
-    if (!r) return t;
-    const events = t.runId
-      ? r.events
-      : r.events.map((e) =>
-          e.name?.startsWith('输入「') ? { ...e, name: '在' + e.name.slice(2) + '中输入' } : e,
-        );
-    return {
-      ...t,
-      runId: r.id,
-      events,
-      started: r.started,
-      ended: r.ended,
-      replyRequested: r.result?.replyRequested,
-      historyError: r.historyError || r.cleanupError,
-    };
-  });
+  return {
+    id: run.id,
+    status: run.status,
+    mode: run.kind === 'agent' ? 'script' : run.kind,
+    title: display.title || run.title || labels[run.kind],
+    user: display.user,
+    chatId: run.conversationId || run.result?.conversationId,
+    started: run.startedAt || run.createdAt,
+    ended: run.finishedAt,
+    activity: !terminalRunStatus(run.status) ? progress.at(-1)?.message : undefined,
+    events: progress,
+    result: lastRound || run.result,
+    reason: run.reason || lastRound?.reason,
+    cleanupError: run.cleanupError,
+  };
+}
+
+function chatOverview(chat) {
+  return { ...chat, updated: chat.updatedAt, stepCount: chat.recordedStepCount };
 }
 
 export class Workbench {
-  targets = new Map();
-  frames = new Map();
-  operations = new Map();
-  runs = new Map();
+  watchers = new Map();
+  pendingSubmissions = new Map();
+  lifecycle = new AbortController();
   closing = false;
+  capabilities = null;
+  connectionStatus = 'idle';
+  localReady = false;
+
   constructor(emit, options = {}) {
     this.emit = emit;
-    this.bridge = options.bridge || { list, openDevice, doctor };
-    this.appium = options.appium || new LocalAppium();
-    this.emulator = new DesktopEmulator(options.confirmSetup, (message) =>
+    this.http = options.api;
+    this.hasInjectedApi = !!options.api;
+    this.makeClient = options.createClient || createApiClient;
+    this.launchLocal = options.ensureLocalService || (async (preferences, settings) => {
+      const { ensureLocalService } = await import('./local-service.mjs');
+      return ensureLocalService(preferences, settings);
+    });
+    this.localOptions = options.localServiceOptions || {};
+    this.emulator = options.emulator || new DesktopEmulator(options.confirmSetup, (message) =>
       this.emit({ type: 'setup', message }),
     );
     this.preferences = options.preferences || new Preferences(options.secure);
+    this.secure = options.secure || this.preferences.secure;
   }
+
+  context() {
+    this.lifecycle.signal.throwIfAborted();
+    this.http ??= this.makeClient(this.preferences.clientConfig());
+    return { api: this.http, signal: this.lifecycle.signal };
+  }
+
+  config() {
+    return {
+      ...this.preferences.config(), modelProfiles: this.capabilities?.modelProfiles || [],
+      connectionStatus: this.connectionStatus, connectionError: this.connectionError,
+    };
+  }
+
+  automatic() {
+    return !this.hasInjectedApi && this.preferences.config().mode === 'local';
+  }
+
+  connection(status, error, reconnected = false) {
+    if (status === this.connectionStatus && error === this.connectionError && !reconnected) return;
+    this.connectionStatus = status;
+    this.connectionError = error;
+    this.emit({ type: 'connection', config: this.config(), reconnected });
+  }
+
+  async ensureConnection(force = false) {
+    if (!this.automatic()) return this.context();
+    if (this.connecting) return this.connecting;
+    if (!force && this.localReady) return this.context();
+    if (!this.connecting) {
+      const signal = this.lifecycle.signal;
+      const reconnected = this.localReady || this.connectionStatus === 'offline';
+      this.connection('connecting');
+      const attempt = (async () => {
+        try {
+          const local = await this.launchLocal(this.preferences, { ...this.localOptions, secure: this.secure, signal });
+          signal.throwIfAborted();
+          const previous = this.preferences.clientConfig();
+          if (this.localReady && previous.stateDirectory && local.stateDirectory !== previous.stateDirectory)
+            throw Error('LOCAL_SERVICE_STATE_CHANGED');
+          await this.preferences.configureLocal(local, signal);
+          signal.throwIfAborted();
+          if (!this.automatic()) throw Error('CANCELLED');
+          const next = this.preferences.clientConfig();
+          if (previous.baseURL !== next.baseURL || previous.token !== next.token) this.http = undefined;
+          this.localReady = true;
+          this.connection('online', undefined, reconnected);
+          return this.context();
+        } catch (error) {
+          if (!signal.aborted) {
+            this.localReady = false;
+            this.connection('offline', errorCode(error));
+          }
+          throw error;
+        }
+      })();
+      this.connecting = attempt;
+      void attempt.finally(() => {
+        if (this.connecting === attempt) this.connecting = undefined;
+      }).catch(() => {});
+    }
+    return this.connecting;
+  }
+
+  async checkLocal() {
+    if (!this.automatic() || this.closing || this.connecting || this.checkingLocal) return;
+    this.checkingLocal = true;
+    const { api, signal } = this.context();
+    try {
+      if (!this.localReady) await this.ensureConnection();
+      else {
+        const deadline = AbortSignal.any([signal, AbortSignal.timeout(2500)]);
+        await api.json('/readyz', { signal: deadline });
+      }
+    } catch (error) {
+      if (!signal.aborted && this.localReady && recoverableConnectionErrors.has(errorCode(error)))
+        await this.ensureConnection(true);
+    } finally {
+      this.checkingLocal = false;
+    }
+  }
+
+  startConnectionMonitor() {
+    if (this.connectionTimer) return;
+    const check = () => { void this.checkLocal().catch(() => {}); };
+    this.connectionTimer = setInterval(check, 5000);
+    this.connectionTimer.unref();
+    check();
+  }
+
+  async recoverConnection(api, signal, error) {
+    if (!this.automatic() || signal.aborted || !recoverableConnectionErrors.has(errorCode(error))) throw error;
+    const current = this.context().api;
+    if (current !== api && this.localReady) return current;
+    return (await this.ensureConnection(true)).api;
+  }
+
+  async saveSettings(options) {
+    const mode = this.preferences.config().mode;
+    const previous = this.preferences.clientConfig();
+    await this.preferences.save(options);
+    const next = this.preferences.clientConfig();
+    if (mode !== this.preferences.config().mode || previous.baseURL !== next.baseURL || previous.token !== next.token) {
+      this.lifecycle.abort(Error('CANCELLED'));
+      this.lifecycle = new AbortController();
+      this.watchers.clear();
+      this.pendingSubmissions.clear();
+      this.http = undefined;
+      this.capabilities = null;
+      this.connecting = undefined;
+      this.localReady = false;
+      this.connection('idle');
+    }
+    return this.config();
+  }
+
+  assertLocalHost() {
+    if (!this.preferences.config().local) throw Error('REMOTE_HOST_SETUP');
+  }
+
   startEmulator() {
+    this.assertLocalHost();
     return this.emulator.start();
   }
-  config() {
-    return this.preferences.config();
-  }
-  saveSettings(options) {
-    return this.preferences.save(options);
-  }
-  async library(id) {
-    this.target(id);
-    return conversations(id);
-  }
-  async conversation(id, chatId) {
-    const { platform } = this.target(id);
-    const chat = await loadConversation(id, chatId);
-    const group = basename(deviceDir(id, 'conversations'));
-    const options = await recordOptions(group, chat.id);
-    const runIds = chat.turns.every((t) => t.runId) ? chat.turns.map((t) => t.runId) : undefined;
-    const runs = await readRuns(id, runIds);
-    return {
-      ...overview(chat),
-      turns: turnsWithRuns(
-        chat.turns,
-        runs.filter((r) => r.chatId === chat.id || (chat.sourceChatId && r.chatId === chat.sourceChatId)),
-      ),
-      recordingId: conversationScript(chat, platform) ? 'record:' + group + ':' + chat.id : undefined,
-      recordingHidden: !!options.hidden,
-    };
-  }
-  scripts() {
-    return listScripts();
-  }
-  importScript(title, text) {
-    return importScript(title, text);
-  }
-  renameScript(id, title) {
-    return renameScript(id, title);
-  }
-  removeScript(id) {
-    return removeScript(id);
-  }
-  restoreRecording(id) {
-    return restoreRecording(id);
-  }
-  async devices() {
-    const tools = androidToolchain();
-    applyAndroidToolchain(tools);
-    const results = await Promise.allSettled(platforms.map((p) => this.bridge.list(p)));
-    const rows = results.flatMap((r) => (r.status === 'fulfilled' ? r.value : []));
-    const scanErrors = Object.fromEntries(
-      results.flatMap((r, i) =>
-        r.status === 'rejected'
-          ? [[platforms[i], r.reason?.stderr?.trim() || r.reason?.message || String(r.reason)]]
-          : [],
-      ),
-    );
-    this.targets = new Map(rows.map((t) => [t.platform + ':' + t.id, t]));
-    for (const id of this.frames.keys()) if (!this.targets.has(id)) this.frames.delete(id);
-    return {
-      devices: [...this.targets].map(([id, t]) => ({ ...t, id })),
-      unavailable: Object.keys(scanErrors),
-      scanErrors,
-      androidSetup: androidSetupStatus(tools),
-    };
-  }
-  target(identity) {
-    const t = this.targets.get(identity);
-    if (!t) throw Error('DEVICE_UNAVAILABLE');
-    return t;
-  }
-  exclusive(identity, work) {
-    const target = this.target(identity);
-    if (this.closing) throw Error('CANCELLED');
-    if (this.operations.has(identity)) throw Error('DEVICE_BUSY');
-    const done = Promise.resolve()
-      .then(() => work(target))
-      .finally(() => this.operations.delete(identity));
-    this.operations.set(identity, done);
-    return done;
-  }
-  withAppium(target, work) {
-    if (target.platform === 'harmony' || !this.appium.withEnvironment) return work();
-    return this.appium.withEnvironment(work);
-  }
-  async session(t, id, signal, mode, work, onCleanupError, newCommandTimeoutSeconds) {
-    if (!t.available) throw Error(connectionError(t));
-    return withDevice(t, id, (dispatch) => this.withAppium(t, async () => {
-      signal?.throwIfAborted();
-      if (t.platform !== 'harmony') await this.appium.ensureReady();
-      signal?.throwIfAborted();
-      const device = await this.bridge.openDevice(
-        t,
-        (kind, perform) => {
-          signal?.throwIfAborted();
-          return dispatch(kind, perform);
-        },
-        mode,
-        newCommandTimeoutSeconds,
-        t.platform === 'android' ? 1000 : undefined,
-      );
+
+  async diagnoseService() {
+    const { api, signal: lifecycle } = this.context();
+    const signal = AbortSignal.any([lifecycle, AbortSignal.timeout(8000)]);
+    const probes = [['HTTP 服务', '/healthz'], ['运行受理', '/readyz'], ['访问令牌与驱动', '/api/capabilities']];
+    const checks = await Promise.all(probes.map(async ([label, path]) => {
       try {
-        if (t.platform === 'android') device.commentOrigin = this.frames.get('android:' + t.id)?.commentOrigin;
-        return await work(device);
-      } finally {
-        try {
-          await device.close();
-        } catch {
-          onCleanupError?.('DEVICE_SESSION_CLOSE_FAILED');
+        const result = await api.json(path, { signal });
+        const rows = [{ label, status: result.status || 'ok' }];
+        if (path === '/api/capabilities') {
+          this.capabilities = result;
+          for (const driver of result.drivers) rows.push({
+            label: driver.platform, status: driver.available ? 'ok' : driver.code || 'TOOL_NOT_FOUND',
+          });
         }
+        return rows;
+      } catch (error) {
+        return [{ label, status: errorCode(error) }];
       }
     }));
+    return checks.flat();
   }
-  async frame(device, identity, initialView, onView) {
-    const { metadata, controls, image, before, view } = await captureView(device, identity, initialView);
-    this.frames.set(identity, {
-      token: metadata.observationId,
-      commentOrigin: device.commentOrigin,
-      view: { ...view, layout: undefined },
-      before: metadata.controlsChangedDuringCapture ? { ...before, layout: undefined } : undefined,
+
+  async devices() {
+    let context = await this.ensureConnection();
+    const read = ({ api, signal }) => Promise.all([
+      listItems(api, '/api/devices', { query: { refresh: 'true' }, signal }), api.json('/api/capabilities', { signal }),
+    ]);
+    let rows, capabilities;
+    try {
+      [rows, capabilities] = await read(context);
+    } catch (error) {
+      if (!this.automatic() || context.signal.aborted || !recoverableConnectionErrors.has(errorCode(error))) {
+        if (!context.signal.aborted) this.connection('offline', errorCode(error));
+        throw error;
+      }
+      context = await this.ensureConnection(true);
+      try {
+        [rows, capabilities] = await read(context);
+      } catch (retryError) {
+        if (!context.signal.aborted) this.connection('offline', errorCode(retryError));
+        throw retryError;
+      }
+    }
+    this.capabilities = capabilities;
+    this.connection('online');
+    const unavailable = capabilities.drivers.filter((driver) => !driver.available);
+    return {
+      devices: rows.map((row) => ({ ...row, model: row.name, available: row.state === 'available' })),
+      unavailable: unavailable.map((driver) => driver.platform),
+      scanErrors: Object.fromEntries(unavailable.map((driver) => [driver.platform, driver.code || 'TOOL_NOT_FOUND'])),
+      androidSetup: this.preferences.config().local ? androidSetupStatus(androidToolchain()) : null,
+      modelProfiles: capabilities.modelProfiles,
+    };
+  }
+
+  async library(id) {
+    const { api, signal } = this.context();
+    const rows = await listItems(api, '/api/conversations', { query: { deviceId: id }, signal });
+    return rows.map(chatOverview);
+  }
+
+  async conversation(id, chatId) {
+    const { api, signal } = this.context();
+    const path = conversationPath(chatId);
+    const response = await api.request(path, { signal });
+    const revision = response.headers.get('etag');
+    if (!revision) throw Error('API_INVALID_RESPONSE');
+    const chat = await response.json();
+    if (chat.deviceId !== id) throw Error('UNKNOWN_CONVERSATION');
+    const messages = await listItems(api, path + '/messages', { signal });
+    const turns = new Map();
+    for (const { turn, role, runId, content, createdAt, replyRequested } of messages) {
+      if (turn > chat.lastTurn) break;
+      const item = turns.get(turn) || { runId, started: createdAt };
+      if (role === 'user') item.user = content;
+      else Object.assign(item, { assistant: content, replyRequested, ended: createdAt });
+      turns.set(turn, item);
+    }
+    const items = [...turns.values()];
+    for (let index = 0; index < items.length; index += 8) {
+      await Promise.all(items.slice(index, index + 8).map(async (turn) => {
+        try {
+          const run = turn.runId && await api.getRun(turn.runId, signal);
+          if (!run) return;
+          const events = await this.events(api, run.id, signal);
+          const view = runView(run, events, { user: turn.user });
+          Object.assign(turn, {
+            ...view, runId: run.id,
+            assistant: view.result?.answer ?? turn.assistant,
+            replyRequested: view.result?.replyRequested ?? turn.replyRequested,
+          });
+        } catch (error) {
+          if (error.status !== 404 && error.status !== 410) throw error;
+        } finally {
+          turn.status ??= turn.replyRequested ? 'needs_review' : turn.assistant ? 'succeeded' : 'interrupted';
+        }
+      }));
+    }
+    return {
+      ...chatOverview(chat), turns: items.filter((turn) => turn.user !== undefined),
+      recordingId: chat.recordedStepCount ? chat.id : undefined,
+      revision,
+    };
+  }
+
+  async conversationTag(api, signal, id, deviceId) {
+    const response = await api.request(conversationPath(id), { signal });
+    const etag = response.headers.get('etag');
+    const value = await response.json();
+    if (!etag) throw Error('API_INVALID_RESPONSE');
+    if (value.deviceId !== deviceId) throw Error('UNKNOWN_CONVERSATION');
+    return etag;
+  }
+
+  scriptLibrary() {
+    const { api, signal } = this.context();
+    return new ScriptLibrary(api, signal);
+  }
+
+  scripts(includeArchived = false) {
+    return this.scriptLibrary().list(includeArchived);
+  }
+
+  async importScript(title, text) {
+    if (typeof text !== 'string' || Buffer.byteLength(text) > 8 * 1024 * 1024) throw Error('INVALID_FILE');
+    return (await this.scriptLibrary().create({ source: 'document', title, script: JSON.parse(text) })).id;
+  }
+
+  async saveRecording(conversationId, title) {
+    return (await this.scriptLibrary().create({ source: 'conversationRecording', conversationId, title })).id;
+  }
+
+  async continueRecording(deviceId, sourceScriptId, sourceScriptETag) {
+    const { api, signal } = this.context();
+    return api.json('/api/conversations', { method: 'POST', signal, body: { deviceId, sourceScriptId, sourceScriptETag } });
+  }
+
+  scriptInfo(id) {
+    return this.scriptLibrary().entry(id);
+  }
+
+  renameScript(id, title, revision) {
+    return this.scriptLibrary().patch(id, { title }, revision);
+  }
+
+  removeScript(id, revision) {
+    return this.scriptLibrary().patch(id, { archived: true }, revision);
+  }
+
+  restoreRecording(id, revision) {
+    return this.scriptLibrary().patch(id, { archived: false }, revision);
+  }
+
+  exportScript(id) {
+    return this.scriptLibrary().export(id);
+  }
+
+  async submit(api, signal, body) {
+    // If the network loses an accepted reply, the next attempt must reuse its request and key.
+    const fingerprint = JSON.stringify({ ...body, input: { ...body.input, conversationETag: undefined } });
+    const pending = this.pendingSubmissions.get(fingerprint) || { body, idempotencyKey: randomUUID() };
+    this.pendingSubmissions.set(fingerprint, pending);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const run = await api.submitRun(pending.body, { signal, idempotencyKey: pending.idempotencyKey });
+        if (!signal.aborted) this.pendingSubmissions.delete(fingerprint);
+        return run;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        if (!attempt && this.automatic() && recoverableConnectionErrors.has(errorCode(error))) {
+          api = await this.recoverConnection(api, signal, error);
+          continue;
+        }
+        if (!['API_TIMEOUT', 'API_UNREACHABLE'].includes(errorCode(error))) {
+          this.pendingSubmissions.delete(fingerprint);
+          throw error;
+        }
+        if (attempt) throw Error('RUN_SUBMISSION_UNCONFIRMED');
+        await wait(250, undefined, { signal });
+      }
+    }
+  }
+
+  async invoke(api, signal, body) {
+    const submitted = await this.submit(api, signal, body);
+    signal.throwIfAborted();
+    api = this.context().api;
+    const run = await api.waitRun(submitted.id, { signal }).catch(async (error) => {
+      const recovered = await this.recoverConnection(api, signal, error);
+      return recovered.waitRun(submitted.id, { signal });
     });
-    onView?.(view);
+    const reviewedTap = body.kind === 'step' && body.input.step.action === 'tap' &&
+      ((run.status === 'cancelled' && run.reason === 'STALE_OBSERVATION') ||
+       (run.status === 'needs_review' && ['COMMENT_PANEL_STILL_OPEN', 'COMMENT_CLOSE_UNCONFIRMED'].includes(run.reason)));
+    if (run.status !== 'succeeded' && !reviewedTap) throw Error(run.reason || 'RUN_FAILED');
+    return run;
+  }
+
+  async frame(api, signal, run, artifact, metadata) {
+    if (!artifact || artifact.mediaType !== 'image/png') throw Error('SCREENSHOT_UNAVAILABLE');
+    const path = runPath(run.id) + '/artifacts/' + encodeURIComponent(artifact.id);
+    const response = await api.request(path, { headers: { Accept: 'image/png' }, signal });
+    if (!response.headers.get('content-type')?.startsWith('image/png')) throw Error('API_INVALID_RESPONSE');
+    const image = Buffer.from(await response.arrayBuffer());
+    const geometry = { width: metadata?.actionWidth, height: metadata?.actionHeight };
     return {
       ...metadata,
-      image: imageUrl(image),
-      controls: controls
-        .filter((c) => !isScreenContainer(view, c))
-        .map((c) => {
-          const selector = c.card && !c.secret ? uniqueSelector(view, c) : undefined;
-          return {
-            id: c.secret ? '' : c.id,
-            labels: c.secret ? [] : c.labels,
-            role: c.role,
-            cardSelector: selector?.within ? selector : undefined,
-            bounds: c.bounds,
-            enabled: c.enabled,
-            navigation: c.navigation,
-            editable: c.editable && !c.secret,
-            secret: c.secret,
-          };
-        }),
-    };
-  }
-  refresh(id) {
-    return this.exclusive(id, (t) =>
-      this.session(t, randomUUID(), null, 'foreground', async (d) => ({
-        frame: await this.frame(d, id),
-        unconfirmed: pending(t),
+      observedAt: metadata?.observedAt || artifact.observedAt || artifact.createdAt,
+      image: 'data:image/png;base64,' + image.toString('base64'),
+      controls: (metadata?.controls || []).filter((control) => !control.secret && !isScreenContainer(geometry, control)).map((control) => ({
+        ...control, id: control.id || '',
       })),
-    );
+      controlsChangedDuringCapture: metadata?.stable === false,
+      observationId: metadata?.stable ? metadata.observationId : undefined,
+    };
   }
-  probe(id) {
-    return this.exclusive(id, (t) =>
-      this.withAppium(t, () => this.bridge.doctor(t, randomUUID(), () => this.appium.ensureReady())),
-    );
+
+  async capture(api, signal, id) {
+    const run = await this.invoke(api, signal, { deviceId: id, kind: 'capture', input: {} });
+    if (run.result?.kind !== 'capture') throw Error('API_INVALID_RESPONSE');
+    const artifact = run.artifacts.find((value) => value.kind === 'screenshot');
+    signal.throwIfAborted();
+    return this.frame(this.context().api, signal, run, artifact, run.result);
   }
-  action(id, raw, observation, chatId) {
-    return this.exclusive(id, async (t) => {
-      if (
-        !/^[a-f0-9]{64}$/.test(observation) ||
-        !['tap', 'swipe', 'input', 'back'].includes(raw?.action)
-      )
-        throw Error('INVALID_ACTION');
-      const { step } = await compileStep(raw, t.platform);
-      const chat = chatId ? await writableConversation(id, chatId, t.platform) : null;
-      if (chat && chat.script.steps.length >= maxScriptSteps) throw Error('RECORDING_FULL');
-      return this.session(t, randomUUID(), null, 'foreground', async (device) => {
-        let result, verifiedView, proof, preview;
-        const capture = async (initialView, onView) => {
-          try { return { frame: await this.frame(device, id, initialView, onView) }; }
-          catch (e) { return { captureError: errorCode(e) }; }
-        };
-        try {
-          const frame = this.frames.get(id);
-          if (!frame || frame.token !== observation) throw Error('STALE_OBSERVATION');
-          const view = frame.view;
-          const validate = guardObservation(id, view, step, chat ? screenAvailable : undefined);
-          // A screenshot falls between two layout reads. Check the actual gesture region on both sides.
-          if (frame.before && (step.kind === 'swipe' || 'point' in step)) validate(frame.before);
-          let item;
-          if (chat) {
-            screenAvailable(view);
-            const node = step.selector && resolveControl(view, step.selector, step.kind === 'input');
-            if (node && !raw.id && !raw.label) {
-              const selector = uniqueSelector(view, node);
-              if (!selector) throw Error('RECORDING_TARGET_UNAVAILABLE');
-              raw = { ...raw, ...selector };
-            }
-            item = recordStep(view, raw, node);
-          }
-          result = await executeStep(device, id, step, validate, undefined, { commentClosed: value => { proof = value; } });
-          if (proof) {
-            let displayed;
-            preview = await capture(proof.view, view => { displayed = view; });
-            if (displayed) {
-              const state = commentCloseState(displayed, proof.view, proof.close, proof.original);
-              if (state !== 'closed') throw new CommentCloseUnverified(state === 'open', displayed);
-            }
-          }
-          if (chat) {
-            chat.script.steps.push(item);
-            chat.updated = new Date().toISOString();
-            await saveConversation(id, chat).catch(() => { throw Error('RECORDING_WRITE_FAILED'); });
-          }
-        } catch (error) {
-          if (error instanceof CommentCloseUnverified) {
-            verifiedView = error.view;
-            result = { action: 'tap', status: 'needs_review', reason: reason(error) };
-          } else {
-            if (step.kind !== 'tap' || reason(error) !== 'STALE_OBSERVATION') throw error;
-            this.frames.delete(id);
-            result = { action: 'tap', status: 'cancelled', reason: 'STALE_OBSERVATION' };
-          }
-        }
-        const continuation = chat && chat.id !== chatId && result.status === 'succeeded' ? { chatId: chat.id } : {};
-        return { result, ...continuation, ...(preview ?? await capture(verifiedView)) };
-      });
+
+  async refresh(id) {
+    const { api, signal } = this.context();
+    const frame = await this.capture(api, signal, id);
+    const unconfirmed = await listItems(this.context().api, devicePath(id) + '/pending-actions', { signal }).catch((error) => {
+      if (error.status === 403) return [];
+      throw error;
+    });
+    return { frame, unconfirmed };
+  }
+
+  async probe(id) {
+    const { api, signal } = this.context();
+    const run = await this.invoke(api, signal, { deviceId: id, kind: 'diagnose', input: {} });
+    return { ...run.result, unconfirmed: run.result?.pendingActions || [] };
+  }
+
+  acknowledgeAction(id, actionId, observationId) {
+    const { api, signal } = this.context();
+    return api.json(devicePath(id) + '/pending-actions/' + encodeURIComponent(actionId) + '/ack', {
+      method: 'POST', body: { observationId, outcome: 'accepted_current_state' }, signal,
     });
   }
-  async history(id, scriptsOnly = false) {
-    this.target(id);
-    const rows = await readRuns(id);
-    return {
-      history: (scriptsOnly ? rows.filter((r) => !r.chatId) : rows).slice(0, 30),
-      current: this.runs.get(id)?.record,
-    };
+
+  async action(id, step, observationId, conversationId, revision) {
+    const { api, signal } = this.context();
+    const input = { step, observationId };
+    if (conversationId) {
+      input.conversationId = conversationId;
+      input.conversationETag = revision ?? await this.conversationTag(api, signal, conversationId, id);
+    }
+    let run;
+    try {
+      run = await this.invoke(api, signal, { deviceId: id, kind: 'step', input, preview: true });
+    } catch (error) {
+      if (step.action !== 'tap' || errorCode(error) !== 'STALE_OBSERVATION') throw error;
+      // An expired observation can be rejected before a run is created.
+      run = { status: 'cancelled', reason: 'STALE_OBSERVATION', artifacts: [] };
+    }
+    const { frame, captureError, ...receipt } = run.result ?? { action: step.action };
+    const result = { ...receipt, status: run.status, ...(run.reason && { reason: run.reason }) };
+    if (captureError) return { result, captureError };
+    try {
+      return { result, frame: frame
+        ? await this.frame(api, signal, run, run.artifacts.findLast(a => a.kind === 'screenshot'), frame)
+        : await this.capture(api, signal, id) };
+    } catch (error) {
+      return { result, captureError: errorCode(error) };
+    }
   }
-  async start(id, choice, imported) {
-    const t = this.target(id);
-    if (!t.available) throw Error(connectionError(t));
-    const conversational = choice === 'chat';
-    if (!conversational && choice !== 'script') throw Error('UNKNOWN_TASK');
-    if (
-      conversational &&
-      (typeof imported?.message !== 'string' ||
-        !imported.message.trim() ||
-        imported.message.length > 2000)
-    )
-      throw Error('INVALID_MESSAGE');
-    const entry = conversational ? undefined : await scriptEntry(imported);
-    if (entry && !entry.platforms.includes(t.platform)) throw Error('SCRIPT_PLATFORM_MISMATCH');
-    const script = entry ? await compileScript(entry.script, t.platform) : undefined;
-    const controller = new AbortController();
-    const config = conversational ? this.preferences.clientConfig() : undefined;
-    const useImages = conversational && this.preferences.useImages === true;
-    const record = {
-      id: randomUUID(),
-      title: conversational ? imported.message.trim().slice(0, 64) : entry.title,
-      user: conversational ? imported.message.trim() : undefined,
-      chatId: conversational ? imported.chatId || randomUUID() : undefined,
-      mode: choice,
-      model: config?.model,
-      endpoint: config?.baseURL,
-      started: new Date().toISOString(),
-      status: 'running',
-      events: [],
-    };
-    const notify = () => this.emit({ type: 'run', device: id, record });
-    const decide =
-      config &&
-      chatClient(
-        { ...config, requestTimeoutMs: 15_000, maxRetries: 5 },
-        fetch,
-        (m) => {
-          record.servedModel = m;
-        },
-        controller.signal,
-        conversational,
-      );
-    const done = this.exclusive(id, async (target) => {
-      let chat, turn;
-      const progress = (event) => {
-        delete record.activity;
-        record.events.push({ ...event, at: new Date().toISOString() });
-        notify();
-      };
-      const persist = async () => {
-        chat.updated = new Date().toISOString();
-        await saveConversation(id, chat).catch(() => {
-          throw Error('RECORDING_WRITE_FAILED');
-        });
-      };
-      try {
-        if (conversational) {
-          chat = imported.chatId
-            ? await writableConversation(id, imported.chatId, t.platform)
-            : {
-                id: record.chatId,
-                turns: [],
-                script: { platform: t.platform, steps: [] },
-              };
-          record.chatId = chat.id;
-          turn = { runId: record.id, started: record.started, user: record.user, status: 'running' };
-          chat.turns.push(turn);
-          await persist();
-        }
-        await this.session(
-          target,
-          record.id,
-          controller.signal,
-          script?.mode ?? 'foreground',
-          async (device) => {
-            let screenshotAt;
-            const screenshot = async () => {
-              const image = await device.screenshot();
-              screenshotAt = new Date().toISOString();
-              return image;
-            };
-            const showFrame = async (captured) => {
-              if (controller.signal.aborted) return false;
-              try {
-                const image = captured ?? await screenshot();
-                if (controller.signal.aborted) return false;
-                this.emit({
-                  type: 'frame',
-                  device: id,
-                  runId: record.id,
-                  frame: {
-                    image: imageUrl(image),
-                    observedAt: screenshotAt,
-                    controls: [],
-                  },
-                });
-                return true;
-              } catch (e) {
-                this.emit({ type: 'frameError', device: id, runId: record.id, error: errorCode(e) });
-                return false;
-              }
-            };
-            // Chat publishes at the next observation so navigation has time to settle.
-            // Scripts without a decision loop still publish after each native operation.
-            let previewDue = true;
-            const watched = { screenshot };
-            let lastView;
-            watched.snapshot = async () => {
-              lastView = await device.snapshot();
-              return lastView;
-            };
-            for (const name of ['foregroundApp', 'observe', 'close']) {
-              watched[name] = device[name].bind(device);
-            }
-            const actions = ['move', 'perform', 'launch', 'back'];
-            if (device.goHome) actions.push('goHome');
-            for (const name of actions) {
-              watched[name] = async (...args) => {
-                lastView = undefined;
-                const value = await device[name](...args);
-                if (conversational) previewDue = true;
-                else await showFrame();
-                return value;
-              };
-            }
-            let result;
-            if (conversational) {
-              const dialogue = chat.turns
-                .slice(-8)
-                .map(({ user, assistant, reason }) => ({ user, assistant: assistant || reason, reason }));
-              const capture = async (item) => {
-                chat.script.steps.push(item);
-                await persist();
-                record.stepCount = chat.script.steps.length;
-                if (item.action === 'pause') previewDue = true;
-              };
-              result = await runConversation(
-                watched,
-                id,
-                t.platform,
-                dialogue,
-                decide,
-                controller.signal,
-                capture,
-                (name, status) => progress({ kind: 'action', name, status }),
-                () => chat.script.steps.length < maxScriptSteps,
-                (activity) => {
-                  record.activity = activity;
-                  notify();
-                },
-                useImages,
-                async (image) => {
-                  if (!image && !previewDue) return;
-                  previewDue = !(await showFrame(image));
-                },
-              );
-            } else {
-              result = await executeRound(watched, id, { script }, controller.signal, progress);
-            }
-            record.result = result;
-            record.status = result.status;
-            record.reason = result.reason;
-            try {
-              // A successful chat just checked this view. The preview still reads again after its screenshot.
-              const initialView = conversational && result.status === 'succeeded' ? lastView : undefined;
-              this.emit({
-                type: 'frame',
-                device: id,
-                runId: record.id,
-                frame: await this.frame(device, id, initialView),
-              });
-            } catch (e) {
-              this.emit({ type: 'frameError', device: id, runId: record.id, error: errorCode(e) });
-            }
-          },
-          (code) => {
-            record.cleanupError = code;
-          },
-          conversational ? conversationTimeLimitMs / 1000 + 30 : undefined,
-        );
-      } catch (e) {
-        if (record.result) record.cleanupError = errorCode(e);
-        else {
-          record.reason = errorCode(e);
-          record.status = 'failed';
-        }
-      } finally {
-        if (record.reason === 'CANCELLED') record.status = 'cancelled';
-        record.ended = new Date().toISOString();
-        try {
-          if (turn) {
-            turn.assistant = record.result?.answer;
-            turn.status = record.status;
-            turn.reason = record.reason;
-            chat.updated = record.ended;
-            await saveConversation(id, chat);
-          }
-          await writeJSON(deviceDir(id, 'workbench'), record.id + '.json', record);
-        } catch {
-          record.historyError = 'HISTORY_WRITE_FAILED';
-        }
-        this.runs.delete(id);
-        notify();
+
+  async events(api, id, signal, after = 0) {
+    const events = [];
+    let next = after;
+    try {
+      for (;;) {
+        const page = await api.json(runPath(id) + '/events?limit=200&after=' + next, { signal });
+        events.push(...page.items.filter((event) => event.sequence > next));
+        if (!page.nextAfter) return events;
+        next = page.nextAfter;
       }
+    } catch (error) {
+      if (error.status === 410) return events;
+      throw error;
+    }
+  }
+
+  async history(id, scriptsOnly = false) {
+    const { api, signal } = this.context();
+    const runs = (await listItems(api, '/api/runs', { query: { deviceId: id }, signal })).filter(visibleRun);
+    const active = runs.find((run) => ['running', 'starting', 'cancelling'].includes(run.status)) ||
+      runs.find((run) => run.status === 'queued');
+    const current = active ? this.watch(api, signal, active) : undefined;
+    const recent = runs.filter((run) => run.id !== active?.id && (!scriptsOnly || run.kind !== 'chat')).slice(0, 30);
+    const history = await Promise.all(recent.map(async (summary) => {
+      try {
+        const [run, events] = await Promise.all([
+          api.getRun(summary.id, signal), this.events(api, summary.id, signal),
+        ]);
+        return runView(run, events);
+      } catch (error) {
+        if (error.status !== 404 && error.status !== 410) throw error;
+        return runView(summary);
+      }
+    }));
+    return { history, current };
+  }
+
+  async start(id, kind, choice) {
+    const { api, signal } = this.context();
+    let input, display;
+    if (kind === 'chat') {
+      const message = typeof choice?.message === 'string' && choice.message.trim();
+      if (!message || message.length > 2000) throw Error('INVALID_MESSAGE');
+      const config = this.config();
+      input = { message, useImages: config.useImages, modelProfile: config.model || undefined };
+      if (choice.chatId) {
+        input.conversationId = choice.chatId;
+        input.conversationETag = choice.revision ?? await this.conversationTag(api, signal, choice.chatId, id);
+      }
+      display = { user: message, title: message.slice(0, 64) };
+    } else if (kind === 'script') {
+      const scriptId = typeof choice === 'string' ? choice : choice?.id;
+      if (!scriptId) throw Error('UNKNOWN_SCRIPT');
+      input = { scriptId };
+      display = { title: typeof choice?.title === 'string' ? choice.title : undefined };
+    } else throw Error('UNKNOWN_TASK');
+    const maxTimeout = this.capabilities?.limits?.maximumTimeoutMs;
+    const run = await this.submit(api, signal, { deviceId: id, kind, input, preview: true,
+      ...(kind === 'chat' && maxTimeout ? { timeoutMs: Math.min(10 * 60_000, maxTimeout) } : {}) });
+    this.watch(api, signal, run, display);
+    return run.id;
+  }
+
+  async stop(id, runId) {
+    const { api, signal } = this.context();
+    const active = this.watchers.get(runId);
+    if (!active || active.run.deviceId !== id) throw Error('RUN_NOT_ACTIVE');
+    return api.cancelRun(runId, signal).catch(async (error) => {
+      const recovered = await this.recoverConnection(api, signal, error);
+      return recovered.cancelRun(runId, signal);
     });
-    this.runs.set(id, { controller, record });
-    notify();
-    // Observe unexpected infrastructure failures even if the window has already closed.
-    done.catch(() => {});
-    return record.id;
   }
-  stop(id, runId) {
-    const active = this.runs.get(id);
-    if (!active || active.record.id !== runId) throw Error('RUN_NOT_ACTIVE');
-    active.controller.abort(Error('CANCELLED'));
+
+  watch(api, signal, run, display) {
+    const old = this.watchers.get(run.id);
+    if (old) return runView(old.run, old.events, old.display);
+    const entry = { run, events: [], last: 0, display, renderedArtifact: undefined };
+    this.watchers.set(run.id, entry);
+    const announce = () => {
+      const record = runView(entry.run, entry.events, entry.display);
+      if (!signal.aborted) this.emit({ type: 'run', device: run.deviceId, record });
+      return record;
+    };
+    const record = announce();
+    entry.done = this.follow(api, signal, entry, announce).finally(() => {
+      if (this.watchers.get(run.id) === entry) this.watchers.delete(run.id);
+    });
+    return record;
   }
+
+  async preview(api, signal, entry, artifact) {
+    if (artifact?.kind !== 'screenshot') return;
+    const final = terminalRunStatus(entry.run.status) ? entry.run.result?.frame : undefined;
+    const metadata = final && final.observedAt === artifact.observedAt ? final : undefined;
+    const version = metadata ? artifact.id + '/capture' : artifact.id;
+    if (entry.renderedArtifact === version) return;
+    entry.renderedArtifact = version;
+    const { id, deviceId } = entry.run;
+    try {
+      const frame = await this.frame(api, signal, entry.run, artifact, metadata);
+      if (!signal.aborted) this.emit({ type: 'frame', device: deviceId, runId: id, frame });
+    } catch (error) {
+      if (!signal.aborted) this.emit({ type: 'frameError', device: deviceId, runId: id, error: errorCode(error) });
+    }
+  }
+
+  async follow(api, signal, entry, announce) {
+    const { id, deviceId } = entry.run;
+    let disconnected = false;
+    while (!signal.aborted) {
+      try {
+        api = this.context().api;
+        const backlog = await this.events(api, id, signal, entry.last);
+        for (const event of backlog) {
+          entry.last = event.sequence;
+          entry.events.push(event);
+        }
+        entry.run = await api.getRun(id, signal);
+        disconnected = false;
+        if (terminalRunStatus(entry.run.status)) {
+          await this.preview(api, signal, entry, entry.run.artifacts.findLast((value) => value.kind === 'screenshot'));
+          announce();
+          return;
+        }
+        announce();
+        const recovered = backlog.findLast((event) => event.type === 'artifact.available' && event.data.kind === 'screenshot');
+        await this.preview(api, signal, entry, recovered?.data);
+        for await (const event of api.events(id, { signal, after: entry.last })) {
+          if (event.sequence <= entry.last) continue;
+          entry.last = event.sequence;
+          entry.events.push(event);
+          if (event.type === 'run.status') {
+            if (terminalRunStatus(event.data.status)) break;
+            entry.run = { ...entry.run, ...event.data };
+          }
+          if (event.type === 'artifact.available') await this.preview(api, signal, entry, event.data);
+          if (event.type !== 'artifact.available') announce();
+        }
+      } catch (error) {
+        if (signal.aborted) return;
+        if (error.status === 410) {
+          entry.last = (await api.getRun(id, signal).catch(() => entry.run)).lastEventId;
+        } else {
+          if (!disconnected) this.emit({ type: 'runConnectionError', device: deviceId, runId: id, error: errorCode(error) });
+          disconnected = true;
+          if (this.automatic() && recoverableConnectionErrors.has(errorCode(error))) {
+            await this.recoverConnection(api, signal, error).catch(() => {});
+          } else if ([401, 403, 404].includes(error.status)) return;
+        }
+      }
+      await wait(400, undefined, { signal }).catch(() => {});
+    }
+  }
+
   async shutdown() {
     this.closing = true;
-    for (const { controller } of this.runs.values()) controller.abort(Error('CANCELLED'));
-    const installation = this.emulator.close();
-    await Promise.allSettled(this.operations.values());
-    await this.appium.close();
-    await installation;
-    this.preferences.key = undefined;
+    clearInterval(this.connectionTimer);
+    this.lifecycle.abort(Error('CANCELLED'));
+    const observers = Array.from(this.watchers.values(), (run) => run.done);
+    await Promise.allSettled([this.emulator.close({ keepRunning: true }), ...observers]);
   }
 }
