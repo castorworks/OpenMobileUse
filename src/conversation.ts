@@ -5,6 +5,7 @@ import type { Platform } from './host.js';
 import { recordStep, type RecordedStep } from './recording.js';
 import { executeTextTarget, readScreenText, type ScreenTextRecognizer } from './screen-text.js';
 import { pauseVideoCenter, readVideoPlayer } from './video-player.js';
+import { singleSwipeRequest, swipeStart, unverifiedSwipe, verifySingleSwipe, visibleSwipeItem, type SwipeStart } from './single-swipe.js';
 import {
   asksToSubmitQuery, executeVerifiedSearch, firstSearchResult, requestedSearch, searchFailureMessage, searchField, searchForm,
   searchReport, type SearchEvidence, type SearchRequest,
@@ -56,6 +57,7 @@ When asked to close a video's comments panel, tap its labelled close button once
 It taps the verified player region once and reads its playback state. If unavailable, report the blocked step.
 For an ordinary pause request, prefer the native pause control.
 For a feed swipe, verify the new item with finish using its native title, author or other identifying text.
+Respect singleSwipe.remaining. After its one gesture, report the readback or continue with other requested steps.
 newLabelRefs are native labels that appeared after the swipe. Use one only if it demonstrates the requested result.
 If only the image proves the result, use finish_visual on a stable, distinctive detail.
 Prefer a matching native control, including an icon identified by its id. After a failed action use
@@ -201,6 +203,10 @@ export async function runConversation(
     /^(?:继续|重试|再试一次|continue|retry)[。！!.]?$/i.test(context[searchTurn].user.trim())) searchTurn--;
   const searchInstruction = context[searchTurn]?.user ?? '';
   const searchRequest = requestedSearch(searchInstruction);
+  const swipeRequest = singleSwipeRequest(context.at(-1)?.user ?? '');
+  const single: {
+    start?: SwipeStart; report?: { status: string; reason?: string; answer: string }; followed?: boolean;
+  } = {};
   let searchEvidence: (SearchEvidence & { app: string }) | undefined;
   let requestedFinishTool = false;
   const notes = new Set<string>();
@@ -272,7 +278,28 @@ export async function runConversation(
       bounded.throwIfAborted();
       if (!hasSpace()) throw Error('RECORDING_FULL');
       activity?.(blocker ? '正在重新观察手机界面，寻找其他操作路径' : '正在读取手机界面');
-      const view = await readObservation(() => device.snapshot(), bounded, screenTransitionDelays);
+      let view: View;
+      try {
+        view = await readObservation(() => device.snapshot(), bounded, screenTransitionDelays);
+      } catch (error) {
+        if (swipeRequest && single.start && !single.report && !signal.aborted)
+          return { ...unverifiedSwipe(swipeRequest), modelCalls };
+        throw error;
+      }
+      if (swipeRequest && single.start && !single.report) {
+        const checked = await verifySingleSwipe(device, single.start, swipeRequest, view, bounded);
+        single.report = checked.result;
+        for (const check of checked.checks) {
+          if (!hasSpace()) throw Error('RECORDING_FULL');
+          await record(check);
+        }
+        if (swipeRequest.compare) progress('核对换片结果', checked.result.reason ?? 'observed');
+        // For a standalone swipe the phone has already answered the whole request.
+        // A second model reply cannot improve or overturn that observation.
+        if (checked.result.status !== 'succeeded' || (swipeRequest.reportOnly && !missingDispatches.size))
+          return { ...checked.result, modelCalls };
+        view = checked.view;
+      }
       screenAvailable(view);
       if (pendingLaunch) {
         if (view.app === pendingLaunch.targetApp) {
@@ -410,7 +437,7 @@ export async function runConversation(
         'swipe',
         'Swipe in the named direction. Optionally save a note about the current item before leaving it.',
         {
-          direction: ['up', 'down', 'left', 'right'],
+          direction: swipeRequest?.reportOnly && !swipeRequest.anyDirection ? ['up'] : ['up', 'down', 'left', 'right'],
         },
       );
       swipe.function.parameters.properties.note = { type: 'string', maxLength: 180 };
@@ -492,8 +519,12 @@ export async function runConversation(
           next: ['report', 'continue'],
         }));
       }
+      if (swipeRequest?.reportOnly) {
+        tools = tools.filter(t => ['swipe', 'wait', 'inspect_screen', 'read_screen_text', 'finish', 'finish_visual', 'ask_user'].includes(t.function.name));
+      }
       const observation = {
         app: view.app,
+        singleSwipe: swipeRequest ? { remaining: single.start ? 0 : 1, readback: single.report?.answer } : undefined,
         verifiedInput,
         appTitle: view.controls
           .find((n) => n.role === 'XCUIElementTypeApplication')
@@ -594,6 +625,14 @@ export async function runConversation(
       }
       invalidReplies = 0;
       bounded.throwIfAborted();
+      const ending = !reply.tool_calls.length ||
+        (reply.tool_calls.length === 1 && ['finish', 'finish_visual'].includes(reply.tool_calls[0].function.name));
+      if (ending && swipeRequest && !single.start)
+        return blocker?.outcome === 'SWIPE_BASELINE_UNAVAILABLE'
+          ? partial(blocker.outcome, '尚未上滑，未读到原作品的作者或标题。')
+          : partial('SWIPE_NOT_DISPATCHED', '本轮尚未向手机下发所请求的滑动。');
+      if (ending && swipeRequest?.followingAction && single.report && !single.followed)
+        return partial('TASK_INCOMPLETE', single.report.answer + '后续操作尚未执行。');
       if (!reply.tool_calls.length) {
         if (searchRequest && !searchEvidence) return incompleteSearch(view, searchRequest);
         if (pendingSearchSubmit) return incompleteSearch(view.app === pendingSearchSubmit.app ? view : undefined,
@@ -722,7 +761,7 @@ export async function runConversation(
             await record(recordStep(view, { action: 'verifiedSearch', ...searchRequest }));
             lastDispatch = JSON.stringify([view.app, 'verifiedSearch', evidence.query]);
             outcome = 'dispatched';
-            if (a.next === 'report') {
+            if (a.next === 'report' && (!swipeRequest || single.report)) {
               progress(description, outcome);
               missingDispatches.delete('action');
               missingDispatches.delete(dispatchKey);
@@ -828,6 +867,8 @@ export async function runConversation(
               command = { action: 'input', ...target!.selector, text: a.text, replace: true };
             else command = { action: name, ...target?.selector };
             const { step } = await compileStep(command, platform);
+            const limitedSwipe = step.kind === 'swipe' && (a.direction === 'up' || swipeRequest?.anyDirection)
+              ? swipeRequest : undefined;
             // A feed may keep the same controls while only the rendered item or its caption changes.
             // Use frame changes for swipes only. They do not verify that a new item was read.
             const swipeView = step.kind === 'swipe' ? swipeObservation(identity, view) : undefined;
@@ -838,7 +879,8 @@ export async function runConversation(
             ]);
             const preview = name === 'swipe' && frame ? await swipePreview(frame) : undefined;
             const validate = guardObservation(identity, view, step, checkTarget);
-            if (
+            if (limitedSwipe && single.start) outcome = 'SWIPE_LIMIT_REACHED';
+            else if (
               signature === lastDispatch &&
               (!swipeView || (lastSwipeView && sameSwipeObservation(lastSwipeView, swipeView))) &&
               !(preview && swipePreviewChanged(lastSwipePreview, preview))
@@ -867,12 +909,18 @@ export async function runConversation(
               const recording = recordStep(view, command, target?.node);
               try {
                 const result = await executeStep(device, identity, step, validate, bounded, {
+                  beforeSwipe(fresh) {
+                    if (limitedSwipe) single.start = swipeStart(fresh, limitedSwipe.compare);
+                  },
                   launch(targetApp) {
                     if (attemptedLaunches.has(targetApp)) throw Error('APP_LAUNCH_ALREADY_ATTEMPTED');
                   },
                 });
                 if (result.action === 'goHome') lastHomeApp = result.foregroundApp;
               } catch (error) {
+                // Validation failures before beforeSwipe leave the first dispatch
+                // available. After that boundary an exception is not a receipt.
+                if (limitedSwipe && single.start && !signal.aborted) throw Error('ACTION_OUTCOME_UNKNOWN', { cause: error });
                 if (step.kind === 'launch' && error instanceof AppNotForeground) {
                   pendingLaunch = { targetApp: error.targetApp, recording, description };
                   attemptedLaunches.add(error.targetApp);
@@ -902,6 +950,14 @@ export async function runConversation(
           if (queryView && outcome === 'dispatched') pendingSearchSubmit = undefined;
         } catch (e) {
           const code = reason(e);
+          if (code === 'ACTION_OUTCOME_UNKNOWN' && name === 'swipe' && single.start && !single.report) {
+            progress(description, code);
+            let current;
+            try { current = visibleSwipeItem(await observe(device, bounded), single.start); }
+            catch { signal.throwIfAborted(); }
+            return { status: 'needs_review', reason: code, modelCalls,
+              answer: '已尝试发送一次滑动，手机回执丢失，结果待核对。' + (current ? '当前读到' + current + '。' : '') };
+          }
           if (code === 'COMMENT_PANEL_STILL_OPEN' || code === 'COMMENT_CLOSE_UNCONFIRMED') {
             progress(description, code);
             return { status: 'needs_review', reason: code, modelCalls, answer: code === 'COMMENT_PANEL_STILL_OPEN'
@@ -960,6 +1016,11 @@ export async function runConversation(
         reply,
         reply.tool_calls.map(() => JSON.stringify({ outcome, verifiedPause })),
       );
+      if (outcome === 'SWIPE_LIMIT_REACHED') {
+        if (wrappingUp || ++stalls >= stallLimit) return partial(outcome, (single.report?.answer ?? '') + '后续要求尚未确认。');
+        continue;
+      }
+      if (single.report && outcome === 'dispatched' && name !== 'wait') single.followed = true;
       if (attemptedInput && (outcome === 'dispatched' || outcome === 'observed')) {
         confirmInput(view, attemptedInput.selector, attemptedInput.text);
         if (outcome === 'observed') blocker = missingDispatches.values().next().value;

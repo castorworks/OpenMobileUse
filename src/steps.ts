@@ -602,7 +602,10 @@ export async function executeStep(
   step: CommandStep,
   expected?: string | ((view: View) => void),
   signal?: AbortSignal,
-  guard?: ((view: View) => void) | { launch?: (targetApp: string) => void; commentClosed?: (proof: CommentCloseProof) => void },
+  guard?: ((view: View) => void) | {
+    launch?: (targetApp: string) => void; commentClosed?: (proof: CommentCloseProof) => void;
+    beforeSwipe?: (view: View) => void;
+  },
 ) {
   signal?.throwIfAborted();
   function validate(view: View) {
@@ -670,6 +673,7 @@ export async function executeStep(
   const node =
     'selector' in step ? resolveControl(view, step.selector, step.kind === 'input') : undefined;
   if (node) visibleCenter(view, node.bounds);
+  if (step.kind === 'swipe' && typeof guard === 'object') guard.beforeSwipe?.(view);
   const verified = await device.perform(step, view, node, signal);
   if (verified && typeof guard === 'object') guard.commentClosed?.(verified);
   return {

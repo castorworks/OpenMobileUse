@@ -33,6 +33,7 @@ export function isTargetUnavailable(code: string) {
     'NAVIGATION_BUTTON_REQUIRED',
     'INPUT_TARGET_CHANGED',
     'INPUT_FOCUS_UNCONFIRMED',
+    'SWIPE_BASELINE_UNAVAILABLE',
     'SCREEN_TEXT_NOT_UNIQUE_OR_MISSING',
     'VISUAL_TARGET_UNCLEAR',
   ].includes(code);

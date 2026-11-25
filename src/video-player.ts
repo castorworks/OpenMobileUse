@@ -11,7 +11,7 @@ function playbackState(label: string) {
   if (/^(?:播放视频|继续播放(?:视频)?|play video|resume video)$/i.test(action)) return 'paused';
 }
 
-export function readVideoPlayer(view: View) {
+export function readVideoDetails(view: View) {
   if (typeof view.layout !== 'string' || !view.controls.some(c => c.labels.some(playbackState))) return;
   const document = new DOMParser().parseFromString(view.layout, 'application/xml');
   const nodes = Array.from(document.getElementsByTagName('*')).flatMap(el => {
@@ -47,10 +47,19 @@ export function readVideoPlayer(view: View) {
     if (/^(?:desc|caption|video_(?:title|caption|description)|media_title)$/.test(id)) titles.add(label.trim());
     if (/^(?:author|user_name|title)$/.test(id) && label.startsWith('@')) authors.add(label.trim());
   }
-  if (titles.size !== 1 || authors.size > 1) return;
-  const [title] = titles;
-  const key = createHash('sha256').update(JSON.stringify([view.app, title, ...authors])).digest('hex');
-  return { key, title, state: playbackState(toggle.label)!, evidence: toggle.label, center };
+  if ((!titles.size && !authors.size) || titles.size > 1 || authors.size > 1) return;
+  const title = titles.values().next().value;
+  const author = authors.values().next().value;
+  return { title, author, state: playbackState(toggle.label)!, evidence: toggle.label, center };
+}
+
+export function readVideoPlayer(view: View) {
+  const details = readVideoDetails(view);
+  if (!details?.title) return;
+  const key = createHash('sha256').update(JSON.stringify([
+    view.app, details.title, ...(details.author ? [details.author] : []),
+  ])).digest('hex');
+  return { ...details, title: details.title, key };
 }
 
 export async function pauseVideoCenter(device: StepDevice, identity: string, view: View, item: string, signal: AbortSignal) {
