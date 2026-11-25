@@ -16,7 +16,13 @@ function directory(t: Target) {
     .digest('hex');
   return join(process.env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), key);
 }
-export function pending(t: Target) {
+export type PendingDispatch = {
+  runId: string;
+  seq: number;
+  kind: Parameters<Dispatch>[0];
+  time: string;
+};
+export function pending(t: Target): PendingDispatch[] {
   const dir = directory(t);
   try {
     return readdirSync(dir)
@@ -26,6 +32,14 @@ export function pending(t: Target) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+// The caller holds this device's lock and has already checked a fresh observation.
+export function acknowledgePending(t: Target, runId: string, seq: number) {
+  if (!/^[a-f0-9-]+$/.test(runId)) throw Error('UNKNOWN_PENDING_ACTION');
+  const file = join(directory(t), `pending-${runId}.json`);
+  const entry: PendingDispatch = JSON.parse(readFileSync(file, 'utf8'));
+  if (entry.runId !== runId || entry.seq !== seq) throw Error('UNKNOWN_PENDING_ACTION');
+  unlinkSync(file);
 }
 export async function withDevice<T>(t: Target, runId: string, work: (dispatch: Dispatch) => Promise<T>) {
   const dir = directory(t);

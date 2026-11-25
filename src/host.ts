@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { delimiter, extname, isAbsolute, join, resolve } from 'node:path';
-import { accessSync, constants, existsSync, statSync } from 'node:fs';
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 const exec = promisify(execFile);
 export function hdcToolchain() {
@@ -39,6 +39,15 @@ export function hdcToolchain() {
     available: found !== undefined,
   };
 }
+export function readAndroidSettings(base: string): { sdk?: string; incompatibleJava?: string } {
+  try {
+    const settings = JSON.parse(readFileSync(join(base, 'tools.json'), 'utf8'));
+    return settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {};
+  } catch {
+    return {};
+  }
+}
+
 export function adbPath() {
   const env = process.env;
   const windows = process.platform === 'win32';
@@ -48,9 +57,9 @@ export function adbPath() {
   const name = windows ? 'adb.exe' : 'adb';
   const override = env.ADB_PATH;
   if (override && (!isAbsolute(override) || existsSync(override))) return override;
-  const managedSdk = join(env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), 'android', 'sdk');
-  for (const sdk of [env.ANDROID_HOME, env.ANDROID_SDK_ROOT, defaultSdk, managedSdk]) {
-    if (!sdk) continue;
+  const managed = join(env.OMU_STATE_DIR || join(homedir(), '.openmobileuse'), 'android');
+  for (const sdk of [readAndroidSettings(managed).sdk, env.ANDROID_HOME, env.ANDROID_SDK_ROOT, defaultSdk, join(managed, 'sdk')]) {
+    if (typeof sdk !== 'string' || !sdk) continue;
     const adb = join(sdk, 'platform-tools', name);
     if (existsSync(adb)) return adb;
   }

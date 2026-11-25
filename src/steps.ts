@@ -225,7 +225,7 @@ const cliArgumentNames: Partial<Record<string, StepArgument>> = {
   'timeout-ms': 'timeoutMs',
 };
 
-export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
+export async function readStepArguments(kind: string, args: string[], stdin: () => Promise<string>) {
   const str = { type: 'string' } as const,
     flag = { type: 'boolean' } as const;
   const {
@@ -273,9 +273,14 @@ export async function parseStep(kind: string, args: string[], stdin: () => Promi
     if (values.text !== undefined) throw new Error('SPECIFY_TEXT_OR_STDIN');
     options.text = await stdin();
   }
+  return { device, options, kind };
+}
+
+export async function parseStep(kind: string, args: string[], stdin: () => Promise<string>) {
+  const { device, options, kind: stepKind } = await readStepArguments(kind, args, stdin);
   const prefix = device.indexOf(':');
   const platform = prefix === -1 ? undefined : device.slice(0, prefix);
-  return { ...validateStep(kind, options, platform), device };
+  return { ...validateStep(stepKind, options, platform), device };
 }
 type ObservationScope =
   | CommandStep

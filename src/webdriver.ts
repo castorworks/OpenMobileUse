@@ -274,12 +274,22 @@ export function appiumEndpoint(value = process.env.OMU_APPIUM_URL || 'http://127
     throw new Error('APPIUM_INVALID_URL');
   return base;
 }
+export type WebDriverOptions = {
+  endpoint?: string;
+  systemPort?: number;
+  wdaLocalPort?: number;
+  mjpegServerPort?: number;
+  connectTimeoutMs?: number;
+  disableAutoLaunch?: boolean;
+};
+
 export class WebDriver implements Device {
   private readonly adb = adbPath();
 
   private constructor(
     readonly platform: Family,
     readonly id: string,
+    readonly sessionId: string,
     private url: string,
     private dispatch: Dispatch,
   ) {}
@@ -288,8 +298,9 @@ export class WebDriver implements Device {
     id: string,
     dispatch: Dispatch,
     mode: 'settings' | 'foreground' = 'settings',
+    options: WebDriverOptions = {},
   ) {
-    const base = appiumEndpoint();
+    const base = appiumEndpoint(options.endpoint);
     const caps: Record<string, unknown> = {
       platformName: platform === 'ios' ? 'iOS' : 'Android',
       'appium:automationName': platform === 'ios' ? 'XCUITest' : 'UiAutomator2',
@@ -297,7 +308,7 @@ export class WebDriver implements Device {
       'appium:noReset': true,
       'appium:newCommandTimeout': 90,
     };
-    if (mode === 'foreground') caps['appium:autoLaunch'] = false;
+    if (mode === 'foreground' || options.disableAutoLaunch) caps['appium:autoLaunch'] = false;
     if (platform === 'ios') {
       if (mode === 'settings') caps['appium:bundleId'] = iosSettings;
       // Foreground visual taps use positive XCTest hit testing before calibrating an icon.
@@ -310,16 +321,30 @@ export class WebDriver implements Device {
       }
       caps['appium:updatedWDABundleId'] =
         process.env.OMU_WDA_BUNDLE_ID || 'com.castorworks.openmobileuse.wda';
-      if (process.env.OMU_WDA_PORT) caps['appium:wdaLocalPort'] = Number(process.env.OMU_WDA_PORT);
+      const port = options.wdaLocalPort ?? (process.env.OMU_WDA_PORT ? Number(process.env.OMU_WDA_PORT) : undefined);
+      if (port !== undefined) caps['appium:wdaLocalPort'] = port;
+      if (options.wdaLocalPort !== undefined) caps['appium:wdaRemotePort'] = 8100;
     }
+    if (platform === 'android' && options.systemPort !== undefined)
+      caps['appium:systemPort'] = options.systemPort;
+    if (options.mjpegServerPort !== undefined) caps['appium:mjpegServerPort'] = options.mjpegServerPort;
     const sessions = base.href.replace(/\/$/, '') + '/session';
     const { sessionId } = await request<{ sessionId: string }>(
       sessions,
       'POST',
       { capabilities: { alwaysMatch: caps, firstMatch: [{}] } },
-      240000,
+      options.connectTimeoutMs ?? 240000,
     );
-    return new WebDriver(platform, id, sessions + '/' + sessionId, dispatch);
+    if (typeof sessionId !== 'string' || !sessionId) throw new Error('APPIUM_SESSION_UNAVAILABLE');
+    return new WebDriver(platform, id, sessionId, sessions + '/' + encodeURIComponent(sessionId), dispatch);
+  }
+  static async closeSession(endpoint: string, sessionId: string) {
+    const url = appiumEndpoint(endpoint).href.replace(/\/$/, '') + '/session/' + encodeURIComponent(sessionId);
+    try {
+      await request(url, 'DELETE');
+    } catch (error) {
+      if (!(error instanceof AppiumError && error.code === 'invalid session id')) throw error;
+    }
   }
   private mobile<T>(name: string, args: object = {}) {
     return request<T>(this.url + '/execute/sync', 'POST', { script: 'mobile: ' + name, args: [args] });

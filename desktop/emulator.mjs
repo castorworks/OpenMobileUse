@@ -16,7 +16,7 @@ function execute(bin, args, env, signal, timeout, input = '') {
   });
 }
 
-// The workbench owns this AVD directory and only stops the process it started.
+// The workbench uses its own AVD directory. A running emulator can outlive the window.
 export class DesktopEmulator {
   controller = new AbortController();
   constructor(confirm, report) {
@@ -48,6 +48,13 @@ export class DesktopEmulator {
     const image = emulatorImage();
     await mkdir(env.ANDROID_AVD_HOME, { recursive: true });
     const name = 'OpenMobileUse_API35';
+    const findRunning = async () => {
+      const list = await run(adb, ['devices'], 5000).catch(() => '');
+      for (const [, id] of list.matchAll(/^(emulator-\d+)\s+device$/gm)) {
+        const avd = await run(adb, ['-s', id, 'emu', 'avd', 'name'], 4000).catch(() => '');
+        if (avd.split('\n')[0].trim() === name) return id;
+      }
+    };
     if (!existsSync(join(env.ANDROID_AVD_HOME, name + '.ini'))) {
       await run(
         join(bin, 'avdmanager'),
@@ -59,11 +66,15 @@ export class DesktopEmulator {
       });
     }
     if (this.closed) throw Error('CANCELLED');
-    if (!this.child) {
+    const existing = await findRunning();
+    if (this.closed) throw Error('CANCELLED');
+    if (!existing && !this.child) {
       const child = spawn(emulator, ['-avd', name, '-no-boot-anim', '-no-snapshot'], {
         env,
         stdio: 'ignore',
+        detached: true,
       });
+      child.unref();
       this.child = child;
       child.on('error', () => {});
       child.once('close', () => {
@@ -72,26 +83,17 @@ export class DesktopEmulator {
     }
     const deadline = Date.now() + 150000;
     do {
-      if (!this.child || this.closed) throw Error(this.closed ? 'CANCELLED' : 'EMULATOR_START_FAILED');
-      const list = await run(adb, ['devices'], 5000).catch(() => '');
-      for (const [, id] of list.matchAll(/^(emulator-\d+)\s+device$/gm)) {
-        const avd = await run(adb, ['-s', id, 'emu', 'avd', 'name'], 4000).catch(() => '');
-        if (
-          avd.split('\n')[0].trim() === name &&
-          (await run(adb, ['-s', id, 'shell', 'getprop', 'sys.boot_completed'], 4000).catch(
-            () => '',
-          )) === '1'
-        )
-          return;
-      }
+      if (this.closed || (!existing && !this.child)) throw Error(this.closed ? 'CANCELLED' : 'EMULATOR_START_FAILED');
+      const id = existing || await findRunning();
+      if (id && (await run(adb, ['-s', id, 'shell', 'getprop', 'sys.boot_completed'], 4000).catch(() => '')) === '1') return;
       await wait(1000);
     } while (Date.now() < deadline);
     throw Error('EMULATOR_BOOT_TIMEOUT');
   }
-  close() {
+  close({ keepRunning = false } = {}) {
     this.closed = true;
     this.controller.abort();
-    this.child?.kill('SIGTERM');
+    if (!keepRunning) this.child?.kill('SIGTERM');
     return Promise.allSettled([this.installing, this.starting]);
   }
 }

@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import test from 'node:test';
 import sharp from 'sharp';
-import { Workbench } from '../desktop/workbench.mjs';
+import { runConversation } from '../dist/conversation.js';
+import { compileScript, executeRound } from '../dist/run.js';
 
 const width = 216, height = 480;
 const buttonX = 185, firstY = 110, secondY = 235;
@@ -59,25 +57,10 @@ async function phone(channelsFirst) {
   };
 }
 
-test('chat opens the correct More button and its recording follows the section when rows move', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'omu-sections-'));
-  const previous = process.env.OMU_STATE_DIR;
-  process.env.OMU_STATE_DIR = dir;
-  t.after(async () => {
-    if (previous === undefined) delete process.env.OMU_STATE_DIR;
-    else process.env.OMU_STATE_DIR = previous;
-    await rm(dir, { recursive: true, force: true });
-  });
-  const devices = { original: await phone(false), reordered: await phone(true) };
-  const workbench = new Workbench(() => {}, {
-    bridge: { openDevice: async (target) => devices[target.id] },
-    preferences: { useImages: true, clientConfig: () => ({ baseURL: 'http://localhost', model: 'test' }) },
-  });
-  for (const id of Object.keys(devices)) {
-    workbench.targets.set('harmony:' + id, { id, platform: 'harmony', available: true });
-  }
-  t.mock.method(globalThis, 'fetch', async (_url, options) => {
-    const { messages } = JSON.parse(options.body);
+test('chat opens the correct More button and its recording follows the section when rows move', async () => {
+  const live = await phone(false);
+  const decide = async (messages, _tools, _deadline, count) => {
+    count();
     const current = messages.findLast(m => m.role === 'user' && typeof m.content === 'string');
     const { observationId, controls, savedNotes, lastBlocker } = JSON.parse(current.content);
     let name, args;
@@ -94,28 +77,27 @@ test('chat opens the correct More button and its recording follows the section w
       name = 'finish';
       args = { evidence: controls[0].ref, message: [...savedNotes, controls[0].label].join(', ') };
     }
-    return Response.json({ choices: [{ finish_reason: 'tool_calls', message: {
-      role: 'assistant', tool_calls: [{ id: observationId, type: 'function', function: {
+    return { role: 'assistant', content: null, tool_calls: [{
+      id: observationId, type: 'function', function: {
         name, arguments: JSON.stringify({ observationId, ...args }),
-      } }],
-    } }] });
-  });
+      },
+    }] };
+  };
+  const signal = new AbortController().signal;
+  const steps = [];
+  const run = await runConversation(
+    live, 'harmony:original', 'harmony', [{ user: 'Summarize the first two Channels results.' }],
+    decide, signal, async (step) => steps.push(step), () => {}, () => true, undefined, true,
+  );
+  assert.equal(run.status, 'succeeded', JSON.stringify(run));
+  assert.deepEqual(live.actions, ['Channels', 'swipe']);
+  assert.equal(run.answer, titles.join(', '));
+  assert.ok(!run.replyRequested);
 
-  const original = 'harmony:original', reordered = 'harmony:reordered';
-  await workbench.start(original, 'chat', { message: 'Summarize the first two Channels results.' });
-  await workbench.operations.get(original);
-  const { history: [run] } = await workbench.history(original);
-  assert.equal(run.status, 'succeeded', JSON.stringify(run.result));
-  assert.deepEqual(devices.original.actions, ['Channels', 'swipe']);
-  const chat = await workbench.conversation(original, run.chatId);
-  assert.equal(chat.turns.length, 1);
-  assert.equal(chat.turns[0].assistant, titles.join(', '));
-  assert.ok(!chat.turns[0].replyRequested);
-
-  await workbench.start(reordered, 'script', chat.recordingId);
-  await workbench.operations.get(reordered);
-  const { history: [playback] } = await workbench.history(reordered);
-  assert.equal(playback.status, 'succeeded', JSON.stringify(playback.result));
-  assert.deepEqual(playback.events.map(e => e.name), ['tapImage', 'swipe', 'check']);
-  assert.deepEqual(devices.reordered.actions, ['Channels', 'swipe']);
+  const target = await phone(true);
+  const script = await compileScript(JSON.parse(JSON.stringify({ platform: 'harmony', steps })), 'harmony');
+  const playback = await executeRound(target, 'harmony:reordered', { script }, signal);
+  assert.equal(playback.status, 'succeeded', JSON.stringify(playback));
+  assert.deepEqual(playback.steps.map((step) => step.action), ['tapImage', 'swipe', 'check']);
+  assert.deepEqual(target.actions, ['Channels', 'swipe']);
 });

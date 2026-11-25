@@ -58,11 +58,14 @@ function updateTurn(row, turn, hasFollowingTurn) {
   const [user, details, stateLabel, answer] = row.children;
   if (user.textContent !== turn.user) user.textContent = turn.user;
   const [summary, list, activity] = details.children;
-  const running = turn.status === 'running';
+  const running = runActive(turn);
   const events = turn.events || [];
   const stateText =
     {
       running: '执行中',
+      queued: '排队中',
+      starting: '正在连接设备',
+      cancelling: '正在停止',
       succeeded: '已完成',
       cancelled: '已停止',
       interrupted: '已中断',
